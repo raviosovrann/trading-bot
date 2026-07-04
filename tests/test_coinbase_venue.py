@@ -36,8 +36,13 @@ def test_place_order_exception_returns_structured_failure():
 
 def test_get_position_long_mapping():
     class Client:
-        def get_position(self, product_id):
-            return {"side": "LONG", "size": "0.25", "entry_price": "45000"}
+        def get_accounts(self):
+            return {
+                "accounts": [
+                    {"currency": "USD", "available_balance": {"value": "1000", "currency": "USD"}},
+                    {"currency": "BTC", "available_balance": {"value": "0.25", "currency": "BTC"}},
+                ]
+            }
 
     venue = CoinbaseVenue(client=Client())
     pos = venue.get_position("BTC-USD")
@@ -45,7 +50,7 @@ def test_get_position_long_mapping():
     assert pos is not None
     assert pos.side is PositionSide.long
     assert pos.size == 0.25
-    assert pos.entry_price == 45000.0
+    assert pos.entry_price == 0.0
 
 
 def test_close_position_noop_when_flat_or_none():
@@ -53,8 +58,12 @@ def test_close_position_noop_when_flat_or_none():
         def __init__(self):
             self.calls = 0
 
-        def get_position(self, product_id):
-            return {"side": "FLAT", "size": "0"}
+        def get_accounts(self):
+            return {
+                "accounts": [
+                    {"currency": "BTC", "available_balance": {"value": "0", "currency": "BTC"}},
+                ]
+            }
 
         def create_order(self, **kwargs):
             self.calls += 1

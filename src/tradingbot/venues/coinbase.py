@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import uuid
 from typing import Any
 
@@ -12,7 +11,6 @@ except Exception:  # pragma: no cover - depends on optional third-party install
 from ..models import Order, OrderResult, OrderType, Position, PositionSide, Side
 
 _FLAT_TOL = 1e-9
-_COINBASE_SANDBOX_BASE_URL = "https://api-public.sandbox.exchange.coinbase.com"
 
 
 def _raw_dict(value: Any) -> dict:
@@ -70,20 +68,13 @@ class CoinbaseVenue:
     def from_credentials(cls, api_key: str, api_secret: str, sandbox: bool = True) -> "CoinbaseVenue":
         if RESTClient is None:
             raise RuntimeError("coinbase-advanced-py is not installed")
-        if sandbox:
-            # SDK constructor signatures have changed across versions; adapt dynamically.
-            kwargs = {"api_key": api_key, "api_secret": api_secret, "base_url": _COINBASE_SANDBOX_BASE_URL}
-            try:
-                params = inspect.signature(RESTClient).parameters
-                if "base_url" in params:
-                    return cls(client=RESTClient(**kwargs))
-                return cls(client=RESTClient(api_key=api_key, api_secret=api_secret))
-            except Exception:
-                try:
-                    return cls(client=RESTClient(api_key=api_key, api_secret=api_secret, base_url=_COINBASE_SANDBOX_BASE_URL))
-                except TypeError:
-                    return cls(client=RESTClient(api_key=api_key, api_secret=api_secret))
-
+        # NOTE: Coinbase Advanced Trade has no separate REST sandbox host. The
+        # `sandbox` flag is accepted for interface compatibility with the other
+        # venues but does NOT switch hosts; all requests go to the production
+        # Advanced Trade API (api.coinbase.com). Use a dedicated API key with
+        # limited permissions and small sizes for testing. The installed SDK's
+        # RESTClient(__init__) accepts api_key/api_secret (plus optional
+        # base_url/timeout/rate_limit_headers), so we only pass credentials.
         return cls(client=RESTClient(api_key=api_key, api_secret=api_secret))
 
     def place_order(self, order: Order) -> OrderResult:
@@ -151,58 +142,35 @@ class CoinbaseVenue:
             )
 
     def get_position(self, symbol: str) -> Position | None:
+        # Coinbase Advanced Trade is spot-only and exposes no spot "position"
+        # endpoint (only get_accounts, plus futures/perps-specific position
+        # methods). Derive the spot position from the base-asset account
+        # balance (e.g. BTC for BTC-USD). Spot balances are always long/flat.
         try:
-            if hasattr(self._client, "get_position"):
-                response = self._client.get_position(product_id=_normalize_symbol(symbol))
+            get_accounts = getattr(self._client, "get_accounts", None)
+            if not callable(get_accounts):
+                return None
+
+            accounts = get_accounts()
+            raw_accounts = _get_attr(accounts, "accounts", default=accounts)
+            if not isinstance(raw_accounts, list):
+                raw_accounts = []
+
+            target_currency = _base_asset(symbol)
+            for acct in raw_accounts:
+                currency = str(_get_attr(acct, "currency", default="")).upper()
+                if currency != target_currency:
+                    continue
+                balance = _get_attr(acct, "available_balance", "balance", default={})
                 size = abs(
                     _to_float(
-                        _get_attr(response, "size", "qty", "quantity", "base_size", default=0.0),
+                        _get_attr(balance, "value", "amount", default=balance),
                         default=0.0,
                     )
                 )
                 if size < _FLAT_TOL:
                     return None
-
-                raw_side = str(_get_attr(response, "side", default="")).lower()
-                if raw_side in {"long", "buy"}:
-                    side = PositionSide.long
-                elif raw_side in {"short", "sell"}:
-                    side = PositionSide.short
-                elif raw_side == "flat":
-                    side = PositionSide.flat
-                else:
-                    signed = _to_float(_get_attr(response, "size", "qty", default=0.0), default=0.0)
-                    side = PositionSide.long if signed >= 0 else PositionSide.short
-
-                if side is PositionSide.flat:
-                    return None
-                entry_price = _to_float(
-                    _get_attr(response, "entry_price", "avg_entry_price", default=0.0),
-                    default=0.0,
-                )
-                return Position(symbol=symbol, side=side, size=size, entry_price=entry_price)
-
-            if hasattr(self._client, "get_accounts"):
-                accounts = self._client.get_accounts()
-                raw_accounts = _get_attr(accounts, "accounts", default=accounts)
-                if not isinstance(raw_accounts, list):
-                    raw_accounts = []
-
-                target_currency = _base_asset(symbol)
-                for acct in raw_accounts:
-                    currency = str(_get_attr(acct, "currency", default="")).upper()
-                    if currency != target_currency:
-                        continue
-                    balance = _get_attr(acct, "available_balance", "balance", default={})
-                    size = abs(
-                        _to_float(
-                            _get_attr(balance, "value", "amount", default=balance),
-                            default=0.0,
-                        )
-                    )
-                    if size < _FLAT_TOL:
-                        return None
-                    return Position(symbol=symbol, side=PositionSide.long, size=size, entry_price=0.0)
+                return Position(symbol=symbol, side=PositionSide.long, size=size, entry_price=0.0)
         except Exception:
             return None
         return None

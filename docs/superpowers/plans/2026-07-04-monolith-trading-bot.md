@@ -10,8 +10,8 @@ router to real exchange execution visible in account activity.
 
 Venues in scope:
 
-- `alpaca` (paper default)
-- `coinbase` (sandbox/mainnet selectable)
+- `alpaca` (paper default — genuine risk-free sandbox)
+- `coinbase` (production / real money — `sandbox` flag does NOT switch hosts)
 - `fake` (tests only)
 
 ## Constraints
@@ -24,7 +24,12 @@ Venues in scope:
 
 ## Task breakdown
 
-### T6 — Alpaca venue adapter
+> **Status:** T6, T7, T9, T10, T11 are **done**, along with the in-memory
+> datafeed (`InMemoryCandleFeed` + `CandleFeed` protocol + `normalize_candle`).
+> The main remaining gap is a **LIVE datafeed** (Alpaca/Coinbase market data)
+> to make the end-to-end loop actually pull real bars.
+
+### T6 — Alpaca venue adapter (DONE)
 
 Files:
 
@@ -41,7 +46,7 @@ Deliverables:
 - Constructor/wiring from API key/secret + paper toggle.
 - Unit tests with mocked Alpaca client responses.
 
-### T7 — Coinbase venue adapter
+### T7 — Coinbase venue adapter (DONE)
 
 Files:
 
@@ -51,23 +56,29 @@ Files:
 Deliverables:
 
 - Adapter implementing `ExecutionVenue`.
-- Support sandbox/mainnet URL toggle via config.
+- `COINBASE_SANDBOX` flag accepted for interface parity only — it does NOT
+  switch hosts; all calls hit production `api.coinbase.com` (real money).
 - Unit tests with mocked Coinbase client responses.
 
-### T8 — Datafeed
+### T8 — Datafeed (in-memory DONE; LIVE feed PENDING)
 
 Files:
 
 - `src/tradingbot/datafeed.py` (new)
 - `tests/test_datafeed.py` (new)
 
-Deliverables:
+Done:
 
-- Datafeed abstraction + concrete feed path for selected venue.
-- Fetch closed bars in normalized `Candle` model.
+- `InMemoryCandleFeed` + `CandleFeed` protocol + `normalize_candle()`.
 - Unit tests for parsing/normalization and closed-bar behavior.
 
-### T9 — Strategy placeholder
+Remaining (main gap):
+
+- **LIVE datafeed** that fetches closed bars from Alpaca/Coinbase market data
+  for the active symbol/timeframe, so the runtime loop pulls real bars instead
+  of an empty in-memory feed.
+
+### T9 — Strategy placeholder (DONE)
 
 Files:
 
@@ -79,7 +90,7 @@ Deliverables:
 - `Strategy` interface/protocol
 - Placeholder SMA-cross strategy returning signal/no-signal deterministically.
 
-### T10 — Router
+### T10 — Router (DONE)
 
 Files:
 
@@ -91,7 +102,7 @@ Deliverables:
 - Maps strategy signals to venue actions.
 - Spot-safe behavior for buy/sell/close and flat/no-position cases.
 
-### T11 — Runtime + entrypoint
+### T11 — Runtime + entrypoint (DONE)
 
 Files:
 
@@ -107,6 +118,7 @@ Deliverables:
 
 ## Verification gates
 
-- `pytest -v` passes.
+- `pytest -v` passes (54 tests, all mocked/faked; no live network).
 - No stale Bybit imports/references in active source/docs.
-- Manual smoke run with Alpaca paper and Coinbase sandbox/mainnet settings.
+- Manual smoke run possible with Alpaca paper once the LIVE datafeed lands;
+  Coinbase runs would be real money (no sandbox host).

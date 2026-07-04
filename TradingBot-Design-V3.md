@@ -16,14 +16,27 @@ Build a single Python process that:
 
 Primary venues for this milestone:
 
-- **Alpaca** (paper by default)
-- **Coinbase Advanced Trade** (sandbox/mainnet selectable)
+- **Alpaca** (paper by default — genuine risk-free sandbox)
+- **Coinbase Advanced Trade** (production / real money — no REST sandbox)
 
 ## 2. Why this pivot
 
-Bybit is region-restricted for this project owner, which blocks both execution
-and practical datafeed validation. The project now targets venues with account
-access already available to the owner.
+The previous Bybit target was region-restricted for this project owner, which
+blocked both execution and practical datafeed validation. The project now
+targets venues with account access already available to the owner. Bybit code
+and the old webhook design have been removed from the repository.
+
+### Venue reality (must stay accurate)
+
+- **Alpaca:** `alpaca-py`; paper trading via `ALPACA_PAPER=true` is a genuine
+  risk-free sandbox with real simulated fills. Alpaca crypto is spot,
+  long/flat, symbol format `BTC/USD`.
+- **Coinbase:** `coinbase-advanced-py`. Coinbase Advanced Trade has **no**
+  separate REST sandbox. The `COINBASE_SANDBOX` flag is accepted for interface
+  parity but does **not** switch hosts — every call hits production
+  `api.coinbase.com` and moves real money. Coinbase spot is long/flat only
+  (no shorting); `get_position` is derived from the account base-asset balance
+  and `entry_price` is `0.0`.
 
 ## 3. Scope (current milestone)
 
@@ -75,29 +88,35 @@ SDK classes.
 
   - Deterministic in-memory test venue.
 
-- `venues/alpaca.py` (planned)
+- `venues/alpaca.py`
 
-  - Alpaca adapter implementation.
+  - Alpaca adapter (`from_credentials(api_key, api_secret, paper=True)`).
 
-- `venues/coinbase.py` (planned)
+- `venues/coinbase.py`
 
-  - Coinbase adapter implementation.
+  - Coinbase adapter (`from_credentials(api_key, api_secret, sandbox=True)`;
+    `sandbox` does not change hosts).
 
-- `datafeed.py` (planned)
+- `datafeed.py`
 
-  - Market bars for active symbol/timeframe.
+  - Currently provides `InMemoryCandleFeed`, a `CandleFeed` protocol, and
+    `normalize_candle()`. A **live** market-data feed for Alpaca/Coinbase is
+    **not yet implemented** (known gap for a real end-to-end run).
 
-- `strategy.py` (planned)
+- `strategy.py`
 
-  - Strategy protocol + SMA placeholder (real strategy port later).
+  - `SMACrossoverStrategy` placeholder (configurable fast/slow SMA lengths;
+    deterministic). Real strategy port later.
 
-- `router.py` (planned)
+- `router.py`
 
-  - Signal → order/position actions.
+  - `SignalRouter`: signal → order/position actions.
 
-- `runtime.py` + `__main__.py` (planned)
+- `runtime.py` + `__main__.py`
 
-  - App wiring and run loop.
+  - `BotRuntime` app wiring and run loop. `RUN_FOREVER=1` loops; otherwise a
+    single `run_once`. Because the default feed is in-memory/empty, running
+    `__main__` as-is does not yet fetch live data.
 
 ## 6. Execution semantics
 
@@ -127,7 +146,9 @@ No leverage-specific assumptions are made.
 - Unit tests for config/model/router logic.
 - Venue adapter tests with mocked SDK/client responses.
 - Runtime integration test with `FakeVenue` + canned candles.
-- Optional live smoke checks for Alpaca paper and Coinbase sandbox/mainnet.
+- All 54 tests use mocks/fakes; no live network access.
+- Optional live smoke checks for Alpaca paper (Coinbase would be real money)
+  become possible once the live datafeed is implemented.
 
 ## 10. Milestone completion definition
 
@@ -137,3 +158,10 @@ The base bot is considered wrapped up when:
 - Strategy emits signals from those bars.
 - Router converts signals into venue actions.
 - Orders are executed through selected venue API and visible in the venue account.
+
+### Current status
+
+Venue adapters (Alpaca, Coinbase), the strategy placeholder, router, runtime,
+and the in-memory datafeed are implemented and tested. The remaining gap is a
+**live datafeed** (Alpaca/Coinbase market data) so the end-to-end loop can pull
+real bars. Until then, the app wiring runs against an empty in-memory feed.
