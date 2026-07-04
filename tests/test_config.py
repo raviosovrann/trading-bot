@@ -1,49 +1,96 @@
 import pytest
-from tradingbot.config import load_config, Config, ConfigError, require_bybit_credentials
+from tradingbot.config import (
+    load_config,
+    Config,
+    ConfigError,
+    require_credentials,
+)
 
 
 def test_defaults():
     cfg = load_config({})
     assert isinstance(cfg, Config)
-    assert cfg.symbol == "BTCUSDT"
-    assert cfg.timeframe == "5"
+    assert cfg.venue == "alpaca"
+    assert cfg.symbol == "BTC/USD"
+    assert cfg.timeframe == "5Min"
     assert cfg.order_qty == 0.001
-    assert cfg.bybit_testnet is True
-    assert cfg.bybit_api_key == ""
+    assert cfg.alpaca_paper is True
+    assert cfg.coinbase_sandbox is True
+    assert cfg.alpaca_api_key == ""
 
 
-def test_reads_settings():
+def test_reads_alpaca_settings():
     cfg = load_config({
-        "BYBIT_API_KEY": "k", "BYBIT_API_SECRET": "s", "BYBIT_TESTNET": "false",
-        "SYMBOL": "ETHUSDT", "TIMEFRAME": "15", "ORDER_QTY": "0.01",
+        "VENUE": "alpaca",
+        "ALPACA_API_KEY": "k", "ALPACA_API_SECRET": "s", "ALPACA_PAPER": "false",
+        "SYMBOL": "ETH/USD", "TIMEFRAME": "15Min", "ORDER_QTY": "0.01",
     })
-    assert cfg.bybit_api_key == "k" and cfg.bybit_api_secret == "s"
-    assert cfg.bybit_testnet is False
-    assert cfg.symbol == "ETHUSDT" and cfg.timeframe == "15" and cfg.order_qty == 0.01
+    assert cfg.venue == "alpaca"
+    assert cfg.alpaca_api_key == "k" and cfg.alpaca_api_secret == "s"
+    assert cfg.alpaca_paper is False
+    assert cfg.symbol == "ETH/USD" and cfg.timeframe == "15Min" and cfg.order_qty == 0.01
 
 
-def test_require_credentials_raises_when_missing():
+def test_reads_coinbase_settings():
+    cfg = load_config({
+        "VENUE": "coinbase",
+        "COINBASE_API_KEY": "k", "COINBASE_API_SECRET": "s", "COINBASE_SANDBOX": "false",
+    })
+    assert cfg.venue == "coinbase"
+    assert cfg.coinbase_api_key == "k" and cfg.coinbase_api_secret == "s"
+    assert cfg.coinbase_sandbox is False
+
+
+def test_invalid_venue_raises():
     with pytest.raises(ConfigError):
-        require_bybit_credentials(load_config({}))
+        load_config({"VENUE": "bybit"})
 
 
-def test_require_credentials_ok_when_present():
-    require_bybit_credentials(load_config({"BYBIT_API_KEY": "k", "BYBIT_API_SECRET": "s"}))
+def test_require_alpaca_credentials_raises_when_missing():
+    with pytest.raises(ConfigError):
+        require_credentials(load_config({"VENUE": "alpaca"}))
 
 
-def test_repr_masks_secret():
-    r = repr(load_config({"BYBIT_API_KEY": "mykey123", "BYBIT_API_SECRET": "mysecret456"}))
-    assert "mysecret456" not in r and "mykey123" not in r
+def test_require_alpaca_credentials_ok_when_present():
+    require_credentials(load_config({
+        "VENUE": "alpaca", "ALPACA_API_KEY": "k", "ALPACA_API_SECRET": "s",
+    }))
+
+
+def test_require_coinbase_credentials_raises_when_missing():
+    with pytest.raises(ConfigError):
+        require_credentials(load_config({"VENUE": "coinbase"}))
+
+
+def test_require_coinbase_credentials_ok_when_present():
+    require_credentials(load_config({
+        "VENUE": "coinbase", "COINBASE_API_KEY": "k", "COINBASE_API_SECRET": "s",
+    }))
+
+
+def test_fake_venue_needs_no_credentials():
+    require_credentials(load_config({"VENUE": "fake"}))
+
+
+def test_repr_masks_secrets():
+    r = repr(load_config({
+        "ALPACA_API_KEY": "mykey123", "ALPACA_API_SECRET": "mysecret456",
+        "COINBASE_API_KEY": "cbkey789", "COINBASE_API_SECRET": "cbsecret012",
+    }))
+    assert "mykey123" not in r and "mysecret456" not in r
+    assert "cbkey789" not in r and "cbsecret012" not in r
     assert "***" in r
 
 
-def test_unrecognized_testnet_uses_safe_default():
-    assert load_config({"BYBIT_TESTNET": "fasle"}).bybit_testnet is True
-    assert load_config({"BYBIT_TESTNET": "   "}).bybit_testnet is True
+def test_unrecognized_bool_uses_safe_default():
+    assert load_config({"ALPACA_PAPER": "fasle"}).alpaca_paper is True
+    assert load_config({"COINBASE_SANDBOX": "   "}).coinbase_sandbox is True
 
 
-def test_explicit_false_testnet():
-    assert load_config({"BYBIT_TESTNET": "false"}).bybit_testnet is False
+def test_explicit_false_bools():
+    cfg = load_config({"ALPACA_PAPER": "false", "COINBASE_SANDBOX": "no"})
+    assert cfg.alpaca_paper is False
+    assert cfg.coinbase_sandbox is False
 
 
 def test_invalid_order_qty_raises_config_error():
@@ -57,4 +104,4 @@ def test_empty_order_qty_uses_default():
 
 def test_one_credential_missing_raises():
     with pytest.raises(ConfigError):
-        require_bybit_credentials(load_config({"BYBIT_API_KEY": "k"}))
+        require_credentials(load_config({"VENUE": "alpaca", "ALPACA_API_KEY": "k"}))
