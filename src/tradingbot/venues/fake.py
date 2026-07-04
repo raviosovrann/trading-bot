@@ -1,4 +1,6 @@
-from ..models import Order, OrderResult, OrderType, Position, Side
+from ..models import Order, OrderResult, OrderType, Position, PositionSide, Side
+
+_FLAT_TOL = 1e-9
 
 
 class FakeVenue:
@@ -16,13 +18,20 @@ class FakeVenue:
                            filled_qty=order.qty, raw={})
 
     def get_position(self, symbol: str) -> Position | None:
-        net = self._net.get(symbol, 0.0)
-        side = "flat" if net == 0 else ("long" if net > 0 else "short")
+        if symbol not in self._net:
+            return None
+        net = self._net[symbol]
+        if abs(net) < _FLAT_TOL:
+            side = PositionSide.flat
+        elif net > 0:
+            side = PositionSide.long
+        else:
+            side = PositionSide.short
         return Position(symbol=symbol, side=side, size=abs(net), entry_price=0.0)
 
     def close_position(self, symbol: str) -> OrderResult:
         pos = self.get_position(symbol)
-        if pos is None or pos.side == "flat":
+        if pos is None or pos.side is PositionSide.flat:
             return OrderResult(ok=True, order_id=None, status="no position",
                                filled_qty=0.0, raw={})
         close_side = Side.sell if pos.side == "long" else Side.buy
