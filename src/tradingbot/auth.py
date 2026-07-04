@@ -2,7 +2,7 @@ import hmac
 
 
 def is_authorized(provided_token: str | None, expected_token: str) -> bool:
-    if not provided_token:
+    if not isinstance(provided_token, str) or not provided_token:
         return False
     return hmac.compare_digest(provided_token, expected_token)
 

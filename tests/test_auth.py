@@ -24,3 +24,8 @@ def test_allowlisted_ip_allowed():
 
 def test_non_allowlisted_ip_rejected():
     assert ip_allowed("9.9.9.9", ("1.2.3.4",)) is False
+
+
+def test_non_string_token_rejected():
+    assert is_authorized(123, "secret") is False  # type: ignore[arg-type]
+    assert is_authorized({"x": 1}, "secret") is False  # type: ignore[arg-type]
