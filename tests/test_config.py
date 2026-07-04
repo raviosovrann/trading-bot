@@ -19,3 +19,13 @@ def test_venue_defaults_when_absent():
 def test_missing_token_raises():
     with pytest.raises(ConfigError):
         load_config({"VENUE": "bybit_testnet"})
+
+
+def test_whitespace_only_token_raises():
+    with pytest.raises(ConfigError):
+        load_config({"WEBHOOK_TOKEN": "   "})
+
+
+def test_token_is_stripped():
+    cfg = load_config({"WEBHOOK_TOKEN": "  secret  "})
+    assert cfg.webhook_token == "secret"
