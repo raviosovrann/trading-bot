@@ -3,7 +3,7 @@
 **Date:** 2026-07-04
 **Status:** Approved (pivot from V1)
 **Owner:** anvarnosirov98@gmail.com
-**Supersedes:** `BTC-Futures-TradingBot-Design-V1.md`
+**Supersedes:** the original TradingView-webhook design (V1, since removed)
 
 ## 1. Purpose
 

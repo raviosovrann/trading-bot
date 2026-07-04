@@ -21,7 +21,6 @@ class PositionSide(str, Enum):
 
 
 class Signal(BaseModel):
-    token: str
     strategy: str
     action: Action
     symbol: str
@@ -29,7 +28,6 @@ class Signal(BaseModel):
     price: float | None = None
     quantity: float
     position_side: PositionSide
-    time: str | None = None
 
     @field_validator("quantity")
     @classmethod
