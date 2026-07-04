@@ -66,3 +66,28 @@ def test_infinite_quantity_raises():
     payload["quantity"] = float("inf")
     with pytest.raises(SignalParseError):
         parse_signal(payload)
+
+
+def test_limit_without_price_raises():
+    payload = _valid_payload()
+    payload["order_type"] = "limit"
+    del payload["price"]
+    with pytest.raises(SignalParseError):
+        parse_signal(payload)
+
+
+def test_limit_with_price_ok():
+    payload = _valid_payload()
+    payload["order_type"] = "limit"
+    payload["price"] = 61000.0
+    sig = parse_signal(payload)
+    assert sig.order_type is OrderType.limit
+    assert sig.price == 61000.0
+
+
+def test_market_without_price_ok():
+    payload = _valid_payload()
+    payload["order_type"] = "market"
+    payload.pop("price", None)
+    sig = parse_signal(payload)
+    assert sig.order_type is OrderType.market
