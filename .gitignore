@@ -1,8 +1,10 @@
 .env
 .env.*
+!.env.example
 __pycache__/
 *.pyc
 .venv/
 venv/
 .remember/
 .DS_Store
+.superpowers/
