@@ -55,7 +55,7 @@ class BybitTestnetVenue:
         if pos is None or pos.side is PositionSide.flat or pos.size == 0:
             return OrderResult(ok=True, order_id=None, status="no position",
                                filled_qty=0.0, raw={})
-        close_side = Side.sell if pos.side == "long" else Side.buy
+        close_side = Side.sell if pos.side is PositionSide.long else Side.buy
         return self.place_order(Order(symbol=symbol, side=close_side,
                                       order_type=OrderType.market, qty=pos.size,
                                       reduce_only=True))

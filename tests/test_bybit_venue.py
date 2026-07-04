@@ -41,6 +41,37 @@ def test_health_check_true_on_retcode_zero():
     assert BybitTestnetVenue(FakeHTTP()).health_check() is True
 
 
+def test_close_long_places_sell_reduce_only():
+    http = FakeHTTP()
+    BybitTestnetVenue(http).close_position("BTCUSDT")
+    _, kw = http.calls[0]
+    assert kw["side"] == "Sell"
+    assert kw["orderType"] == "Market"
+    assert kw["reduceOnly"] is True
+    assert kw["qty"] == "0.01"
+
+
+def test_close_short_places_buy_reduce_only():
+    http = FakeHTTP()
+    http.get_positions = lambda **kw: {"retCode": 0, "result": {"list": [
+        {"side": "Sell", "size": "0.02", "avgPrice": "60000"}]}}
+    BybitTestnetVenue(http).close_position("BTCUSDT")
+    _, kw = http.calls[0]
+    assert kw["side"] == "Buy"
+    assert kw["orderType"] == "Market"
+    assert kw["reduceOnly"] is True
+    assert kw["qty"] == "0.02"
+
+
+def test_close_flat_position_returns_no_op():
+    http = FakeHTTP()
+    http.get_positions = lambda **kw: {"retCode": 0, "result": {"list": [
+        {"side": "", "size": "0", "avgPrice": "0"}]}}
+    result = BybitTestnetVenue(http).close_position("BTCUSDT")
+    assert result.ok and result.status == "no position"
+    assert not http.calls
+
+
 @pytest.mark.skipif(
     not (os.getenv("BYBIT_API_KEY") and os.getenv("BYBIT_API_SECRET")),
     reason="no Bybit testnet credentials in env",
