@@ -34,13 +34,3 @@ strategy on each closed bar, and routes signals to Bybit testnet._
   webhook receiver — all on `main` behind CI + CodeQL + PR review.
 - **In progress:** execution venue, data feed, strategy port, runtime loop
   (see the V2 design, §12).
-
-## Parked: webhook ingress
-
-The V1 webhook endpoint (`src/tradingbot/app.py`, `auth.py`, `parser.py`) is no
-longer on the critical path (the strategy now runs in-process). It still works
-and can be run with:
-
-    uvicorn tradingbot.app:create_app --factory --app-dir src
-
-but it is optional and may be removed later.

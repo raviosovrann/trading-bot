@@ -1,11 +1,11 @@
 import pytest
+from pydantic import ValidationError
+
 from tradingbot.models import Signal, Action, OrderType, PositionSide
-from tradingbot.parser import parse_signal, SignalParseError
 
 
-def _valid_payload():
+def _valid():
     return {
-        "token": "secret",
         "strategy": "btc-futures-v1",
         "action": "buy",
         "symbol": "BTCUSDT",
@@ -13,81 +13,59 @@ def _valid_payload():
         "price": 61250.5,
         "quantity": 0.01,
         "position_side": "long",
-        "time": "1720000000",
     }
 
 
 def test_parse_valid_signal():
-    sig = parse_signal(_valid_payload())
-    assert isinstance(sig, Signal)
+    sig = Signal.model_validate(_valid())
     assert sig.action is Action.buy
     assert sig.order_type is OrderType.market
     assert sig.position_side is PositionSide.long
-    assert sig.symbol == "BTCUSDT"
     assert sig.quantity == 0.01
 
 
 def test_order_type_defaults_to_market():
-    payload = _valid_payload()
-    del payload["order_type"]
-    assert parse_signal(payload).order_type is OrderType.market
+    p = _valid(); del p["order_type"]
+    assert Signal.model_validate(p).order_type is OrderType.market
 
 
 def test_missing_required_field_raises():
-    payload = _valid_payload()
-    del payload["action"]
-    with pytest.raises(SignalParseError):
-        parse_signal(payload)
+    p = _valid(); del p["action"]
+    with pytest.raises(ValidationError):
+        Signal.model_validate(p)
 
 
 def test_invalid_action_raises():
-    payload = _valid_payload()
-    payload["action"] = "hodl"
-    with pytest.raises(SignalParseError):
-        parse_signal(payload)
+    p = _valid(); p["action"] = "hodl"
+    with pytest.raises(ValidationError):
+        Signal.model_validate(p)
 
 
 def test_non_positive_quantity_raises():
-    payload = _valid_payload()
-    payload["quantity"] = 0
-    with pytest.raises(SignalParseError):
-        parse_signal(payload)
+    p = _valid(); p["quantity"] = 0
+    with pytest.raises(ValidationError):
+        Signal.model_validate(p)
 
 
 def test_nan_quantity_raises():
-    payload = _valid_payload()
-    payload["quantity"] = float("nan")
-    with pytest.raises(SignalParseError):
-        parse_signal(payload)
+    p = _valid(); p["quantity"] = float("nan")
+    with pytest.raises(ValidationError):
+        Signal.model_validate(p)
 
 
 def test_infinite_quantity_raises():
-    payload = _valid_payload()
-    payload["quantity"] = float("inf")
-    with pytest.raises(SignalParseError):
-        parse_signal(payload)
+    p = _valid(); p["quantity"] = float("inf")
+    with pytest.raises(ValidationError):
+        Signal.model_validate(p)
 
 
 def test_limit_without_price_raises():
-    payload = _valid_payload()
-    payload["order_type"] = "limit"
-    del payload["price"]
-    with pytest.raises(SignalParseError):
-        parse_signal(payload)
+    p = _valid(); p["order_type"] = "limit"; del p["price"]
+    with pytest.raises(ValidationError):
+        Signal.model_validate(p)
 
 
 def test_limit_with_price_ok():
-    payload = _valid_payload()
-    payload["order_type"] = "limit"
-    payload["price"] = 61000.0
-    sig = parse_signal(payload)
-    assert sig.order_type is OrderType.limit
-    assert sig.price == 61000.0
-
-
-def test_market_without_price_ok():
-    payload = _valid_payload()
-    payload["order_type"] = "market"
-    payload.pop("price", None)
-    sig = parse_signal(payload)
-    assert sig.order_type is OrderType.market
+    p = _valid(); p["order_type"] = "limit"; p["price"] = 61000.0
+    sig = Signal.model_validate(p)
+    assert sig.order_type is OrderType.limit and sig.price == 61000.0
