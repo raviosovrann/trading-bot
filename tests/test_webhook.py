@@ -87,3 +87,12 @@ def test_token_not_logged_on_invalid_signal(caplog):
 def test_invalid_json_rejected(client):
     r = client.post("/webhook", content="not json", headers={"Content-Type": "application/json"})
     assert r.status_code == 400
+
+
+def test_signal_logger_emits_info():
+    import logging
+    cfg = Config(webhook_token="secret", venue="bybit_testnet", allowed_ips=())
+    create_app(cfg)
+    tb = logging.getLogger("tradingbot")
+    assert tb.getEffectiveLevel() <= logging.INFO
+    assert tb.handlers  # has at least one handler so INFO actually emits

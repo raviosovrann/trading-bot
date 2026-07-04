@@ -9,8 +9,20 @@ from .parser import SignalParseError, parse_signal
 logger = logging.getLogger("tradingbot")
 
 
+def _configure_logging() -> None:
+    logger.setLevel(logging.INFO)
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
+        logger.addHandler(handler)
+    logger.propagate = False
+
+
 def create_app(config: Config | None = None) -> FastAPI:
     config = load_config() if config is None else config
+    _configure_logging()
     app = FastAPI(title="TradingBot Webhook")
 
     @app.get("/health")
