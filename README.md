@@ -8,8 +8,8 @@ Bybit data (free) → Python strategy → Router → ExecutionVenue → Bybit te
 ```
 
 **Design:** [`BTC-Futures-TradingBot-Design-V2.md`](BTC-Futures-TradingBot-Design-V2.md)
-(current). [`V1`](BTC-Futures-TradingBot-Design-V1.md) — the original
-TradingView-webhook design — is superseded; its webhook layer is parked.
+(current). The original TradingView-webhook design (V1) has been removed; its
+webhook layer is no longer part of the project.
 Implementation plans live in `docs/superpowers/plans/`.
 
 ## Setup
@@ -30,7 +30,8 @@ strategy on each closed bar, and routes signals to Bybit testnet._
 
 ## Status
 
-- **M0 (done):** project scaffold, `Signal` model, config, and a (now parked)
-  webhook receiver — all on `main` behind CI + CodeQL + PR review.
+- **M0 (done):** project scaffold, `Signal` model, and config (the initial
+  webhook receiver has since been removed in the monolith pivot) — all on
+  `main` behind CI + CodeQL + PR review.
 - **In progress:** execution venue, data feed, strategy port, runtime loop
   (see the V2 design, §12).
