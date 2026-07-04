@@ -1,5 +1,10 @@
 # BTC Futures Trading Bot — POC Design
 
+> ⚠️ **Superseded by [BTC-Futures-TradingBot-Design-V2.md](BTC-Futures-TradingBot-Design-V2.md)** (2026-07-04).
+> The project pivoted from a TradingView Pine + webhook design to a Python
+> monolith (exchange data → Python strategy → venue, executing on Bybit testnet).
+> This V1 is kept for history; the webhook layer it describes is now **parked/optional**.
+
 **Date:** 2026-07-03
 **Status:** Approved (pending spec review)
 **Owner:** anvarnosirov98@gmail.com

@@ -1,40 +1,46 @@
 # trading-bot
 
-TradingView webhook → execution bot for BTC futures. See
-`BTC-Futures-TradingBot-Design-V1.md` for the design and
-`docs/superpowers/plans/` for implementation plans.
+A Python bot that runs a BTC-futures strategy against free exchange market data
+and executes on **Bybit testnet**. Single process:
 
-## Run locally (M0)
+```
+Bybit data (free) → Python strategy → Router → ExecutionVenue → Bybit testnet
+```
+
+**Design:** [`BTC-Futures-TradingBot-Design-V2.md`](BTC-Futures-TradingBot-Design-V2.md)
+(current). [`V1`](BTC-Futures-TradingBot-Design-V1.md) — the original
+TradingView-webhook design — is superseded; its webhook layer is parked.
+Implementation plans live in `docs/superpowers/plans/`.
+
+## Setup
 
     python3 -m venv .venv && . .venv/bin/activate
     pip install -r requirements.txt
-    cp .env.example .env        # then edit WEBHOOK_TOKEN
+    cp .env.example .env        # then fill in Bybit testnet keys + settings
     export $(grep -v '^#' .env | xargs)
-    uvicorn tradingbot.app:create_app --factory --app-dir src --reload
-
-Health check:
-
-    curl localhost:8000/health
-
-Send a test signal (replace TOKEN):
-
-    curl -X POST localhost:8000/webhook \
-      -H 'Content-Type: application/json' \
-      -d '{"token":"TOKEN","strategy":"btc-futures-v1","action":"buy",
-           "symbol":"BTCUSDT","order_type":"market","quantity":0.01,
-           "position_side":"long"}'
 
 ## Test
 
     pytest -v
 
-## Expose to TradingView (manual test)
+## Run (Bybit testnet)
 
-Use a tunnel to get a public HTTPS URL, then set it as the alert webhook URL:
+_Coming with the runtime loop (block B4). The bot pulls market data, runs the
+strategy on each closed bar, and routes signals to Bybit testnet._
 
-    # e.g. cloudflared tunnel --url http://localhost:8000
-    # or:  ngrok http 8000
+## Status
 
-This step — wiring a real TradingView alert to the tunnel URL and confirming
-the round-trip — is a **manual step that a human runs**; it is not performed
-as part of automated verification.
+- **M0 (done):** project scaffold, `Signal` model, config, and a (now parked)
+  webhook receiver — all on `main` behind CI + CodeQL + PR review.
+- **In progress:** execution venue, data feed, strategy port, runtime loop
+  (see the V2 design, §12).
+
+## Parked: webhook ingress
+
+The V1 webhook endpoint (`src/tradingbot/app.py`, `auth.py`, `parser.py`) is no
+longer on the critical path (the strategy now runs in-process). It still works
+and can be run with:
+
+    uvicorn tradingbot.app:create_app --factory --app-dir src
+
+but it is optional and may be removed later.
