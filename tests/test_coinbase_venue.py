@@ -1,0 +1,83 @@
+from tradingbot.models import Order, OrderType, Side, PositionSide
+from tradingbot.venues.coinbase import CoinbaseVenue
+
+
+def test_place_order_success_mapping():
+    class Client:
+        def create_order(self, **kwargs):
+            return {
+                "success": True,
+                "order_id": "cb-1",
+                "status": "PENDING",
+                "filled_size": "0.0",
+            }
+
+    venue = CoinbaseVenue(client=Client())
+    result = venue.place_order(Order(symbol="BTC-USD", side=Side.buy, order_type=OrderType.market, qty=0.01))
+
+    assert result.ok is True
+    assert result.order_id == "cb-1"
+    assert result.status == "pending"
+    assert result.filled_qty == 0.0
+
+
+def test_place_order_exception_returns_structured_failure():
+    class Client:
+        def create_order(self, **kwargs):
+            raise RuntimeError("coinbase boom")
+
+    venue = CoinbaseVenue(client=Client())
+    result = venue.place_order(Order(symbol="BTC-USD", side=Side.buy, order_type=OrderType.market, qty=0.01))
+
+    assert result.ok is False
+    assert result.status == "error"
+    assert "coinbase boom" in (result.error or "")
+
+
+def test_get_position_long_mapping():
+    class Client:
+        def get_position(self, product_id):
+            return {"side": "LONG", "size": "0.25", "entry_price": "45000"}
+
+    venue = CoinbaseVenue(client=Client())
+    pos = venue.get_position("BTC-USD")
+
+    assert pos is not None
+    assert pos.side is PositionSide.long
+    assert pos.size == 0.25
+    assert pos.entry_price == 45000.0
+
+
+def test_close_position_noop_when_flat_or_none():
+    class Client:
+        def __init__(self):
+            self.calls = 0
+
+        def get_position(self, product_id):
+            return {"side": "FLAT", "size": "0"}
+
+        def create_order(self, **kwargs):
+            self.calls += 1
+            return {"success": True, "order_id": "should-not-happen", "status": "PENDING"}
+
+    client = Client()
+    venue = CoinbaseVenue(client=client)
+    result = venue.close_position("BTC-USD")
+
+    assert result.ok is True
+    assert result.status == "no position"
+    assert result.order_id is None
+    assert client.calls == 0
+
+
+def test_health_check_true_and_false_paths():
+    class OkClient:
+        def get_accounts(self):
+            return {"accounts": []}
+
+    class BadClient:
+        def get_accounts(self):
+            raise RuntimeError("down")
+
+    assert CoinbaseVenue(client=OkClient()).health_check() is True
+    assert CoinbaseVenue(client=BadClient()).health_check() is False
