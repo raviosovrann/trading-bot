@@ -1,3 +1,4 @@
+import math
 from enum import Enum
 from pydantic import BaseModel, field_validator
 
@@ -33,6 +34,6 @@ class Signal(BaseModel):
     @field_validator("quantity")
     @classmethod
     def _quantity_positive(cls, v: float) -> float:
-        if v <= 0:
-            raise ValueError("quantity must be > 0")
+        if not math.isfinite(v) or v <= 0:
+            raise ValueError("quantity must be a finite number > 0")
         return v

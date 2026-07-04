@@ -52,3 +52,17 @@ def test_non_positive_quantity_raises():
     payload["quantity"] = 0
     with pytest.raises(SignalParseError):
         parse_signal(payload)
+
+
+def test_nan_quantity_raises():
+    payload = _valid_payload()
+    payload["quantity"] = float("nan")
+    with pytest.raises(SignalParseError):
+        parse_signal(payload)
+
+
+def test_infinite_quantity_raises():
+    payload = _valid_payload()
+    payload["quantity"] = float("inf")
+    with pytest.raises(SignalParseError):
+        parse_signal(payload)
