@@ -10,7 +10,7 @@ logger = logging.getLogger("tradingbot")
 
 
 def create_app(config: Config | None = None) -> FastAPI:
-    config = config or load_config()
+    config = load_config() if config is None else config
     app = FastAPI(title="TradingBot Webhook")
 
     @app.get("/health")
@@ -36,8 +36,8 @@ def create_app(config: Config | None = None) -> FastAPI:
 
         try:
             signal = parse_signal(payload)
-        except SignalParseError as e:
-            logger.warning("Rejected webhook: invalid signal: %s", e)
+        except SignalParseError:
+            logger.warning("Rejected webhook: invalid signal payload from %s", client_ip)
             raise HTTPException(status_code=422, detail="Invalid signal")
 
         # M0: log only. M1 swaps this line for router.handle(signal).

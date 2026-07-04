@@ -68,3 +68,22 @@ def test_ip_allowlist_blocks(client):
     blocked = TestClient(create_app(cfg))
     r = blocked.post("/webhook", json=_payload())
     assert r.status_code == 403
+
+
+def test_non_string_token_rejected(client):
+    r = client.post("/webhook", json=_payload(token=12345))
+    assert r.status_code == 401
+
+
+def test_token_not_logged_on_invalid_signal(caplog):
+    import logging
+    cfg = Config(webhook_token="supersecret_xyz", venue="bybit_testnet", allowed_ips=())
+    c = TestClient(create_app(cfg))
+    with caplog.at_level(logging.WARNING, logger="tradingbot"):
+        c.post("/webhook", json=_payload(token="supersecret_xyz", action="hodl"))
+    assert "supersecret_xyz" not in caplog.text
+
+
+def test_invalid_json_rejected(client):
+    r = client.post("/webhook", content="not json", headers={"Content-Type": "application/json"})
+    assert r.status_code == 400
