@@ -16,8 +16,9 @@ def _valid():
     }
 
 
-def test_parse_valid_signal():
+def test_valid_signal():
     sig = Signal.model_validate(_valid())
+    assert sig.symbol == "BTCUSDT"
     assert sig.action is Action.buy
     assert sig.order_type is OrderType.market
     assert sig.position_side is PositionSide.long
@@ -69,3 +70,9 @@ def test_limit_with_price_ok():
     p = _valid(); p["order_type"] = "limit"; p["price"] = 61000.0
     sig = Signal.model_validate(p)
     assert sig.order_type is OrderType.limit and sig.price == 61000.0
+
+
+def test_market_without_price_ok():
+    p = _valid(); p["order_type"] = "market"; del p["price"]
+    sig = Signal.model_validate(p)
+    assert sig.order_type is OrderType.market and sig.price is None
