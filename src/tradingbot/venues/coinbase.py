@@ -12,6 +12,13 @@ from ..models import Order, OrderResult, OrderType, Position, PositionSide, Side
 
 _FLAT_TOL = 1e-9
 
+# Coinbase Advanced Trade sandbox host (bare host, matching the SDK's
+# `base_url` default form of "api.coinbase.com"). The sandbox is a
+# static/mocked environment that mirrors the production response format for
+# Accounts and Orders endpoints. It is suitable for integration testing of
+# request/response wiring, but does NOT provide realistic fills or PnL.
+_COINBASE_SANDBOX_BASE_URL = "api-sandbox.coinbase.com"
+
 
 def _raw_dict(value: Any) -> dict:
     if value is None:
@@ -68,13 +75,20 @@ class CoinbaseVenue:
     def from_credentials(cls, api_key: str, api_secret: str, sandbox: bool = True) -> "CoinbaseVenue":
         if RESTClient is None:
             raise RuntimeError("coinbase-advanced-py is not installed")
-        # NOTE: Coinbase Advanced Trade has no separate REST sandbox host. The
-        # `sandbox` flag is accepted for interface compatibility with the other
-        # venues but does NOT switch hosts; all requests go to the production
-        # Advanced Trade API (api.coinbase.com). Use a dedicated API key with
-        # limited permissions and small sizes for testing. The installed SDK's
-        # RESTClient(__init__) accepts api_key/api_secret (plus optional
-        # base_url/timeout/rate_limit_headers), so we only pass credentials.
+        # When sandbox is True, point the RESTClient at the Coinbase Advanced
+        # Trade sandbox host via the SDK's documented `base_url` kwarg. The
+        # sandbox returns static/mocked responses in the same format as
+        # production (Accounts + Orders endpoints) and is good for integration
+        # testing, but NOT for realistic fills or PnL. When sandbox is False the
+        # SDK default (api.coinbase.com) is used and orders trade real funds.
+        if sandbox:
+            return cls(
+                client=RESTClient(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    base_url=_COINBASE_SANDBOX_BASE_URL,
+                )
+            )
         return cls(client=RESTClient(api_key=api_key, api_secret=api_secret))
 
     def place_order(self, order: Order) -> OrderResult:

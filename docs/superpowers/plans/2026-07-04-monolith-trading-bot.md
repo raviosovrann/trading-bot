@@ -11,7 +11,7 @@ router to real exchange execution visible in account activity.
 Venues in scope:
 
 - `alpaca` (paper default — genuine risk-free sandbox)
-- `coinbase` (production / real money — `sandbox` flag does NOT switch hosts)
+- `coinbase` (sandbox host for integration testing; production is real money)
 - `fake` (tests only)
 
 ## Constraints
@@ -56,8 +56,10 @@ Files:
 Deliverables:
 
 - Adapter implementing `ExecutionVenue`.
-- `COINBASE_SANDBOX` flag accepted for interface parity only — it does NOT
-  switch hosts; all calls hit production `api.coinbase.com` (real money).
+- `COINBASE_SANDBOX=true` switches the RESTClient to the sandbox host
+  `api-sandbox.coinbase.com` (static/mocked responses in the production format
+  for Accounts + Orders — integration testing, not realistic fills).
+  `COINBASE_SANDBOX=false` hits production `api.coinbase.com` (real money).
 - Unit tests with mocked Coinbase client responses.
 
 ### T8 — Datafeed (in-memory DONE; LIVE feed PENDING)
@@ -121,4 +123,5 @@ Deliverables:
 - `pytest -v` passes (54 tests, all mocked/faked; no live network).
 - No stale Bybit imports/references in active source/docs.
 - Manual smoke run possible with Alpaca paper once the LIVE datafeed lands;
-  Coinbase runs would be real money (no sandbox host).
+  Coinbase can use the sandbox host (`COINBASE_SANDBOX=true`, mocked responses)
+  for integration testing, while `COINBASE_SANDBOX=false` is real money.

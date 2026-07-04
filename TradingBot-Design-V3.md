@@ -17,7 +17,8 @@ Build a single Python process that:
 Primary venues for this milestone:
 
 - **Alpaca** (paper by default — genuine risk-free sandbox)
-- **Coinbase Advanced Trade** (production / real money — no REST sandbox)
+- **Coinbase Advanced Trade** (sandbox host available for integration testing;
+  production is real money)
 
 ## 2. Why this pivot
 
@@ -31,12 +32,15 @@ and the old webhook design have been removed from the repository.
 - **Alpaca:** `alpaca-py`; paper trading via `ALPACA_PAPER=true` is a genuine
   risk-free sandbox with real simulated fills. Alpaca crypto is spot,
   long/flat, symbol format `BTC/USD`.
-- **Coinbase:** `coinbase-advanced-py`. Coinbase Advanced Trade has **no**
-  separate REST sandbox. The `COINBASE_SANDBOX` flag is accepted for interface
-  parity but does **not** switch hosts — every call hits production
-  `api.coinbase.com` and moves real money. Coinbase spot is long/flat only
-  (no shorting); `get_position` is derived from the account base-asset balance
-  and `entry_price` is `0.0`.
+- **Coinbase:** `coinbase-advanced-py`. `COINBASE_SANDBOX=true` switches the
+  RESTClient to the Coinbase Advanced Trade sandbox host
+  (`api-sandbox.coinbase.com`) via the SDK's `base_url` kwarg. The sandbox
+  returns **static/mocked** responses in the production format for the Accounts
+  and Orders endpoints — good for integration testing of request/response
+  wiring, but **not** realistic fills or PnL. `COINBASE_SANDBOX=false` hits
+  production `api.coinbase.com` and moves real money. Coinbase spot is long/flat
+  only (no shorting); `get_position` is derived from the account base-asset
+  balance and `entry_price` is `0.0`.
 
 ## 3. Scope (current milestone)
 
@@ -95,7 +99,7 @@ SDK classes.
 - `venues/coinbase.py`
 
   - Coinbase adapter (`from_credentials(api_key, api_secret, sandbox=True)`;
-    `sandbox` does not change hosts).
+    `sandbox=True` selects the sandbox host `api-sandbox.coinbase.com`).
 
 - `datafeed.py`
 

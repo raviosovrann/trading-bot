@@ -46,7 +46,7 @@ All configuration is environment-driven (see `.env.example`). Pick a venue with
 | `ALPACA_PAPER`        | alpaca     | `true`    | `true` = paper trading (risk-free sandbox); `false` = live money. |
 | `COINBASE_API_KEY`    | coinbase   | *(empty)* | Coinbase CDP API key.                                             |
 | `COINBASE_API_SECRET` | coinbase   | *(empty)* | Coinbase CDP API secret.                                          |
-| `COINBASE_SANDBOX`    | coinbase   | `true`    | Interface parity only — does NOT switch hosts (see note below).   |
+| `COINBASE_SANDBOX`    | coinbase   | `true`    | `true` = sandbox host `api-sandbox.coinbase.com` (mocked); `false` = live money. |
 | `SYMBOL`              | all        | `BTC/USD` | Market symbol. Alpaca uses `BTC/USD`; Coinbase uses `BTC-USD`.    |
 | `TIMEFRAME`           | all        | `5Min`    | Bar timeframe.                                                    |
 | `ORDER_QTY`           | all        | `0.001`   | Base-asset order size.                                            |
@@ -59,14 +59,19 @@ missing its key/secret. The `fake` venue needs no credentials.
 > **Alpaca paper (`ALPACA_PAPER=true`) is a genuine risk-free sandbox** with
 > real simulated fills. Use it for all testing.
 >
-> **Coinbase is production / real money.** Coinbase Advanced Trade has **no
-> separate REST sandbox**. The `COINBASE_SANDBOX` flag is accepted only for
-> interface parity with the other venues — it does **not** switch hosts. Every
-> Coinbase call hits the production API (`api.coinbase.com`) and moves real
-> funds. Use a dedicated, limited-permission API key and the smallest possible
-> `ORDER_QTY` if you run against Coinbase.
+> **Coinbase sandbox (`COINBASE_SANDBOX=true`)** switches the client to the
+> Coinbase Advanced Trade sandbox host (`api-sandbox.coinbase.com`). The
+> sandbox returns **static/mocked** responses in the same format as production
+> for the Accounts and Orders endpoints. It is good for **integration testing**
+> of request/response wiring without real money, but it does **not** produce
+> realistic fills or PnL.
+>
+> **Coinbase production (`COINBASE_SANDBOX=false`) is real money.** Every call
+> hits `api.coinbase.com` and moves real funds. Use a dedicated,
+> limited-permission API key and the smallest possible `ORDER_QTY`.
 
-**Recommendation:** use Alpaca paper trading for all development and testing.
+**Recommendation:** use Alpaca paper trading for realistic risk-free fills
+during development; use the Coinbase sandbox for Coinbase integration testing.
 
 ## Spot long/flat limitation
 
@@ -99,14 +104,21 @@ To point the bot at a real account you need to supply credentials yourself.
    - Put them in `.env` as `ALPACA_API_KEY` / `ALPACA_API_SECRET`, keep
      `ALPACA_PAPER=true`, and set `VENUE=alpaca`.
 
-2. **Coinbase CDP keys (real money — use caution):**
+2. **Coinbase sandbox (integration testing, no real money):**
    - Create an API key on the Coinbase Developer Platform (CDP).
-   - Put them in `.env` as `COINBASE_API_KEY` / `COINBASE_API_SECRET` and set
-     `VENUE=coinbase`.
-   - Remember: `COINBASE_SANDBOX` does not change anything host-wise; all calls
-     are production.
+   - Put them in `.env` as `COINBASE_API_KEY` / `COINBASE_API_SECRET`, set
+     `VENUE=coinbase`, and keep `COINBASE_SANDBOX=true`.
+   - Requests hit `api-sandbox.coinbase.com`, which returns static/mocked
+     responses (Accounts + Orders) in the production format — useful for
+     verifying wiring, but not for realistic fills or PnL.
 
-3. **Current limitation — no live datafeed yet.**
+3. **Coinbase production (real money — use caution):**
+   - Use the same CDP keys with `VENUE=coinbase` but set
+     `COINBASE_SANDBOX=false`.
+   - Calls hit `api.coinbase.com` and move real funds — use a
+     limited-permission key and the smallest possible `ORDER_QTY`.
+
+4. **Current limitation — no live datafeed yet.**
    - The live market-data feed for Alpaca/Coinbase is **not implemented**.
      `datafeed.py` currently provides only an in-memory candle feed plus a
      `CandleFeed` protocol and `normalize_candle()` helper.

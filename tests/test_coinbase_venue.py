@@ -1,5 +1,5 @@
 from tradingbot.models import Order, OrderType, Side, PositionSide
-from tradingbot.venues.coinbase import CoinbaseVenue
+from tradingbot.venues.coinbase import CoinbaseVenue, _COINBASE_SANDBOX_BASE_URL
 
 
 def test_place_order_success_mapping():
@@ -90,3 +90,16 @@ def test_health_check_true_and_false_paths():
 
     assert CoinbaseVenue(client=OkClient()).health_check() is True
     assert CoinbaseVenue(client=BadClient()).health_check() is False
+
+
+def test_from_credentials_switches_sandbox_and_production_hosts():
+    # The coinbase-advanced-py RESTClient performs no network call at
+    # construction and stores its host under the `base_url` attribute, so we
+    # can assert host selection by inspecting the constructed client.
+    sandbox_venue = CoinbaseVenue.from_credentials(api_key="k", api_secret="s", sandbox=True)
+    assert sandbox_venue._client.base_url == _COINBASE_SANDBOX_BASE_URL
+    assert sandbox_venue._client.base_url == "api-sandbox.coinbase.com"
+
+    prod_venue = CoinbaseVenue.from_credentials(api_key="k", api_secret="s", sandbox=False)
+    assert prod_venue._client.base_url == "api.coinbase.com"
+
