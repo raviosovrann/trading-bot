@@ -1,152 +1,139 @@
-# BTC Futures Trading Bot — Design V2 (Python Monolith)
+# Trading Bot — Design V3 (Alpaca + Coinbase Pivot)
 
 **Date:** 2026-07-04
-**Status:** Approved (pivot from V1)
-**Owner:** anvarnosirov98@gmail.com
-**Supersedes:** the original TradingView-webhook design (V1, since removed)
+**Status:** Active
+**Owner:** <anvarnosirov98@gmail.com>
+**Supersedes:** Bybit-centric V2 approach
 
 ## 1. Purpose
 
-A single Python process that runs a BTC-futures strategy (ported from Pine Script
-to Python) against **free exchange market data** and executes trades on **Bybit
-testnet**. No TradingView dependency, no webhooks, no paid plan.
+Build a single Python process that:
 
-**Success line:** the bot runs continuously, the strategy consumes live Bybit
-market data and emits signals, and buy/sell/close signals open/close real
-positions on Bybit testnet.
+1. Pulls market data.
+2. Runs a Python strategy on closed bars.
+3. Routes signals to a real exchange venue adapter.
+4. Places/close orders visible in the selected account.
 
-## 2. Why V2 (what changed from V1)
+Primary venues for this milestone:
 
-V1 was: TradingView Pine strategy → webhook alert → receiver bot → venue. That
-required a **paid TradingView plan** (webhook alerts are paid) and coupled us to
-TradingView's servers.
+- **Alpaca** (paper by default)
+- **Coinbase Advanced Trade** (sandbox/mainnet selectable)
 
-Rewriting the strategy in Python removes TradingView entirely:
-- **Data** comes free from the exchange (Bybit public REST + WebSocket).
-- **Signals** are generated in-process — there is nothing to "alert" out, so no
-  webhook and no paid plan.
-- Everything runs as **one simple app**.
+## 2. Why this pivot
 
-## 3. Scope
+Bybit is region-restricted for this project owner, which blocks both execution
+and practical datafeed validation. The project now targets venues with account
+access already available to the owner.
 
-**In scope (this build — done "in one go"):**
-data feed, strategy engine (Python port), `ExecutionVenue` interface +
-`BybitTestnetVenue`, Router, the runtime loop, config, wiring, tests, running on
-Bybit testnet.
+## 3. Scope (current milestone)
 
-**Out of scope (explicitly deferred):**
-- Cloud deployment.
-- Bybit **mainnet / live** trading (testnet only for now).
-- Risk management / position sizing beyond what the strategy itself emits.
-- Durable state / persistence / a signal queue.
-- The V1 **webhook ingress** — parked (see §7).
+In scope:
 
-## 4. Carried over vs parked
+- Exchange-agnostic architecture: `DataFeed -> Strategy -> Router -> ExecutionVenue`
+- Venue adapters: Alpaca + Coinbase
+- End-to-end runtime loop
+- Spot execution baseline with clear long/flat semantics
+- Unit + integration-style tests for adapters and routing behavior
 
-- **Carried over from V1/M0:** `Signal` model, `config` loader, and the project
-  scaffold (CI + CodeQL + protected-PR pipeline).
-- **Parked (dormant, not deleted):** the webhook app (`app.py`, `auth.py`,
-  `parser.py`) and its tests. Off the critical path; may be kept later as an
-  optional manual/external signal ingress or removed. Its `Signal` contract and
-  patterns are reused.
+Out of scope (deferred):
 
-## 5. Architecture
+- Futures/perpetual specific semantics
+- Advanced risk engine and portfolio optimizer
+- Persistent storage/event sourcing
+- Cloud deployment/ops hardening
 
-```
-Bybit market data (REST history + WS/REST live, free)
-        │
-        ▼
-   DataFeed ──▶ Strategy (Python port of the Pine algo) ──▶ Signal | None
-                                                               │
-                                                               ▼
-                                                            Router ──▶ ExecutionVenue ──▶ Bybit testnet
-                                                                          ├─ BybitTestnetVenue  (built)
-                                                                          └─ LiveVenue          (later)
+## 4. Architecture
+
+```text
+DataFeed (exchange market data)
+    -> Strategy (on closed bars, deterministic)
+        -> Signal
+            -> Router
+                -> ExecutionVenue (alpaca | coinbase | fake)
+                    -> Exchange API
 ```
 
-A single-process **runtime loop** drives it. Each unit has one responsibility and
-is testable in isolation.
+Core rule: Router and runtime depend only on interfaces, not concrete exchange
+SDK classes.
 
-## 6. Components
+## 5. Components
 
-1. **config** — extend with `BYBIT_API_KEY`, `BYBIT_API_SECRET`, `SYMBOL`,
-   `TIMEFRAME`, and sizing settings. Fail-fast at startup.
-2. **models** — reuse `Signal`; add `Order`, `OrderResult`, `Position` for the
-   venue layer.
-3. **datafeed** — fetch OHLCV candles from Bybit (`pybit`/`ccxt`): historical
-   (warm-up + backtest) and live (new closed bars). Knows nothing about strategy
-   or execution.
-4. **strategy** — a `Strategy` interface (`on_bar(candles) -> Signal | None`) plus
-   the ported algo. Deterministic and unit-testable against fixture candle
-   series. No I/O.
-5. **venues** — `ExecutionVenue` Protocol (`place_order`, `close_position`,
-   `get_position`, `health_check`) + `BybitTestnetVenue`.
-6. **router** — maps a `Signal` → `Order` → venue call (buy/sell/close →
-   venue-specific semantics). Venue-agnostic.
-7. **runtime / main** — the loop that wires it together and runs continuously.
+- `config.py`
 
-## 7. Execution model / data flow
+  - Venue selector and per-venue credentials/settings.
+  - Fail-fast validation for selected venue credentials.
 
-- **Startup:** load + validate config, connect to Bybit testnet
-   (`health_check`), fetch historical candles to warm up the strategy's
-   indicators.
-- **Loop:** on each **new closed bar** (poll REST or subscribe WS), append the
-   candle, call `strategy.on_bar(...)`; if it returns a `Signal`, the Router
-   executes it on the venue. Log every step (never the API secret).
-- **Acting on bar close** avoids Pine-style repaint ambiguity.
-- **State:** the exchange is the source of truth (`get_position`); only minimal
-   in-memory state is kept.
+- `models.py`
 
-## 8. Strategy port
+  - Shared models/enums for candles, signals, orders, positions, results.
 
-- Rewrite Pine → Python. **Not line-for-line** — Pine has specific
-  bar-execution/repaint semantics; we match **behavior on closed bars**, not
-  source. (Client has accepted this; if parity becomes a serious problem we
-  revisit.)
-- **Validation / parity check:** compare the Python port against TradingView's
-  **free strategy tester** (same symbol/timeframe/date range) — entries, exits,
-  and direction should line up. This needs no paid plan.
-- **Dependency:** needs the **Pine source**. Until it arrives, build against the
-  `Strategy` interface with a simple placeholder (e.g. SMA crossover) so the
-  whole pipeline runs end-to-end; drop in the real algo when provided.
+- `venues/base.py`
 
-## 9. Defaults & open decisions
+  - `ExecutionVenue` protocol.
 
-Sensible defaults (override in config; confirm with client where noted):
-- **Symbol:** `BTCUSDT` Bybit **linear perpetual**.
-- **Timeframe:** configurable; default `5m`.
-- **Position mode:** one-way (not hedge).
-- **Sizing:** fixed quantity from config for the POC (no risk module).
-- **Parity tolerance:** to confirm with client once the real algo is ported.
+- `venues/fake.py`
 
-## 10. Error handling (POC level)
+  - Deterministic in-memory test venue.
 
-- Venue/API errors: log and skip that action; do not crash the loop. Idempotent
-  retry only where clearly safe.
-- Bad/missing data: skip the bar.
-- Missing config/secrets: fail fast at startup.
+- `venues/alpaca.py` (planned)
 
-## 11. Testing
+  - Alpaca adapter implementation.
 
-- **strategy:** unit tests on fixture candle series (deterministic signals).
-- **venues:** one integration test against Bybit testnet (place → read → close).
-- **router:** unit tests with a `FakeVenue`.
-- **datafeed:** unit test parsing; a light integration test against Bybit public
-  data.
-- **runtime loop:** integration test wiring the loop with a `FakeVenue` and canned
-  candles.
+- `venues/coinbase.py` (planned)
 
-## 12. Build blocks (this milestone)
+  - Coinbase adapter implementation.
 
-- **B1 — Execution:** `ExecutionVenue` + `BybitTestnetVenue` + Router. *(needs
-  Bybit testnet keys)*
-- **B2 — Data:** `DataFeed` (Bybit OHLCV, historical + live).
-- **B3 — Strategy:** `Strategy` interface + placeholder; then the real Pine port.
-  *(needs Pine source)*
-- **B4 — Runtime:** the loop wiring B1–B3; run continuously on Bybit testnet.
+- `datafeed.py` (planned)
 
-## 13. Inputs needed to complete
+  - Market bars for active symbol/timeframe.
 
-- **Pine source** — to port the real algo (B3).
-- **Bybit testnet API key + secret** — for live testnet execution (B1, B4). Live
-  in `.env`, never committed.
+- `strategy.py` (planned)
+
+  - Strategy protocol + SMA placeholder (real strategy port later).
+
+- `router.py` (planned)
+
+  - Signal → order/position actions.
+
+- `runtime.py` + `__main__.py` (planned)
+
+  - App wiring and run loop.
+
+## 6. Execution semantics
+
+For this milestone, default behavior is spot-safe:
+
+- `buy` => increase/open long
+- `sell` (from long) => reduce/close long
+- `close` => flatten current position
+
+No leverage-specific assumptions are made.
+
+## 7. Data and strategy behavior
+
+- Act on **closed bars** only.
+- Keep strategy deterministic and testable with candle fixtures.
+- Strategy implementation can be replaced later without changing router/runtime.
+
+## 8. Error handling
+
+- Missing/invalid credentials for selected venue: fail fast at startup.
+- Venue/API action failures: return structured `OrderResult` with `ok=False` and
+  preserve raw response when available.
+- Runtime loop should continue safely on transient data/venue errors.
+
+## 9. Testing strategy
+
+- Unit tests for config/model/router logic.
+- Venue adapter tests with mocked SDK/client responses.
+- Runtime integration test with `FakeVenue` + canned candles.
+- Optional live smoke checks for Alpaca paper and Coinbase sandbox/mainnet.
+
+## 10. Milestone completion definition
+
+The base bot is considered wrapped up when:
+
+- Datafeed supplies bars continuously.
+- Strategy emits signals from those bars.
+- Router converts signals into venue actions.
+- Orders are executed through selected venue API and visible in the venue account.
