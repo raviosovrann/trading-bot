@@ -1,4 +1,6 @@
-from tradingbot.models import Candle, Side, Order, OrderResult, Position, OrderType
+import pytest
+
+from tradingbot.models import Candle, Side, Order, OrderResult, Position, OrderType, PositionSide
 
 
 def test_candle_fields():
@@ -14,5 +16,11 @@ def test_order_defaults():
 def test_order_result_and_position():
     r = OrderResult(ok=True, order_id="1", status="ok", filled_qty=0.01, raw={})
     assert r.ok and r.error is None
-    p = Position(symbol="BTCUSDT", side="long", size=0.01, entry_price=60000.0)
-    assert p.side == "long"
+    p = Position(symbol="BTCUSDT", side=PositionSide.long, size=0.01, entry_price=60000.0)
+    assert p.side is PositionSide.long
+
+
+def test_position_rejects_invalid_side():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        Position(symbol="BTCUSDT", side="sideways", size=1.0, entry_price=1.0)

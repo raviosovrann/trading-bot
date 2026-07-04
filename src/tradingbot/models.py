@@ -77,6 +77,6 @@ class OrderResult(BaseModel):
 
 class Position(BaseModel):
     symbol: str
-    side: str  # "long" | "short" | "flat"
+    side: PositionSide
     size: float
     entry_price: float
