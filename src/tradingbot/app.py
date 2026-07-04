@@ -10,13 +10,19 @@ logger = logging.getLogger("tradingbot")
 
 
 def _configure_logging() -> None:
-    logger.setLevel(logging.INFO)
+    # POC logging: give the tradingbot logger its own INFO handler so the
+    # "Signal received" line is visible under uvicorn. Only set the level if
+    # the operator hasn't chosen one, so an explicit level is never overridden.
+    if logger.level == logging.NOTSET:
+        logger.setLevel(logging.INFO)
     if not logger.handlers:
         handler = logging.StreamHandler()
         handler.setFormatter(
             logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
         )
         logger.addHandler(handler)
+    # propagate=False so our own handler is the single source; revisit for
+    # root-level log aggregation in M2 (deploy hardening).
     logger.propagate = False
 
 

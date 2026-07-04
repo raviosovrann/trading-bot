@@ -1,6 +1,6 @@
 import math
 from enum import Enum
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 
 class Action(str, Enum):
@@ -37,3 +37,9 @@ class Signal(BaseModel):
         if not math.isfinite(v) or v <= 0:
             raise ValueError("quantity must be a finite number > 0")
         return v
+
+    @model_validator(mode="after")
+    def _limit_requires_price(self) -> "Signal":
+        if self.order_type is OrderType.limit and self.price is None:
+            raise ValueError("price is required for limit orders")
+        return self

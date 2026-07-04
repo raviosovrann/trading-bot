@@ -96,3 +96,15 @@ def test_signal_logger_emits_info():
     tb = logging.getLogger("tradingbot")
     assert tb.getEffectiveLevel() <= logging.INFO
     assert tb.handlers  # has at least one handler so INFO actually emits
+
+
+def test_configure_logging_respects_explicit_level():
+    import logging
+    tb = logging.getLogger("tradingbot")
+    original = tb.level
+    tb.setLevel(logging.ERROR)
+    try:
+        create_app(Config(webhook_token="secret", venue="bybit_testnet", allowed_ips=()))
+        assert tb.level == logging.ERROR  # not overridden
+    finally:
+        tb.setLevel(original)
