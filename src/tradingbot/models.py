@@ -41,3 +41,42 @@ class Signal(BaseModel):
         if self.order_type is OrderType.limit and self.price is None:
             raise ValueError("price is required for limit orders")
         return self
+
+
+class Side(str, Enum):
+    buy = "buy"
+    sell = "sell"
+
+
+class Candle(BaseModel):
+    timestamp: int
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+class Order(BaseModel):
+    symbol: str
+    side: Side
+    order_type: OrderType
+    qty: float
+    price: float | None = None
+    reduce_only: bool = False
+
+
+class OrderResult(BaseModel):
+    ok: bool
+    order_id: str | None
+    status: str
+    filled_qty: float
+    raw: dict
+    error: str | None = None
+
+
+class Position(BaseModel):
+    symbol: str
+    side: PositionSide
+    size: float
+    entry_price: float
