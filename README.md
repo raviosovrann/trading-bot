@@ -68,11 +68,12 @@ Fill in the credentials for the exchange you want to use (see below).
 ### 3. Load your config into the terminal
 
 ```bash
-export $(grep -v '^#' .env | xargs)
+set -a; source .env; set +a
 ```
 
 Run this command every time you open a new terminal window before starting
-the bot.
+the bot. (The `export $(…)` form breaks when `.env` has inline comments, so
+this safer form is preferred.)
 
 ---
 
@@ -115,7 +116,7 @@ COINBASE_SANDBOX=true    # true = no real money; false = live trades
 ### Run once (one market tick, then exit)
 
 ```bash
-python3 -m tradingbot
+PYTHONPATH=src python3 -m tradingbot
 ```
 
 Good for testing your setup. You'll see logs showing the candle fetched,
@@ -124,11 +125,12 @@ whether a signal fired, and what order (if any) was placed.
 ### Run forever (live bot loop)
 
 ```bash
-RUN_FOREVER=1 python3 -m tradingbot
+RUN_FOREVER=1 PYTHONPATH=src python3 -m tradingbot
 ```
 
-The bot fetches a new candle every minute (between candle closes) and acts on
-signals as they come. Stop it with **Ctrl+C**.
+The bot checks for a new closed candle once per second. It only acts when a
+new candle has closed — so the actual signal frequency depends on `TIMEFRAME`
+(default: every 5 minutes). Stop it with **Ctrl+C**.
 
 ---
 
@@ -150,7 +152,7 @@ signals as they come. Stop it with **Ctrl+C**.
 | Setting | Default | What it controls |
 |---------|---------|-----------------|
 | `SYMBOL` | `BTC/USD` | Which market to trade (Alpaca format). Use `BTC-USD` for Coinbase. |
-| `TIMEFRAME` | `5Min` | How often a new candle closes. Options: `1Min`, `5Min`, `15Min`, `30Min`, `1Hour`, `1Day`. |
+| `TIMEFRAME` | `5Min` | How often a new candle closes. Alpaca: any `<N>Min`, `<N>Hour`, or `<N>Day` (e.g. `2Min`, `4Hour`). Coinbase: `1Min`, `5Min`, `15Min`, `30Min`, `1Hour`, `2Hour`, `6Hour`, `1Day`. |
 | `ORDER_QTY` | `0.001` | How much BTC to buy/sell per signal. |
 
 ---
@@ -236,7 +238,7 @@ All core components done:
 - `build_feed()` factory wired in `__main__.py`
 - SMA crossover strategy placeholder
 - Signal router + bot runtime + entrypoint
-- CI: pytest on PRs (Python 3.11), full matrix (3.11/3.12/3.13) on every push
+- CI: full matrix (3.11/3.12/3.13) on every push and pull request
 
 Remaining: real strategy port (pending client's Pine Script source).
 
