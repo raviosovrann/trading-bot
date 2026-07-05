@@ -4,7 +4,7 @@ import os
 from collections.abc import Sequence
 
 from .config import Config, load_config, require_credentials
-from .datafeed import InMemoryCandleFeed
+from .datafeed import build_feed
 from .router import SignalRouter
 from .runtime import BotRuntime
 from .strategy import SMACrossoverStrategy
@@ -38,7 +38,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     require_credentials(cfg)
 
     venue = _build_venue(cfg)
-    feed = InMemoryCandleFeed()
+    feed = build_feed(cfg)
     strategy = SMACrossoverStrategy(
         symbol=cfg.symbol,
         strategy_name="sma_crossover",
