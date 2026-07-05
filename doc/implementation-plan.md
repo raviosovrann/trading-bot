@@ -23,6 +23,19 @@ Replace the `SMACrossoverStrategy` placeholder with production-grade signal
 logic once the client's Pine Script is available. The router and runtime
 interfaces are stable and do not need to change.
 
+## v2 — Event-driven streaming (planned)
+
+**Plan:** [websocket-streaming-plan.md](websocket-streaming-plan.md)
+
+The next architecture effort replaces the polling `run_forever()` loop with an
+event-driven WebSocket streaming model: the process blocks on an exchange
+WebSocket and reacts to pushed closed bars instead of busy-polling REST.
+`run_forever()` will be **retired**; `run_once()` stays for cron / single-shot
+use. Scope includes a `StreamingFeed` protocol, `AlpacaStreamFeed` and
+`CoinbaseStreamFeed` (Coinbase is **not** deferred), a `StreamRuntime`, and a
+reconnection watchdog with gap-fill. Strategy/router/venue interfaces are
+unaffected. See the plan for phases and the per-phase test strategy.
+
 ## Verification gates
 
 - `pytest -v` passes with no live network access.
