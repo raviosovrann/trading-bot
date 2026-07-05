@@ -118,13 +118,11 @@ To point the bot at a real account you need to supply credentials yourself.
    - Calls hit `api.coinbase.com` and move real funds — use a
      limited-permission key and the smallest possible `ORDER_QTY`.
 
-4. **Current limitation — no live datafeed yet.**
-   - The live market-data feed for Alpaca/Coinbase is **not implemented**.
-     `datafeed.py` currently provides only an in-memory candle feed plus a
-     `CandleFeed` protocol and `normalize_candle()` helper.
-   - `__main__.py` wires an empty in-memory feed by default, so running the app
-     as-is will **not** fetch live bars or emit signals from real market data.
-   - A full end-to-end live loop needs the live datafeed work (see Status).
+4. **Alpaca live datafeed is implemented.** `AlpacaCandleFeed` in
+   `datafeed.py` wraps `CryptoHistoricalDataClient` and satisfies the
+   `CandleFeed` protocol. `build_feed(cfg)` wires the correct feed by
+   venue. `VENUE=alpaca` with real paper keys will now fetch live bars
+   and emit signals. Coinbase datafeed is a future task.
 
 ## Status
 
@@ -137,17 +135,16 @@ To point the bot at a real account you need to supply credentials yourself.
   (`venues/fake.py`).
 - Alpaca venue adapter (`venues/alpaca.py`).
 - Coinbase venue adapter (`venues/coinbase.py`).
-- In-memory candle feed + `CandleFeed` protocol + `normalize_candle`
-  (`datafeed.py`).
+- `CandleFeed` protocol + `normalize_candle` + `InMemoryCandleFeed` +
+  **`AlpacaCandleFeed`** + `build_feed()` factory (`datafeed.py`).
 - Placeholder `SMACrossoverStrategy` (`strategy.py`).
 - `SignalRouter` (`router.py`).
 - `BotRuntime` + entrypoint wiring (`runtime.py`, `__main__.py`).
-- Test suite passing (54 tests, all mocked/faked).
+- Test suite passing (68 tests, all mocked/faked).
 
 **Remaining:**
 
-- **Live datafeed** for Alpaca/Coinbase market data — the main gap before a
-  real end-to-end loop can pull live bars.
+- **Coinbase live datafeed** (`CoinbaseCandleFeed` in `datafeed.py`).
 - Real strategy port (current SMA crossover is a deterministic placeholder).
 
 ## Safety notes

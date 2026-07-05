@@ -24,10 +24,9 @@ Venues in scope:
 
 ## Task breakdown
 
-> **Status:** T6, T7, T9, T10, T11 are **done**, along with the in-memory
-> datafeed (`InMemoryCandleFeed` + `CandleFeed` protocol + `normalize_candle`).
-> The main remaining gap is a **LIVE datafeed** (Alpaca/Coinbase market data)
-> to make the end-to-end loop actually pull real bars.
+> **Status:** T6, T7, T8 (Alpaca live feed), T9, T10, T11 are **done**.
+> `AlpacaCandleFeed` + `build_feed()` factory land the main gap; 68 tests pass.
+> Remaining: Coinbase live datafeed and real strategy port.
 
 ### T6 — Alpaca venue adapter (DONE)
 
@@ -62,23 +61,26 @@ Deliverables:
   `COINBASE_SANDBOX=false` hits production `api.coinbase.com` (real money).
 - Unit tests with mocked Coinbase client responses.
 
-### T8 — Datafeed (in-memory DONE; LIVE feed PENDING)
+### T8 — Datafeed (DONE)
 
 Files:
 
-- `src/tradingbot/datafeed.py` (new)
-- `tests/test_datafeed.py` (new)
+- `src/tradingbot/datafeed.py`
+- `tests/test_datafeed.py`
+- `tests/test_alpaca_datafeed.py`
 
 Done:
 
 - `InMemoryCandleFeed` + `CandleFeed` protocol + `normalize_candle()`.
-- Unit tests for parsing/normalization and closed-bar behavior.
+- `AlpacaCandleFeed` wrapping `CryptoHistoricalDataClient` (warmup + tick polling).
+- `_parse_timeframe()` mapping `"5Min"` / `"1Hour"` / `"1Day"` to alpaca-py `TimeFrame`.
+- `build_feed(cfg)` factory wired into `__main__.py`.
+- 68 tests pass.
 
-Remaining (main gap):
+Remaining:
 
-- **LIVE datafeed** that fetches closed bars from Alpaca/Coinbase market data
-  for the active symbol/timeframe, so the runtime loop pulls real bars instead
-  of an empty in-memory feed.
+- `CoinbaseCandleFeed` (LT2) — not yet implemented; `build_feed` raises
+  `NotImplementedError` for `coinbase` venue.
 
 ### T9 — Strategy placeholder (DONE)
 
