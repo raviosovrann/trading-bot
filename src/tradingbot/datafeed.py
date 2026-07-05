@@ -19,6 +19,14 @@ except Exception:  # pragma: no cover - optional third-party install
     TimeFrameUnit = None  # type: ignore[assignment,misc]
     _ALPACA_AVAILABLE = False
 
+try:
+    from coinbase.rest import RESTClient as _CoinbaseRESTClient
+
+    _COINBASE_AVAILABLE = True
+except Exception:  # pragma: no cover - optional third-party install
+    _CoinbaseRESTClient = None  # type: ignore[assignment,misc]
+    _COINBASE_AVAILABLE = False
+
 _TF_RE = re.compile(r"^(\d+)(Min|Hour|Day)$")
 _TF_UNIT_MAP = {"Min": "Minute", "Hour": "Hour", "Day": "Day"}
 
@@ -102,13 +110,112 @@ class AlpacaCandleFeed:
         return _bar_to_candle(bars[-1])
 
 
+_COINBASE_GRANULARITY_MAP: dict[str, str] = {
+    "1Min": "ONE_MINUTE",
+    "5Min": "FIVE_MINUTE",
+    "15Min": "FIFTEEN_MINUTE",
+    "30Min": "THIRTY_MINUTE",
+    "1Hour": "ONE_HOUR",
+    "2Hour": "TWO_HOUR",
+    "6Hour": "SIX_HOUR",
+    "1Day": "ONE_DAY",
+}
+
+_COINBASE_TF_SECONDS_MAP: dict[str, int] = {
+    "1Min": 60,
+    "5Min": 300,
+    "15Min": 900,
+    "30Min": 1800,
+    "1Hour": 3600,
+    "2Hour": 7200,
+    "6Hour": 21600,
+    "1Day": 86400,
+}
+
+_COINBASE_SANDBOX_BASE_URL = "api-sandbox.coinbase.com"
+
+
+def _coinbase_granularity(tf: str) -> str:
+    try:
+        return _COINBASE_GRANULARITY_MAP[tf]
+    except KeyError:
+        raise ValueError(f"Unsupported timeframe for Coinbase: {tf!r}. Expected one of {list(_COINBASE_GRANULARITY_MAP)}")
+
+
+def _timeframe_seconds(tf: str) -> int:
+    try:
+        return _COINBASE_TF_SECONDS_MAP[tf]
+    except KeyError:
+        raise ValueError(f"Unsupported timeframe: {tf!r}. Expected one of {list(_COINBASE_TF_SECONDS_MAP)}")
+
+
+def _coinbase_candle_to_candle(bar: Any) -> Candle:
+    return Candle(
+        timestamp=int(float(getattr(bar, "start", 0))) * 1000,
+        open=float(getattr(bar, "open", 0.0)),
+        high=float(getattr(bar, "high", 0.0)),
+        low=float(getattr(bar, "low", 0.0)),
+        close=float(getattr(bar, "close", 0.0)),
+        volume=float(getattr(bar, "volume", 0.0)),
+    )
+
+
+class CoinbaseCandleFeed:
+    def __init__(self, client: Any | None = None) -> None:
+        if client is None:
+            raise ValueError("CoinbaseCandleFeed requires a client or use from_credentials(...)")
+        self._client = client
+
+    @classmethod
+    def from_credentials(cls, api_key: str, api_secret: str, sandbox: bool = True) -> "CoinbaseCandleFeed":
+        if not _COINBASE_AVAILABLE:
+            raise RuntimeError("coinbase-advanced-py is not installed")
+        if sandbox:
+            return cls(
+                client=_CoinbaseRESTClient(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    base_url=_COINBASE_SANDBOX_BASE_URL,
+                )
+            )
+        return cls(client=_CoinbaseRESTClient(api_key=api_key, api_secret=api_secret))
+
+    def _fetch_candles(self, symbol: str, timeframe: str, limit: int) -> list[Any]:
+        from datetime import datetime, timezone
+
+        product_id = symbol.replace("/", "-")
+        granularity = _coinbase_granularity(timeframe)
+        tf_secs = _timeframe_seconds(timeframe)
+        now = int(datetime.now(timezone.utc).timestamp())
+        start = now - (limit + 1) * tf_secs
+        response = self._client.get_candles(product_id, start=start, end=now, granularity=granularity)
+        raw = getattr(response, "candles", None)
+        if not raw:
+            return []
+        return sorted(raw, key=lambda c: int(getattr(c, "start", 0)))
+
+    def warmup_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
+        if limit <= 0:
+            return []
+        bars = self._fetch_candles(symbol, timeframe, limit + 1)
+        return [_coinbase_candle_to_candle(b) for b in bars[-limit:]]
+
+    def latest_closed_candle(self, symbol: str, timeframe: str) -> Candle | None:
+        bars = self._fetch_candles(symbol, timeframe, 2)
+        if not bars:
+            return None
+        return _coinbase_candle_to_candle(bars[-1])
+
+
 def build_feed(cfg: Any) -> CandleFeed:
     if cfg.venue == "alpaca":
         return AlpacaCandleFeed.from_credentials(cfg.alpaca_api_key, cfg.alpaca_api_secret)
     if cfg.venue == "fake":
         return InMemoryCandleFeed()
     if cfg.venue == "coinbase":
-        raise NotImplementedError("CoinbaseCandleFeed is not yet implemented")
+        return CoinbaseCandleFeed.from_credentials(
+            cfg.coinbase_api_key, cfg.coinbase_api_secret, sandbox=cfg.coinbase_sandbox
+        )
     raise ValueError(f"Unsupported venue: {cfg.venue}")
 
 

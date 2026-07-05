@@ -142,11 +142,6 @@ def test_build_feed_fake_venue():
     assert isinstance(feed, InMemoryCandleFeed)
 
 
-def test_build_feed_coinbase_not_implemented():
-    cfg = load_config({"VENUE": "coinbase", "COINBASE_API_KEY": "k", "COINBASE_API_SECRET": "s"})
-    with pytest.raises(NotImplementedError):
-        build_feed(cfg)
-
 
 def test_build_feed_alpaca_builds_real_feed():
     cfg = load_config(
