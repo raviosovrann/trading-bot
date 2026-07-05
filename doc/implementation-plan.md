@@ -32,4 +32,6 @@ interfaces are stable and do not need to change.
 - `COINBASE_SANDBOX=true` integration smoke: app wires up cleanly against the
   sandbox host (`api-sandbox.coinbase.com`); note sandbox returns static/mocked
   responses — not realistic fills.
-- No Bybit references remain in active source or docs.
+- No Bybit venue/runtime code remains in active source (`src/`); historical
+  references in design docs and tests that assert Bybit is an invalid venue
+  name are expected and intentional.
