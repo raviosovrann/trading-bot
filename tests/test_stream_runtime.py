@@ -4,7 +4,7 @@ from tradingbot.config import load_config
 from tradingbot.models import Action, Candle, OrderType, PositionSide, Signal
 from tradingbot.router import SignalRouter
 from tradingbot.runtime import StreamRuntime
-from tradingbot.stream import AlpacaStreamFeed, build_stream_feed
+from tradingbot.stream import AlpacaStreamFeed, CoinbaseStreamFeed, build_stream_feed
 from tradingbot.venues.fake import FakeVenue
 
 
@@ -153,10 +153,10 @@ def test_build_stream_feed_alpaca():
     assert isinstance(feed, AlpacaStreamFeed)
 
 
-def test_build_stream_feed_coinbase_not_implemented():
+def test_build_stream_feed_coinbase():
     cfg = load_config({"VENUE": "coinbase", "COINBASE_API_KEY": "k", "COINBASE_API_SECRET": "s"})
-    with pytest.raises(NotImplementedError):
-        build_stream_feed(cfg)
+    feed = build_stream_feed(cfg)
+    assert isinstance(feed, CoinbaseStreamFeed)
 
 
 def test_config_stream_flag_defaults_false_and_parses_true():
