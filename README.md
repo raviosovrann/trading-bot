@@ -11,13 +11,18 @@ Supported exchanges: **Alpaca** (paper/live) and **Coinbase Advanced Trade**
 
 ## What it does
 
-Every 5 minutes (configurable) the bot:
+The bot connects to your exchange's live WebSocket feed and reacts the instant
+each price candle closes:
 
-1. Fetches the latest completed price candle from your exchange.
-2. Runs the price through a strategy (currently: SMA crossover — a simple
+1. Receives the newly closed candle (pushed by the exchange — no polling).
+2. Runs it through a strategy (currently: SMA crossover — a simple
    moving-average signal).
 3. If the strategy says "buy" or "sell", it places an order on your account.
-4. Loops forever until you stop it.
+4. Stays connected and keeps reacting until you stop it (Ctrl+C), auto-reconnecting
+   if the connection drops.
+
+It can also run in **single-shot mode** — process the latest candle once and
+exit — handy for a quick test or cron-style scheduling.
 
 There is no dashboard or interface. The bot logs what it does to the terminal.
 
@@ -113,24 +118,64 @@ COINBASE_SANDBOX=true    # true = no real money; false = live trades
 
 ## Running the bot
 
-### Run once (one market tick, then exit)
+### Single-shot (process one candle, then exit)
 
 ```bash
 PYTHONPATH=src python3 -m tradingbot
 ```
 
-Good for testing your setup. You'll see logs showing the candle fetched,
-whether a signal fired, and what order (if any) was placed.
+Good for a quick check of your setup. You'll see logs showing the candle
+fetched, whether a signal fired, and what order (if any) was placed.
 
-### Run forever (live bot loop)
+### Live streaming (event-driven, stays running)
 
 ```bash
-RUN_FOREVER=1 PYTHONPATH=src python3 -m tradingbot
+STREAM=1 PYTHONPATH=src python3 -m tradingbot
 ```
 
-The bot checks for a new closed candle once per second. It only acts when a
-new candle has closed — so the actual signal frequency depends on `TIMEFRAME`
-(default: every 5 minutes). Stop it with **Ctrl+C**.
+The bot warms up on recent history, then connects to the exchange WebSocket and
+acts on each candle the moment it closes (frequency set by `TIMEFRAME`). If the
+connection drops it auto-reconnects with exponential backoff and back-fills any
+bars missed during the outage. Press **Ctrl+C** for a clean shutdown.
+
+---
+
+## Manual testing walkthrough (Alpaca paper — recommended)
+
+The fastest way to confirm the whole system works end-to-end, risk-free:
+
+1. **Set up** (once):
+   ```bash
+   python3 -m venv .venv && source .venv/bin/activate
+   pip install -r requirements.txt
+   cp .env.example .env
+   ```
+2. **Add your Alpaca paper keys** to `.env` (see "Getting API keys"); keep
+   `VENUE=alpaca` and `ALPACA_PAPER=true`, then load them:
+   ```bash
+   set -a; source .env; set +a
+   ```
+3. **Smoke test — single shot** (confirms credentials, data feed, and order path):
+   ```bash
+   PYTHONPATH=src python3 -m tradingbot
+   ```
+   The logs should show a candle fetched and either a signal or "no signal".
+4. **Go live — streaming.** Leave it running for a few minutes:
+   ```bash
+   STREAM=1 PYTHONPATH=src python3 -m tradingbot
+   ```
+   It warms up, connects to the live WebSocket, and acts on each closed candle.
+   Stop with **Ctrl+C**.
+5. **Verify orders.** Log in at <https://app.alpaca.markets/> → **Paper Trading
+   → Orders** — any orders the bot placed appear there.
+
+> Tip: the placeholder SMA strategy only trades on a moving-average crossover,
+> so it may sit at "no signal" for a while in a flat market. For quicker
+> activity while testing, set a shorter `TIMEFRAME` (e.g. `1Min`).
+
+For Coinbase, set `VENUE=coinbase`, use `BTC-USD` for `SYMBOL`, and keep
+`COINBASE_SANDBOX=true` — but the Coinbase sandbox does not produce realistic
+fills, so Alpaca paper remains the best end-to-end test.
 
 ---
 
@@ -186,7 +231,7 @@ The router and runtime depend only on the `ExecutionVenue` protocol — venues
 are swappable via config with no code changes.
 
 - **Design spec:** [TradingBot-Design-V3.md](TradingBot-Design-V3.md)
-- **Implementation plans:** `docs/superpowers/plans/`
+- **Implementation plan:** [doc/implementation-plan.toon](doc/implementation-plan.toon) · [doc/websocket-streaming-plan.md](doc/websocket-streaming-plan.md)
 
 ### Configuration reference
 
@@ -202,11 +247,11 @@ are swappable via config with no code changes.
 | `SYMBOL`              | all        | `BTC/USD` | Market symbol. Alpaca: `BTC/USD`; Coinbase: `BTC-USD`. |
 | `TIMEFRAME`           | all        | `5Min`    | Bar timeframe. |
 | `ORDER_QTY`           | all        | `0.001`   | Base-asset order size. |
-| `RUN_FOREVER`         | all        | `0`       | Set to `1` to run the loop continuously. |
+| `STREAM`              | all        | `0`       | `1` = live event-driven WebSocket streaming; `0` = single-shot. |
 
 ### Tests
 
-The suite uses mocks and fakes only — no live network calls. 78 tests.
+The suite uses mocks and fakes only — no live network calls. 108 tests.
 
 ```bash
 source .venv/bin/activate
@@ -238,6 +283,9 @@ All core components done:
 - `build_feed()` factory wired in `__main__.py`
 - SMA crossover strategy placeholder
 - Signal router + bot runtime + entrypoint
+- Event-driven WebSocket streaming: `StreamRuntime`, `AlpacaStreamFeed` +
+  `CoinbaseStreamFeed`, reconnection with exponential backoff + gap-fill, and
+  graceful SIGINT/SIGTERM shutdown (the polling `run_forever` loop is retired)
 - CI: full matrix (3.11/3.12/3.13) on every push and pull request
 
 Remaining: real strategy port (pending client's Pine Script source).
