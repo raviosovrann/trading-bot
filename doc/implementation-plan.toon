@@ -1,0 +1,41 @@
+implementation_plan:
+  project: trading-bot
+  effort: v2 - event-driven WebSocket streaming
+  milestone: v2 - WebSocket Streaming
+  motivation: Replace the 24/7 polling loop with WS push so an idle bot blocks on the socket (near-zero CPU/cloud cost) instead of busy-polling on a timer
+  base_ref: TradingBot-Design-V3.md (v2 section + mermaid diagram)
+  workflow: SDD (subagents implement) + TDD (failing tests written FIRST)
+  conventions[5]{rule}:
+    each task gets .plan/brief/phaseN-taskN-brief.toon then a matching report .toon
+    subagent prompts and reports are exchanged in TOON
+    issue-first then a PR that closes it; branch protection + Copilot review gate every merge
+    subagents never poll CI; main agent handles CI-wait + merge inline
+    each PR must add a visible new test file before the implementation
+  protocol:
+    name: StreamingFeed
+    methods[4]{method,purpose}:
+      warmup_candles,REST history at startup (seed the buffer)
+      on_bar,register a candle-handler callback
+      run,blocks on the WS event loop
+      stop,graceful shutdown
+  phases[5]{id,title,depends_on,status,deliverable}:
+    1,Extract process_candle + retire run_forever,-,done,pure per-candle core; run_forever removed
+    2,AlpacaStreamFeed,1,next,stream.py StreamingFeed + Alpaca WS feed (fakes-only tests)
+    3,StreamRuntime + wiring + graceful shutdown,2,planned,event-driven runtime; build_feed/__main__ use streaming; SIGINT/SIGTERM clean stop
+    4,Reconnection resilience,3,planned,watchdog + exp backoff 1s..60s; REST gap-fill on reconnect
+    5,CoinbaseStreamFeed,3,planned,Coinbase Advanced Trade WS feed on the same protocol
+  parallelizable[1]{note}:
+    phases 4 and 5 can run in parallel once phase 3 is merged
+  test_strategy[8]{scenario,method}:
+    bar fires handler,push fake bar -> assert handler invoked
+    duplicate bar deduped,push same timestamp twice -> single emit
+    no-signal,bar with no crossover -> no order
+    warmup at startup,assert REST used not the stream queue
+    disconnect,fake stream raises -> watchdog retries
+    reconnect gap-fill,REST returns missed bars -> in-order no skips
+    graceful shutdown,stop -> stream closes with no exceptions
+    end-to-end paper,real Alpaca paper stream -> signal -> order (manual)
+  out_of_scope[3]{item}:
+    real strategy port (awaits client Pine Script)
+    deployment/hosting (separate milestone; Fly.io candidate)
+    futures/short support (needs Coinbase Derivatives account)
