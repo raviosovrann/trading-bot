@@ -113,7 +113,7 @@ flowchart TD
     end
 
     subgraph Live["Live (blocks on WebSocket)"]
-        WS["Exchange WebSocket<br/>(pushes closed bars)"] -->|bar message| SF["StreamFeed<br/>(background thread)"]
+        WS["Exchange WebSocket<br/>(pushes closed bars)"] -->|bar message| SF["StreamingFeed<br/>(background thread)"]
         SF -->|thread-safe handoff| PC["process_candle(candle)<br/>dedup + buffer + trim"]
         PC -->|updates| BUF
         PC -->|on_bar| STRAT["Strategy<br/>(SMACrossover / real port)"]
