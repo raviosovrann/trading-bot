@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
 
 from .config import Config, load_config, require_credentials
@@ -56,10 +55,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         warmup_bars=20,
     )
 
-    if os.getenv("RUN_FOREVER", "0").strip() in {"1", "true", "yes", "on"}:
-        runtime.run_forever(sleep_seconds=1.0)
-    else:
-        runtime.run_once()
+    # Single-shot processing of the latest closed candle. Continuous operation
+    # returns in v2 via an event-driven streaming StreamRuntime that consumes a
+    # WebSocket feed, replacing the retired run_forever() polling loop.
+    runtime.run_once()
 
     return 0
 
