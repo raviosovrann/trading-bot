@@ -56,6 +56,11 @@ class _StubStrategy:
         return None
 
 
+class _NoSignalStrategy:
+    def on_bar(self, candles):
+        return None
+
+
 def _candle(ts, close=100.0):
     return Candle(timestamp=ts, open=close, high=close, low=close, close=close, volume=1.0)
 
@@ -105,8 +110,28 @@ def test_stream_runtime_dedups_stale_timestamp():
 
 def test_stream_runtime_start_runs_feed_with_symbol():
     rt, feed, venue = _make()
-    rt.start(install_signals=False)
+    # start() now drives a reconnect loop; a sleep that stops ends it after one pass.
+    rt.start(install_signals=False, sleep=lambda _: rt.stop())
     assert feed.run_called_with == ("BTC/USD",)
+
+
+def test_stream_runtime_gap_fill_dedups_and_fills():
+    feed = _FakeStreamingFeed()
+    venue = FakeVenue()
+    router = SignalRouter(venue)
+    rt = StreamRuntime(
+        feed=feed,
+        strategy=_NoSignalStrategy(),
+        router=router,
+        symbol="BTC/USD",
+        timeframe="5Min",
+        warmup_bars=0,
+    )
+    feed.push(_candle(100))  # live bar seeds the buffer
+    # On reconnect, REST returns recent bars incl. the already-seen 100.
+    feed._warmup = [_candle(100), _candle(200), _candle(300)]
+    rt._gap_fill()
+    assert [c.timestamp for c in rt.candles] == [100, 200, 300]
 
 
 def test_stream_runtime_stop_calls_feed_stop():

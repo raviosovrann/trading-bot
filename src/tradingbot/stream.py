@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -89,3 +90,40 @@ def build_stream_feed(cfg: Any) -> StreamingFeed:
     if cfg.venue == "coinbase":
         raise NotImplementedError("CoinbaseStreamFeed arrives in WSS Phase 5")
     raise ValueError(f"Streaming not supported for venue: {cfg.venue}")
+
+
+def run_with_reconnect(
+    *,
+    connect_and_run: Callable[[], None],
+    should_stop: Callable[[], bool],
+    gap_fill: Callable[[], None] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    base_backoff: float = 1.0,
+    max_backoff: float = 60.0,
+) -> None:
+    """Supervise a blocking stream connection, reconnecting on drop.
+
+    ``connect_and_run`` blocks while connected and returns (or raises) on
+    disconnect. Between attempts we sleep with exponential backoff: it grows on
+    connect failures and resets to ``base_backoff`` after a healthy connection
+    drops, capped at ``max_backoff``. ``gap_fill`` (if given) runs after each
+    backoff to REST-fill bars missed during the outage before reconnecting.
+    """
+    backoff = base_backoff
+    while not should_stop():
+        try:
+            connect_and_run()
+            healthy = True
+        except Exception:
+            healthy = False
+        if should_stop():
+            break
+        if healthy:
+            backoff = base_backoff
+        sleep(backoff)
+        if should_stop():
+            break
+        if gap_fill is not None:
+            gap_fill()
+        if not healthy:
+            backoff = min(backoff * 2, max_backoff)
