@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import time
-from collections.abc import Callable
-
 from .datafeed import CandleFeed
 from .models import Candle, OrderResult
 from .router import SignalRouter
@@ -36,11 +33,7 @@ class BotRuntime:
     def candles(self) -> tuple[Candle, ...]:
         return tuple(self._candles)
 
-    def run_once(self) -> OrderResult | None:
-        candle = self._feed.latest_closed_candle(self._symbol, self._timeframe)
-        if candle is None:
-            return None
-
+    def process_candle(self, candle: Candle) -> OrderResult | None:
         if self._candles and candle.timestamp <= self._candles[-1].timestamp:
             return None
 
@@ -54,30 +47,9 @@ class BotRuntime:
 
         return self._router.route(signal)
 
-    def run_forever(
-        self,
-        *,
-        sleep_seconds: float = 1.0,
-        sleep_fn: Callable[[float], None] = time.sleep,
-        max_iterations: int | None = None,
-        swallow_exceptions: bool = True,
-        on_exception: Callable[[Exception], None] | None = None,
-    ) -> list[OrderResult]:
-        results: list[OrderResult] = []
-        iterations = 0
+    def run_once(self) -> OrderResult | None:
+        candle = self._feed.latest_closed_candle(self._symbol, self._timeframe)
+        if candle is None:
+            return None
 
-        while max_iterations is None or iterations < max_iterations:
-            try:
-                result = self.run_once()
-                if result is not None:
-                    results.append(result)
-            except Exception as exc:
-                if on_exception is not None:
-                    on_exception(exc)
-                if not swallow_exceptions:
-                    raise
-
-            iterations += 1
-            sleep_fn(sleep_seconds)
-
-        return results
+        return self.process_candle(candle)

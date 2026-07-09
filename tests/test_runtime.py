@@ -1,5 +1,3 @@
-import pytest
-
 from tradingbot.datafeed import InMemoryCandleFeed
 from tradingbot.models import Action, Candle, OrderResult, OrderType, PositionSide, Signal
 from tradingbot.router import SignalRouter
@@ -34,16 +32,6 @@ class StubVenue:
 
     def health_check(self):
         return True
-
-
-class BrokenFeed:
-    def warmup_candles(self, symbol: str, timeframe: str, limit: int):
-        del symbol, timeframe, limit
-        return []
-
-    def latest_closed_candle(self, symbol: str, timeframe: str):
-        del symbol, timeframe
-        raise RuntimeError("feed boom")
 
 
 def _candle(ts: int, close: float) -> Candle:
@@ -87,45 +75,63 @@ def test_runtime_run_once_no_signal_returns_none_and_no_order():
     assert venue.orders == []
 
 
-def test_runtime_run_forever_swallow_exceptions_with_injected_sleep():
-    sleep_calls = []
-    seen_errors = []
-
-    runtime = BotRuntime(
-        feed=BrokenFeed(),
-        strategy=StubStrategy(None),
-        router=SignalRouter(StubVenue()),
-        symbol="BTC/USD",
-        timeframe="5Min",
+def test_runtime_process_candle_appends_and_routes_signal():
+    symbol = "BTC/USD"
+    feed = InMemoryCandleFeed({symbol: []})
+    signal = Signal(
+        strategy="sma",
+        action=Action.buy,
+        symbol=symbol,
+        order_type=OrderType.market,
+        quantity=0.01,
+        position_side=PositionSide.long,
     )
+    strategy = StubStrategy(signal)
+    venue = StubVenue()
+    runtime = BotRuntime(feed=feed, strategy=strategy, router=SignalRouter(venue), symbol=symbol, timeframe="5Min")
 
-    results = runtime.run_forever(
-        sleep_seconds=0.0,
-        sleep_fn=lambda seconds: sleep_calls.append(seconds),
-        max_iterations=3,
-        swallow_exceptions=True,
-        on_exception=lambda exc: seen_errors.append(str(exc)),
+    result = runtime.process_candle(_candle(1, 100.0))
+
+    assert result is not None and result.ok is True
+    assert strategy.calls == 1
+    assert len(venue.orders) == 1
+    assert len(runtime.candles) == 1
+
+
+def test_runtime_process_candle_dedups_stale_timestamp_and_does_not_route():
+    symbol = "BTC/USD"
+    feed = InMemoryCandleFeed({symbol: []})
+    signal = Signal(
+        strategy="sma",
+        action=Action.buy,
+        symbol=symbol,
+        order_type=OrderType.market,
+        quantity=0.01,
+        position_side=PositionSide.long,
     )
+    strategy = StubStrategy(signal)
+    venue = StubVenue()
+    runtime = BotRuntime(feed=feed, strategy=strategy, router=SignalRouter(venue), symbol=symbol, timeframe="5Min")
 
-    assert results == []
-    assert sleep_calls == [0.0, 0.0, 0.0]
-    assert len(seen_errors) == 3
-    assert all("feed boom" in msg for msg in seen_errors)
+    runtime.process_candle(_candle(5, 100.0))
+    result = runtime.process_candle(_candle(5, 101.0))
+
+    assert result is None
+    assert strategy.calls == 1
+    assert len(venue.orders) == 1
+    assert len(runtime.candles) == 1
 
 
-def test_runtime_run_forever_raises_when_not_swallowing_exceptions():
-    runtime = BotRuntime(
-        feed=BrokenFeed(),
-        strategy=StubStrategy(None),
-        router=SignalRouter(StubVenue()),
-        symbol="BTC/USD",
-        timeframe="5Min",
-    )
+def test_runtime_process_candle_no_signal_returns_none_and_no_order():
+    symbol = "BTC/USD"
+    feed = InMemoryCandleFeed({symbol: []})
+    strategy = StubStrategy(None)
+    venue = StubVenue()
+    runtime = BotRuntime(feed=feed, strategy=strategy, router=SignalRouter(venue), symbol=symbol, timeframe="5Min")
 
-    with pytest.raises(RuntimeError, match="feed boom"):
-        runtime.run_forever(
-            sleep_seconds=0.0,
-            sleep_fn=lambda _seconds: None,
-            max_iterations=1,
-            swallow_exceptions=False,
-        )
+    result = runtime.process_candle(_candle(1, 100.0))
+
+    assert result is None
+    assert strategy.calls == 1
+    assert venue.orders == []
+    assert len(runtime.candles) == 1
