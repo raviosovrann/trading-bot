@@ -22,6 +22,7 @@ class Config:
     symbol: str
     timeframe: str
     order_qty: float
+    stream: bool = False
 
     def __repr__(self) -> str:
         def mask(v: str) -> str:
@@ -35,7 +36,7 @@ class Config:
             f"coinbase_api_secret={mask(self.coinbase_api_secret)!r}, "
             f"coinbase_sandbox={self.coinbase_sandbox!r}, "
             f"symbol={self.symbol!r}, timeframe={self.timeframe!r}, "
-            f"order_qty={self.order_qty!r})"
+            f"order_qty={self.order_qty!r}, stream={self.stream!r})"
         )
 
 
@@ -74,6 +75,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         symbol=(env.get("SYMBOL") or "BTC/USD").strip(),
         timeframe=(env.get("TIMEFRAME") or "5Min").strip(),
         order_qty=order_qty,
+        stream=_as_bool(env.get("STREAM", ""), default=False),
     )
 
 

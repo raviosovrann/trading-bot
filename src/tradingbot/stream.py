@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - optional third-party install
 class StreamingFeed(Protocol):
     def warmup_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]: ...
     def on_bar(self, handler: Callable[[Candle], None]) -> None: ...
-    def run(self) -> None: ...
+    def run(self, *symbols: str) -> None: ...
     def stop(self) -> None: ...
 
 
@@ -80,3 +80,12 @@ class AlpacaStreamFeed:
 
     def stop(self) -> None:
         self._client.stop()
+
+
+def build_stream_feed(cfg: Any) -> StreamingFeed:
+    """Select the streaming feed for the configured venue."""
+    if cfg.venue == "alpaca":
+        return AlpacaStreamFeed.from_credentials(cfg.alpaca_api_key, cfg.alpaca_api_secret)
+    if cfg.venue == "coinbase":
+        raise NotImplementedError("CoinbaseStreamFeed arrives in WSS Phase 5")
+    raise ValueError(f"Streaming not supported for venue: {cfg.venue}")
