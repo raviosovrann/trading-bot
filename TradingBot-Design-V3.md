@@ -73,6 +73,63 @@ DataFeed (exchange market data)
 Core rule: Router and runtime depend only on interfaces, not concrete exchange
 SDK classes.
 
+## 4a. Execution Model: Event-Driven Streaming (v2)
+
+> Implementation plan: [doc/websocket-streaming-plan.md](doc/websocket-streaming-plan.md)
+
+The v1 execution model keeps the process alive with `run_forever()`, a
+`while True: run_once(); sleep(n)` loop that *pulls* the latest closed bar over
+REST on every tick. v2 shifts to an **event-driven** model: the process
+**blocks on an exchange WebSocket** and wakes only when a closed bar is *pushed*
+to it. This is not just a bot spinning a loop anymore — it is a long-lived
+service reacting to a live market-data stream.
+
+Same liveness, less waste: no rate-limit-burning empty polls, lower latency to
+signal, and an explicit place to handle disconnects and missed bars.
+
+Key changes:
+
+- The decision logic inside `run_once()` is extracted into a pure
+  `process_candle(candle) -> OrderResult | None` (dedup → buffer → strategy →
+  router; no I/O), which the stream invokes on each pushed bar.
+- **`run_forever()` is being retired.** The busy polling loop is removed.
+  `run_once()` stays for cron / single-shot use.
+- A new `StreamingFeed` protocol (`warmup_candles` + `on_bar(handler)` +
+  `run()` + `stop()`) is implemented by `AlpacaStreamFeed` and
+  `CoinbaseStreamFeed`, each running its WebSocket on a background thread with a
+  thread-safe handoff to the handler.
+- A `StreamRuntime` warms up once (REST historical → buffer), registers
+  `process_candle` as the `on_bar` callback, then blocks on the stream. Strategy,
+  router, and venues are untouched.
+- A reconnection watchdog reconnects with exponential backoff (1s → 60s) and
+  REST-fills bars missed during the outage before resuming the stream.
+
+### System flow
+
+```mermaid
+flowchart TD
+    subgraph Startup["Startup (once)"]
+        REST_HIST["Exchange REST<br/>(historical bars)"] -->|warmup_candles| BUF["StreamRuntime<br/>candle buffer"]
+    end
+
+    subgraph Live["Live (blocks on WebSocket)"]
+        WS["Exchange WebSocket<br/>(pushes closed bars)"] -->|bar message| SF["StreamingFeed<br/>(background thread)"]
+        SF -->|thread-safe handoff| PC["process_candle(candle)<br/>dedup + buffer + trim"]
+        PC -->|updates| BUF
+        PC -->|on_bar| STRAT["Strategy<br/>(SMACrossover / real port)"]
+        STRAT -->|Signal or None| ROUTER["SignalRouter"]
+        ROUTER -->|order / position action| VENUE["ExecutionVenue<br/>(alpaca | coinbase | fake)"]
+        VENUE -->|place / close order| REST_ORD["Exchange REST API<br/>(orders)"]
+    end
+
+    subgraph Resilience["Reconnection watchdog"]
+        WD["Watchdog<br/>exp backoff 1s→60s"] -.->|on drop, reconnect| WS
+        WD -.->|REST-fill missed bars| PC
+    end
+
+    SF -.->|disconnect detected| WD
+```
+
 ## 5. Components
 
 - `config.py`
