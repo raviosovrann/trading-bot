@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import signal
+import time
+from collections.abc import Callable
 
 from .datafeed import CandleFeed
 from .models import Candle, OrderResult
 from .router import SignalRouter
 from .strategy import Strategy
-from .stream import StreamingFeed
+from .stream import StreamingFeed, run_with_reconnect
 
 
 class BotRuntime:
@@ -77,10 +79,17 @@ class StreamRuntime:
         timeframe: str,
         warmup_bars: int = 20,
         max_buffer: int = 500,
+        base_backoff: float = 1.0,
+        max_backoff: float = 60.0,
+        gapfill_bars: int = 50,
     ) -> None:
         self._feed = feed
         self._symbol = symbol
+        self._timeframe = timeframe
         self._stopped = False
+        self._base_backoff = base_backoff
+        self._max_backoff = max_backoff
+        self._gapfill_bars = gapfill_bars
         # Reuse BotRuntime for warmup + buffer + the pure process_candle core.
         self._bot = BotRuntime(
             feed=feed,
@@ -97,10 +106,22 @@ class StreamRuntime:
     def candles(self) -> tuple[Candle, ...]:
         return self._bot.candles
 
-    def start(self, *, install_signals: bool = True) -> None:
+    def start(self, *, install_signals: bool = True, sleep: Callable[[float], None] = time.sleep) -> None:
         if install_signals:
             self._install_signal_handlers()
-        self._feed.run(self._symbol)
+        run_with_reconnect(
+            connect_and_run=lambda: self._feed.run(self._symbol),
+            should_stop=lambda: self._stopped,
+            gap_fill=self._gap_fill,
+            sleep=sleep,
+            base_backoff=self._base_backoff,
+            max_backoff=self._max_backoff,
+        )
+
+    def _gap_fill(self) -> None:
+        """REST-fill bars missed during an outage; process_candle dedups overlap."""
+        for candle in self._feed.warmup_candles(self._symbol, self._timeframe, self._gapfill_bars):
+            self._bot.process_candle(candle)
 
     def stop(self) -> None:
         if self._stopped:
