@@ -5,8 +5,9 @@ from collections.abc import Sequence
 from .config import Config, load_config, require_credentials
 from .datafeed import build_feed
 from .router import SignalRouter
-from .runtime import BotRuntime
+from .runtime import BotRuntime, StreamRuntime
 from .strategy import SMACrossoverStrategy
+from .stream import build_stream_feed
 from .venues.alpaca import AlpacaVenue
 from .venues.coinbase import CoinbaseVenue
 from .venues.fake import FakeVenue
@@ -37,7 +38,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     require_credentials(cfg)
 
     venue = _build_venue(cfg)
-    feed = build_feed(cfg)
     strategy = SMACrossoverStrategy(
         symbol=cfg.symbol,
         strategy_name="sma_crossover",
@@ -46,19 +46,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         quantity=cfg.order_qty,
     )
     router = SignalRouter(venue)
-    runtime = BotRuntime(
+
+    if cfg.stream:
+        # Event-driven mode: block on the WebSocket feed, acting on each pushed
+        # closed bar. Ctrl+C / SIGTERM triggers a graceful shutdown.
+        stream_feed = build_stream_feed(cfg)
+        StreamRuntime(
+            feed=stream_feed,
+            strategy=strategy,
+            router=router,
+            symbol=cfg.symbol,
+            timeframe=cfg.timeframe,
+            warmup_bars=20,
+        ).start()
+        return 0
+
+    # Single-shot mode: process the latest closed candle over REST, then exit
+    # (suitable for cron-style invocation).
+    feed = build_feed(cfg)
+    BotRuntime(
         feed=feed,
         strategy=strategy,
         router=router,
         symbol=cfg.symbol,
         timeframe=cfg.timeframe,
         warmup_bars=20,
-    )
-
-    # Single-shot processing of the latest closed candle. Continuous operation
-    # returns in v2 via an event-driven streaming StreamRuntime that consumes a
-    # WebSocket feed, replacing the retired run_forever() polling loop.
-    runtime.run_once()
+    ).run_once()
 
     return 0
 
