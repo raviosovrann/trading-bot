@@ -6,9 +6,11 @@ def test_buy_opens_long_then_close_flattens():
     v = FakeVenue()
     r = v.place_order(Order(symbol="BTCUSDT", side=Side.buy, order_type=OrderType.market, qty=0.01))
     assert r.ok
-    assert v.get_position("BTCUSDT").side is PositionSide.long
+    pos = v.get_position("BTCUSDT")
+    assert pos is not None and pos.side is PositionSide.long
     assert v.close_position("BTCUSDT").ok
-    assert v.get_position("BTCUSDT").side is PositionSide.flat
+    pos = v.get_position("BTCUSDT")
+    assert pos is not None and pos.side is PositionSide.flat
 
 
 def test_records_orders_and_healthcheck():
@@ -16,7 +18,8 @@ def test_records_orders_and_healthcheck():
     v.place_order(Order(symbol="BTCUSDT", side=Side.sell, order_type=OrderType.market, qty=0.02))
     assert v.health_check() is True
     assert len(v.orders) == 1
-    assert v.get_position("BTCUSDT").side is PositionSide.short
+    pos = v.get_position("BTCUSDT")
+    assert pos is not None and pos.side is PositionSide.short
 
 
 def test_close_with_no_position_is_noop():

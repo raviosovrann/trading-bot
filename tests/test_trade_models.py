@@ -23,4 +23,4 @@ def test_order_result_and_position():
 def test_position_rejects_invalid_side():
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
-        Position(symbol="BTCUSDT", side="sideways", size=1.0, entry_price=1.0)
+        Position(symbol="BTCUSDT", side="sideways", size=1.0, entry_price=1.0)  # type: ignore[arg-type]
