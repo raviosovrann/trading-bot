@@ -98,7 +98,8 @@ def test_stream_runtime_pushed_bar_drives_strategy_and_router():
     assert venue.orders == []
     feed.push(_candle(20, close=200.0))  # trigger buy
     assert len(venue.orders) == 1
-    assert venue.get_position("BTC/USD").side is PositionSide.long
+    pos = venue.get_position("BTC/USD")
+    assert pos is not None and pos.side is PositionSide.long
 
 
 def test_stream_runtime_dedups_stale_timestamp():
