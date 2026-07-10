@@ -56,7 +56,7 @@ class AlpacaStreamFeed:
 
     @classmethod
     def from_credentials(cls, api_key: str, api_secret: str) -> "AlpacaStreamFeed":
-        if not _ALPACA_STREAM_AVAILABLE:
+        if CryptoDataStream is None:
             raise RuntimeError("alpaca-py is not installed")
         client = CryptoDataStream(api_key, api_secret)
         warmup_feed = AlpacaCandleFeed.from_credentials(api_key, api_secret)
@@ -127,7 +127,7 @@ class CoinbaseStreamFeed:
     def from_credentials(
         cls, api_key: str, api_secret: str, sandbox: bool = True
     ) -> "CoinbaseStreamFeed":
-        if not _COINBASE_WS_AVAILABLE:
+        if _CoinbaseWSClient is None:
             raise RuntimeError("coinbase-advanced-py is not installed")
         warmup_feed = CoinbaseCandleFeed.from_credentials(api_key, api_secret, sandbox=sandbox)
         # The WS client needs the feed's message handler, so create the client

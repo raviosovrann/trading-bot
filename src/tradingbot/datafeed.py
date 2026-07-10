@@ -52,7 +52,7 @@ def normalize_candle(value: Candle | Mapping[str, float | int]) -> Candle:
 
 
 def _parse_timeframe(tf: str) -> Any:
-    if not _ALPACA_AVAILABLE:
+    if TimeFrame is None or TimeFrameUnit is None:
         raise RuntimeError("alpaca-py is not installed")
     m = _TF_RE.match(tf)
     if not m:
@@ -64,7 +64,12 @@ def _parse_timeframe(tf: str) -> Any:
 
 def _bar_to_candle(bar: Any) -> Candle:
     ts = getattr(bar, "timestamp", None)
-    ts_ms = int(ts.timestamp() * 1000) if hasattr(ts, "timestamp") else int(ts or 0)
+    if ts is None:
+        ts_ms = 0
+    elif hasattr(ts, "timestamp"):
+        ts_ms = int(ts.timestamp() * 1000)
+    else:
+        ts_ms = int(ts)
     return Candle(
         timestamp=ts_ms,
         open=float(getattr(bar, "open", 0.0)),
@@ -83,11 +88,13 @@ class AlpacaCandleFeed:
 
     @classmethod
     def from_credentials(cls, api_key: str, api_secret: str) -> "AlpacaCandleFeed":
-        if not _ALPACA_AVAILABLE:
+        if CryptoHistoricalDataClient is None:
             raise RuntimeError("alpaca-py is not installed")
         return cls(CryptoHistoricalDataClient(api_key=api_key, secret_key=api_secret))
 
     def _fetch_bars(self, symbol: str, timeframe: str, limit: int) -> list[Any]:
+        if CryptoBarsRequest is None:
+            raise RuntimeError("alpaca-py is not installed")
         tf = _parse_timeframe(timeframe)
         request = CryptoBarsRequest(symbol_or_symbols=symbol, timeframe=tf, limit=limit)
         barset = self._client.get_crypto_bars(request)
@@ -168,7 +175,7 @@ class CoinbaseCandleFeed:
 
     @classmethod
     def from_credentials(cls, api_key: str, api_secret: str, sandbox: bool = True) -> "CoinbaseCandleFeed":
-        if not _COINBASE_AVAILABLE:
+        if _CoinbaseRESTClient is None:
             raise RuntimeError("coinbase-advanced-py is not installed")
         if sandbox:
             return cls(
