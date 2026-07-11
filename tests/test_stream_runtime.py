@@ -91,6 +91,16 @@ def test_stream_runtime_registers_handler_before_run():
     assert feed._handler is not None
 
 
+def test_stream_runtime_evaluates_warmup_on_start():
+    # last warmup bar (close=200) satisfies the stub strategy -> a buy should be
+    # routed immediately on start, before any live candle is pushed.
+    warmup = [_candle(1, 100.0), _candle(2, 200.0)]
+    rt, feed, venue = _make(warmup=warmup)
+    feed.run = lambda *s: rt.stop()  # connect returns immediately and stops the loop
+    rt.start(install_signals=False, sleep=lambda _: None)
+    assert len(venue.orders) == 1
+
+
 def test_stream_runtime_pushed_bar_drives_strategy_and_router():
     rt, feed, venue = _make()
     feed.push(_candle(10, close=100.0))  # no signal

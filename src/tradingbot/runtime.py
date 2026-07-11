@@ -167,6 +167,14 @@ class StreamRuntime:
     def start(self, *, install_signals: bool = True, sleep: Callable[[float], None] = time.sleep) -> None:
         if install_signals:
             self._install_signal_handlers()
+        # Evaluate the warmed buffer immediately so we act on an already-valid
+        # signal and give instant feedback, rather than waiting up to a full
+        # candle (e.g. an hour on 1h) for the first decision.
+        _log.info(
+            "%s: warmed up %d bars — evaluating now, then streaming live candles",
+            self._symbol, len(self._proc.candles),
+        )
+        self._proc.evaluate()
         run_with_reconnect(
             connect_and_run=lambda: self._feed.run(self._symbol),
             should_stop=lambda: self._stopped,
