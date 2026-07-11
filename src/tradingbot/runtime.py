@@ -51,10 +51,15 @@ class CandleProcessor:
             return None
 
         result = self._router.route(signal)
+        if result.status == "dry_run":
+            label = "DRY-RUN (not sent)"
+        elif result.ok:
+            label = "PLACED"
+        else:
+            label = "FAILED"
         _log.info(
-            "order %s: action=%s status=%s ok=%s id=%s%s",
-            "PLACED" if result.ok else "FAILED",
-            signal.action.value, result.status, result.ok, result.order_id,
+            "order %s: action=%s status=%s id=%s%s",
+            label, signal.action.value, result.status, result.order_id,
             f" error={result.error}" if result.error else "",
         )
         return result

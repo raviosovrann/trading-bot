@@ -256,9 +256,10 @@ class AdaptiveMomentumRibbonStrategy:
         htf1_ok = self._htf_accelerating(self.htf1)
         htf2_ok = self._htf_accelerating(self.htf2) if htf1_ok else False
         if not (htf1_ok and htf2_ok):
+            htf2_disp = htf2_ok if htf1_ok else "skipped"  # short-circuited if 1h failed
             _log.info(
                 "%s @ %.6g: HOLD — base ready but HTF not accelerating (%s=%s %s=%s)",
-                self.symbol, price, self.htf1, htf1_ok, self.htf2, htf2_ok,
+                self.symbol, price, self.htf1, htf1_ok, self.htf2, htf2_disp,
             )
             return None
 
