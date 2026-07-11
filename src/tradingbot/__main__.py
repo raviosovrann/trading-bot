@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from .amvr import AdaptiveMomentumRibbonStrategy
 from .config import Config, load_config, require_credentials
 from .datafeed import CcxtCandleFeed
 from .router import SignalRouter
 from .runtime import BotRuntime, StreamRuntime
-from .strategy import SMACrossoverStrategy
 from .stream import CcxtStreamFeed
 from .venues.ccxt import CcxtVenue
+
+# Enough base bars to warm up the slowest ribbon (HMA 100 + velocity/accel).
+_WARMUP_BARS = 220
 
 
 def _build_venue(cfg: Config) -> CcxtVenue:
@@ -28,11 +31,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     require_credentials(cfg)
 
     venue = _build_venue(cfg)
-    strategy = SMACrossoverStrategy(
+
+    # Dedicated REST feed the strategy uses to fetch 1H/4H higher-timeframe
+    # momentum (independent of the base-timeframe feed/stream below).
+    mtf_feed = CcxtCandleFeed.from_exchange(
+        cfg.exchange,
+        cfg.api_key,
+        cfg.api_secret,
+        cfg.api_password or None,
+    )
+    strategy = AdaptiveMomentumRibbonStrategy(
         symbol=cfg.symbol,
-        strategy_name="sma_crossover",
-        fast_length=5,
-        slow_length=20,
+        mtf_feed=mtf_feed,
         quantity=cfg.order_qty,
     )
     router = SignalRouter(venue)
@@ -53,7 +63,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             router=router,
             symbol=cfg.symbol,
             timeframe=cfg.timeframe,
-            warmup_bars=20,
+            warmup_bars=_WARMUP_BARS,
         ).start()
         return 0
 
@@ -71,7 +81,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         router=router,
         symbol=cfg.symbol,
         timeframe=cfg.timeframe,
-        warmup_bars=20,
+        warmup_bars=_WARMUP_BARS,
     ).run_once()
 
     return 0
