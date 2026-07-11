@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import signal
 import time
 from collections.abc import Callable, Iterable
@@ -9,6 +10,8 @@ from .models import Candle, OrderResult
 from .router import SignalRouter
 from .strategy import Strategy
 from .stream import StreamingFeed, run_with_reconnect
+
+_log = logging.getLogger(__name__)
 
 
 class CandleProcessor:
@@ -47,7 +50,19 @@ class CandleProcessor:
         if signal is None:
             return None
 
-        return self._router.route(signal)
+        result = self._router.route(signal)
+        if result.status == "dry_run":
+            label = "DRY-RUN (not sent)"
+        elif result.ok:
+            label = "PLACED"
+        else:
+            label = "FAILED"
+        _log.info(
+            "order %s: action=%s status=%s id=%s%s",
+            label, signal.action.value, result.status, result.order_id,
+            f" error={result.error}" if result.error else "",
+        )
+        return result
 
 
 class BotRuntime:
