@@ -7,36 +7,28 @@ class ConfigError(RuntimeError):
     pass
 
 
-VENUES = ("alpaca", "coinbase", "fake")
-
-
 @dataclass(frozen=True, repr=False)
 class Config:
-    venue: str
-    alpaca_api_key: str
-    alpaca_api_secret: str
-    alpaca_paper: bool
-    coinbase_api_key: str
-    coinbase_api_secret: str
-    coinbase_sandbox: bool
+    exchange: str
+    api_key: str
+    api_secret: str
+    api_password: str
     symbol: str
     timeframe: str
     order_qty: float
     stream: bool = False
+    live: bool = False
 
     def __repr__(self) -> str:
         def mask(v: str) -> str:
             return "***" if v else ""
         return (
-            f"Config(venue={self.venue!r}, "
-            f"alpaca_api_key={mask(self.alpaca_api_key)!r}, "
-            f"alpaca_api_secret={mask(self.alpaca_api_secret)!r}, "
-            f"alpaca_paper={self.alpaca_paper!r}, "
-            f"coinbase_api_key={mask(self.coinbase_api_key)!r}, "
-            f"coinbase_api_secret={mask(self.coinbase_api_secret)!r}, "
-            f"coinbase_sandbox={self.coinbase_sandbox!r}, "
+            f"Config(exchange={self.exchange!r}, "
+            f"api_key={mask(self.api_key)!r}, "
+            f"api_secret={mask(self.api_secret)!r}, "
+            f"api_password={mask(self.api_password)!r}, "
             f"symbol={self.symbol!r}, timeframe={self.timeframe!r}, "
-            f"order_qty={self.order_qty!r}, stream={self.stream!r})"
+            f"order_qty={self.order_qty!r}, stream={self.stream!r}, live={self.live!r})"
         )
 
 
@@ -54,10 +46,6 @@ def _as_bool(value: str, default: bool) -> bool:
 def load_config(env: Mapping[str, str] | None = None) -> Config:
     env = os.environ if env is None else env
 
-    venue = (env.get("VENUE") or "alpaca").strip().lower()
-    if venue not in VENUES:
-        raise ConfigError(f"Invalid VENUE: {venue!r} (expected one of {VENUES})")
-
     order_qty_raw = (env.get("ORDER_QTY") or "").strip() or "0.001"
     try:
         order_qty = float(order_qty_raw)
@@ -65,28 +53,24 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         raise ConfigError(f"Invalid ORDER_QTY: {order_qty_raw!r}") from exc
 
     return Config(
-        venue=venue,
-        alpaca_api_key=(env.get("ALPACA_API_KEY") or "").strip(),
-        alpaca_api_secret=(env.get("ALPACA_API_SECRET") or "").strip(),
-        alpaca_paper=_as_bool(env.get("ALPACA_PAPER", ""), default=True),
-        coinbase_api_key=(env.get("COINBASE_API_KEY") or "").strip(),
-        coinbase_api_secret=(env.get("COINBASE_API_SECRET") or "").strip(),
-        coinbase_sandbox=_as_bool(env.get("COINBASE_SANDBOX", ""), default=True),
+        exchange=(env.get("EXCHANGE") or "coinbase").strip().lower(),
+        api_key=(env.get("API_KEY") or "").strip(),
+        api_secret=(env.get("API_SECRET") or "").strip(),
+        api_password=(env.get("API_PASSWORD") or "").strip(),
         symbol=(env.get("SYMBOL") or "BTC/USD").strip(),
-        timeframe=(env.get("TIMEFRAME") or "5Min").strip(),
+        timeframe=(env.get("TIMEFRAME") or "5m").strip(),
         order_qty=order_qty,
         stream=_as_bool(env.get("STREAM", ""), default=False),
+        live=_as_bool(env.get("LIVE", ""), default=False),
     )
 
 
 def require_credentials(cfg: Config) -> None:
-    """Ensure the selected venue has the credentials it needs.
+    """Ensure the exchange has the credentials ccxt needs.
 
-    The ``fake`` venue needs none. Real venues fail fast when key/secret are empty.
+    Requires an API key and secret. Some exchanges (e.g. Coinbase, OKX, KuCoin)
+    also need a passphrase via API_PASSWORD, but that is exchange-specific and
+    not enforced here.
     """
-    if cfg.venue == "alpaca":
-        if not cfg.alpaca_api_key or not cfg.alpaca_api_secret:
-            raise ConfigError("Missing ALPACA_API_KEY / ALPACA_API_SECRET")
-    elif cfg.venue == "coinbase":
-        if not cfg.coinbase_api_key or not cfg.coinbase_api_secret:
-            raise ConfigError("Missing COINBASE_API_KEY / COINBASE_API_SECRET")
+    if not cfg.api_key or not cfg.api_secret:
+        raise ConfigError("Missing API_KEY / API_SECRET")
