@@ -14,9 +14,17 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Protocol
 
 from .models import Action, Candle, OrderType, PositionSide, Signal
+
+
+class WarmupSource(Protocol):
+    """The only capability the strategy needs from its higher-timeframe feed:
+    fetch recent closed candles for a symbol/timeframe. ``CcxtCandleFeed``
+    satisfies this."""
+
+    def warmup_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]: ...
 
 
 # --------------------------------------------------------------------------- #
@@ -98,7 +106,7 @@ class AdaptiveMomentumRibbonStrategy:
         self,
         *,
         symbol: str,
-        mtf_feed: Any,
+        mtf_feed: WarmupSource,
         strategy_name: str = "amvr",
         fast_len: int = 40,
         mid_len: int = 80,
@@ -112,6 +120,7 @@ class AdaptiveMomentumRibbonStrategy:
         htf2: str = "4h",
         mtf_bars: int = 40,
         mtf_cache_seconds: float = 60.0,
+        mtf_fail_cooldown_seconds: float = 30.0,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if not (fast_len < mid_len < slow_len):
@@ -131,10 +140,12 @@ class AdaptiveMomentumRibbonStrategy:
         self.htf2 = htf2
         self.mtf_bars = mtf_bars
         self.mtf_cache_seconds = mtf_cache_seconds
+        self.mtf_fail_cooldown_seconds = mtf_fail_cooldown_seconds
         self._clock = clock
 
         self._in_position = False
         self._mtf_cache: dict[str, tuple[float, list[float]]] = {}
+        self._mtf_retry_after: dict[str, float] = {}
 
     # -- higher-timeframe momentum -------------------------------------------
 
@@ -142,11 +153,25 @@ class AdaptiveMomentumRibbonStrategy:
         now = self._clock()
         cached = self._mtf_cache.get(timeframe)
         if cached is not None and (now - cached[0]) < self.mtf_cache_seconds:
-            return cached[1]
-        candles = self._mtf_feed.warmup_candles(self.symbol, timeframe, self.mtf_bars)
-        closes = [c.close for c in candles]
+            return list(cached[1])  # copy: never hand out the cached list by reference
+
+        # After a failure, back off before retrying so a persistently-down
+        # endpoint isn't hammered once per bar; serve stale data meanwhile.
+        if now < self._mtf_retry_after.get(timeframe, 0.0):
+            return list(cached[1]) if cached is not None else []
+
+        try:
+            candles = self._mtf_feed.warmup_candles(self.symbol, timeframe, self.mtf_bars)
+            closes = [c.close for c in candles]
+        except Exception:
+            # A transient REST/ccxt failure must not crash the runtime. Fall back
+            # to the last good data if we have it; otherwise return no closes,
+            # which conservatively blocks entry (we won't buy without HTF confirmation).
+            self._mtf_retry_after[timeframe] = now + self.mtf_fail_cooldown_seconds
+            return list(cached[1]) if cached is not None else []
         self._mtf_cache[timeframe] = (now, closes)
-        return closes
+        self._mtf_retry_after.pop(timeframe, None)
+        return list(closes)
 
     def _htf_accelerating(self, timeframe: str) -> bool:
         closes = self._mtf_closes(timeframe)

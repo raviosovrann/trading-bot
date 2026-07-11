@@ -152,3 +152,42 @@ def test_exit_does_not_fetch_mtf():
     strat._in_position = True
     strat.on_bar(_candles(_reversal_base()))
     assert feed.calls == []
+
+
+class _RaisingFeed:
+    def __init__(self):
+        self.calls = 0
+
+    def warmup_candles(self, symbol, timeframe, limit):
+        self.calls += 1
+        raise RuntimeError("transient REST failure")
+
+
+def test_mtf_fetch_failure_does_not_crash_and_blocks_entry():
+    # A network/ccxt blip while fetching HTF data must not raise out of on_bar;
+    # without HTF confirmation, entry is conservatively suppressed and we stay flat.
+    strat = AdaptiveMomentumRibbonStrategy(
+        symbol="XRP/USD", mtf_feed=_RaisingFeed(), mtf_cache_seconds=0.0
+    )
+    assert strat.on_bar(_candles(_bullish_base())) is None
+    assert strat._in_position is False
+
+
+def test_mtf_failure_cooldown_prevents_retry_storm():
+    # With a frozen clock inside the cooldown window, a persistently-failing feed
+    # is only hit once (per timeframe), not on every on_bar call.
+    feed = _RaisingFeed()
+    strat = AdaptiveMomentumRibbonStrategy(
+        symbol="XRP/USD",
+        mtf_feed=feed,
+        mtf_cache_seconds=0.0,
+        mtf_fail_cooldown_seconds=30.0,
+        clock=lambda: 1000.0,  # frozen: stays within the cooldown window
+    )
+    base = _candles(_bullish_base())
+    strat.on_bar(base)
+    strat.on_bar(base)
+    strat.on_bar(base)
+    # first call hits 1h (fails -> cooldown); 4h is short-circuited (1h already
+    # false). Subsequent calls stay within cooldown and never re-hit the feed.
+    assert feed.calls == 1

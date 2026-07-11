@@ -1,207 +1,140 @@
 # Trading Bot
 
-An automated crypto trading bot. It watches a market, applies a trading
-strategy, and places buy/sell orders on your exchange account — hands-free once
-it's running.
+An automated crypto trading bot built on [ccxt](https://docs.ccxt.com/) — set up
+for **Coinbase spot** by default, though any ccxt exchange works via `EXCHANGE`.
+It runs one strategy — the **Adaptive Momentum Velocity Ribbon (AMVR)** — on a
+market you choose, and places buy/sell orders for you.
 
-Exchange access is powered by [**ccxt**](https://docs.ccxt.com/), so the same
-code trades on any ccxt-supported exchange. The default target is **Coinbase**.
-
----
-
-## What it does
-
-1. Fetches recent price candles from your exchange (REST warmup).
-2. In streaming mode, connects to the exchange WebSocket and reacts the instant
-   each candle closes (no polling); in single-shot mode it processes the latest
-   closed candle once and exits.
-3. Runs each closed candle through a strategy (currently a placeholder SMA
-   crossover).
-4. When the strategy says buy/sell, it places a market order — **or, in dry-run
-   mode, just logs the order it *would* place.**
-
-There is no dashboard. The bot logs what it does to the terminal.
+It is **long-only** (spot: you're either holding the coin or in cash) and won't
+spend a cent until you explicitly turn trading on.
 
 ---
 
-## Dry-run vs live — the LIVE guard
+## The strategy in one paragraph
 
-The bot will not spend real money unless you explicitly opt in.
+AMVR tracks three Hull moving averages (the "ribbon") and measures how fast each
+is rising. It **buys** when momentum lines up in your favour — a bullish
+"prepare" signal has fired, all three ribbons are green (rising), momentum is
+accelerating up, and both the **1H and 4H** timeframes are also accelerating up.
+It **sells everything back to cash** when momentum rolls over (the bearish
+"prepare" signal). It never shorts.
 
-| `LIVE` | Behaviour |
-|--------|-----------|
-| unset / `0` (default) | **Dry run.** Fetches data, runs the strategy, and logs the order it would place. Sends nothing to the exchange. Spends **$0**. |
-| `1` | **Live.** Places real market orders that move real money. |
-
-**Always verify in dry-run first**, confirm the pipeline behaves, then set
-`LIVE=1`.
+Because all four conditions must align, it trades selectively — it will often sit
+in cash waiting, which is by design.
 
 ---
 
-## Setup
+## Dry run vs live — the safety switch
 
-### 1. Install dependencies
+| `LIVE` | What happens |
+|--------|--------------|
+| `0` (default) | **Dry run.** Reads real market data, decides, and *logs the order it would place*. Sends nothing. Costs **$0**. |
+| `1` | **Live.** Places real orders with real money. |
+
+Always run in dry run first.
+
+---
+
+## Setup (once)
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate      # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-### 2. Create your config
-
-```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
+Then get Coinbase API keys:
+
+1. Go to the [Coinbase Developer Platform](https://www.coinbase.com/developer-platform), sign in.
+2. Create an API key with **Trade** permission.
+3. Put the key, secret, and passphrase into `.env`.
+
+Your `.env` should look like:
 
 ```
 EXCHANGE=coinbase
 API_KEY=<your key>
 API_SECRET=<your secret>
-API_PASSWORD=<passphrase — required for Coinbase/OKX/KuCoin>
-SYMBOL=DOGE/USD
-TIMEFRAME=5m
-ORDER_QTY=10
-STREAM=0
-LIVE=0
+API_PASSWORD=<your passphrase>
+SYMBOL=XRP/USD          # any cheap alt: DOGE/USD, XRP/USD, ADA/USD, ...
+TIMEFRAME=1h            # bar size the ribbon runs on
+ORDER_QTY=25            # how much of the coin to buy per signal
+STREAM=1                # 1 = stay running and react live; 0 = one-shot
+LIVE=0                  # keep 0 until you're ready to trade real money
 ```
 
-### 3. Load config into the terminal
+---
+
+## Running it
+
+Load your config into the shell, then start the bot:
 
 ```bash
 set -a; source .env; set +a
-```
-
-Run this in every new terminal before starting the bot.
-
----
-
-## Getting Coinbase API keys
-
-1. Go to the [Coinbase Developer Platform](https://www.coinbase.com/developer-platform)
-   and sign in.
-2. Create an API key with **Trade** permission.
-3. Copy the key, secret, and passphrase into `API_KEY`, `API_SECRET`, and
-   `API_PASSWORD` in `.env`.
-
-To trade a different exchange, set `EXCHANGE` to its
-[ccxt id](https://docs.ccxt.com/#/README?id=exchanges) (e.g. `kraken`) and
-supply that exchange's credentials.
-
----
-
-## Running the bot
-
-Single-shot (process one candle, then exit — good for a first smoke test):
-
-```bash
 PYTHONPATH=src python3 -m tradingbot
 ```
 
-Live streaming (event-driven, stays running; Ctrl+C to stop):
-
-```bash
-STREAM=1 PYTHONPATH=src python3 -m tradingbot
-```
-
-In streaming mode the bot warms up on recent history, connects to the exchange
-WebSocket, and acts on each candle as it closes. If the connection drops it
-auto-reconnects with exponential backoff and back-fills bars missed during the
-outage.
+- With `STREAM=1` it warms up on history, then stays connected and reacts to each
+  candle as it closes. **Ctrl+C** to stop.
+- With `STREAM=0` it checks the latest candle once and exits (good for a quick test).
 
 ---
 
-## Recommended first run (spend $0)
+## Recommended path with a funded account ($50–100)
 
-1. Put real Coinbase keys in `.env` but keep **`LIVE=0`**.
-2. Smoke test — single shot:
-   ```bash
-   set -a; source .env; set +a
-   PYTHONPATH=src python3 -m tradingbot
-   ```
-   Logs should show a candle fetched, a signal or "no signal", and — if a
-   signal fired — a **dry-run** order line (nothing sent).
-3. Watch streaming for a few minutes with `STREAM=1` (still `LIVE=0`).
-4. When you're satisfied, set `LIVE=1` and fund the account with a small
-   amount. Cheap alts keep test costs tiny: `DOGE/USD`, `SHIB/USD`, `XRP/USD`,
-   `XLM/USD`, `ADA/USD`, `ALGO/USD`, `ARB/USD`.
+1. **Dry run first.** Keep `LIVE=0`. Run it and watch the logs decide over a few
+   hours across a couple of symbols. Right now it will mostly sit flat — normal.
+2. **Pick a cheap alt** so each trade is small: e.g. `SYMBOL=XRP/USD`.
+3. **Size the order** with `ORDER_QTY` — this is the amount of the *coin*, not
+   dollars. For ~$25 of XRP at ~$1.10, use `ORDER_QTY=22`. Start small.
+4. **Go live:** set `LIVE=1`, reload (`set -a; source .env; set +a`), and run.
+5. **Verify** on Coinbase → your account's Orders/Activity that fills appear.
 
-> The placeholder SMA strategy only trades on a moving-average crossover, so it
-> may sit at "no signal" in a flat market. Use a shorter `TIMEFRAME` (e.g. `1m`)
-> for quicker activity while testing.
-
----
-
-## Money safety — read this
-
-- `LIVE=0` (default) never sends an order. Completely risk-free.
-- `LIVE=1` places **real orders on a live account**.
-- Start with the smallest sensible `ORDER_QTY` on a cheap alt.
-- Never commit your `.env` — it's gitignored.
-- Ctrl+C stops the bot. Open positions stay on the exchange until you close
-  them.
+> With ~$98 in the account, keep `ORDER_QTY` well under your balance so a buy
+> always has room, and expect the bot to wait for momentum to align before its
+> first trade.
 
 ---
 
 ## Configuration reference
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `EXCHANGE` | `coinbase` | ccxt exchange id (`coinbase`, `kraken`, …). |
-| `API_KEY` | *(empty)* | Exchange API key. |
-| `API_SECRET` | *(empty)* | Exchange API secret. |
-| `API_PASSWORD` | *(empty)* | Passphrase — required by Coinbase/OKX/KuCoin. |
-| `SYMBOL` | `BTC/USD` | Market, ccxt unified format (e.g. `DOGE/USD`). |
-| `TIMEFRAME` | `5m` | Bar timeframe, ccxt unified (`1m`, `5m`, `15m`, `1h`, `1d`). |
-| `ORDER_QTY` | `0.001` | Base-asset order size per signal. |
-| `STREAM` | `0` | `1` = event-driven WebSocket streaming; `0` = single-shot. |
-| `LIVE` | `0` | `1` = place real orders; `0`/unset = dry-run. |
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `EXCHANGE` | `coinbase` | ccxt exchange id. |
+| `API_KEY` / `API_SECRET` / `API_PASSWORD` | *(empty)* | Coinbase credentials (passphrase required). |
+| `SYMBOL` | `BTC/USD` | Market to trade (e.g. `XRP/USD`). |
+| `TIMEFRAME` | `5m` | Candle size the ribbon runs on (`1m`,`5m`,`15m`,`1h`,`4h`,`1d`). |
+| `ORDER_QTY` | `0.001` | Amount of the base coin to buy per signal. |
+| `STREAM` | `0` | `1` = stay running and react live; `0` = one-shot. |
+| `LIVE` | `0` | `1` = real orders; `0` = dry run. |
 
 ---
 
 ## For developers
 
 <details>
-<summary>Architecture, tests, and technical reference</summary>
-
-### Architecture
+<summary>Architecture & tests</summary>
 
 ```text
-CcxtCandleFeed / CcxtStreamFeed  ->  Strategy  ->  Router  ->  CcxtVenue  ->  Exchange (ccxt)
-            (bars)                    (signals)    (actions)   (orders)
+CcxtCandleFeed / CcxtStreamFeed  ->  AMVR strategy  ->  Router  ->  CcxtVenue  ->  Coinbase (ccxt)
+        (candles)                    (buy/sell)         (routes)    (orders)
 ```
 
-Feeds and the venue are the only exchange-specific pieces, and all go through
-ccxt. The router and runtime depend only on the `ExecutionVenue` /
-`CandleFeed` / `StreamingFeed` protocols.
-
-### Spot long/flat only
-
-This milestone trades **spot**: long or flat, no shorting or leverage.
-`CcxtVenue.get_position` derives the position from the base-asset balance.
-Futures support is a future drop-in via `fetch_positions()` (a seam is already
-in place, keyed on `market_type`).
-
-### Strategy
-
-Current strategy is a placeholder SMA crossover (fast=5, slow=20). Replace
-`SMACrossoverStrategy` in `src/tradingbot/strategy.py` with a real strategy — it
-only needs to implement the `Strategy` interface. (A TradingView Pine Script
-port is planned as the next step.)
-
-### Tests
-
-The suite uses injected fakes only — no live network calls. Test-only doubles
-live in `tests/doubles.py` and are not shipped in the package.
+- Strategy: `src/tradingbot/amvr.py` (`AdaptiveMomentumRibbonStrategy`). The 1H/4H
+  momentum is fetched via an injected `CcxtCandleFeed` (cached, and resilient to
+  transient REST failures — a fetch error blocks entry rather than crashing).
+- Spot long/flat only; `CcxtVenue.get_position` reads the base-asset balance.
+- Known limitation: the strategy tracks its own in/out-of-position state, which
+  can drift from the real venue position after a rejected/partial order or a
+  manual trade. Reconciling against `get_position()` is a planned follow-up.
 
 ```bash
 source .venv/bin/activate
+pip install -r requirements.txt
 pytest -v
 ```
 
-CI runs the full matrix (3.11/3.12/3.13) plus pyright, Bandit, and CodeQL on
-every push and pull request.
+CI runs the full matrix (3.11/3.12/3.13) plus pyright, Bandit, and CodeQL on every push and PR.
 
 </details>
