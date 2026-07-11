@@ -39,12 +39,19 @@ class CandleProcessor:
         self._candles.extend(candles)
         self._trim()
 
-    def process_candle(self, candle: Candle) -> OrderResult | None:
+    def add_candle(self, candle: Candle) -> bool:
+        """Append a candle if it is strictly newer than the last (dedup).
+        Returns True if it was added."""
         if self._candles and candle.timestamp <= self._candles[-1].timestamp:
-            return None
-
+            return False
         self._candles.append(candle)
         self._trim()
+        return True
+
+    def evaluate(self) -> OrderResult | None:
+        """Run the strategy on the current buffer and route any signal."""
+        if not self._candles:
+            return None
 
         signal = self._strategy.on_bar(self._candles)
         if signal is None:
@@ -63,6 +70,12 @@ class CandleProcessor:
             f" error={result.error}" if result.error else "",
         )
         return result
+
+    def process_candle(self, candle: Candle) -> OrderResult | None:
+        # Streaming path: only evaluate on a genuinely new bar.
+        if not self.add_candle(candle):
+            return None
+        return self.evaluate()
 
 
 class BotRuntime:
@@ -93,11 +106,17 @@ class BotRuntime:
         return self._proc.process_candle(candle)
 
     def run_once(self) -> OrderResult | None:
+        # Warmup already loaded history up to the latest closed candle, so the
+        # freshly-fetched latest is usually a duplicate. Add it only if newer,
+        # then evaluate the current buffer regardless — otherwise one-shot mode
+        # would dedup the candle away and never run the strategy.
         candle = self._feed.latest_closed_candle(self._symbol, self._timeframe)
-        if candle is None:
+        if candle is not None:
+            self._proc.add_candle(candle)
+        elif not self._proc.candles:
+            _log.info("%s: no candles available (empty warmup and no latest)", self._symbol)
             return None
-
-        return self._proc.process_candle(candle)
+        return self._proc.evaluate()
 
 
 class StreamRuntime:

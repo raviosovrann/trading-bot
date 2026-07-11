@@ -61,6 +61,44 @@ def test_runtime_run_once_processes_candle_signal_and_order():
     assert len(venue.orders) == 1
 
 
+class _OverlapFeed:
+    """warmup and latest_closed_candle both return the SAME newest candle —
+    reproduces the one-shot overlap where dedup used to drop the bar."""
+
+    def __init__(self, candles):
+        self._c = candles
+
+    def warmup_candles(self, symbol, timeframe, limit):
+        return list(self._c[-limit:])
+
+    def latest_closed_candle(self, symbol, timeframe):
+        return self._c[-1]
+
+
+def test_run_once_evaluates_even_when_latest_equals_warmup_tail():
+    # Regression: with warmup covering up to the latest closed candle, run_once
+    # must still evaluate the buffer (previously the duplicate was deduped and
+    # the strategy never ran).
+    symbol = "BTC/USD"
+    feed = _OverlapFeed([_candle(i, 100.0 + i) for i in range(1, 6)])
+    signal = Signal(
+        strategy="amvr", action=Action.buy, symbol=symbol,
+        order_type=OrderType.market, quantity=0.01, position_side=PositionSide.long,
+    )
+    strategy = StubStrategy(signal)
+    venue = StubVenue()
+    runtime = BotRuntime(
+        feed=feed, strategy=strategy, router=SignalRouter(venue),
+        symbol=symbol, timeframe="15m", warmup_bars=5,
+    )
+
+    result = runtime.run_once()
+
+    assert result is not None and result.ok is True
+    assert strategy.calls == 1  # on_bar actually ran
+    assert len(venue.orders) == 1
+
+
 def test_runtime_run_once_no_signal_returns_none_and_no_order():
     symbol = "BTC/USD"
     feed = InMemoryCandleFeed({symbol: [_candle(1, 100.0)]})
