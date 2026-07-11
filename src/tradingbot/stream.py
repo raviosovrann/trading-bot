@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from .datafeed import AlpacaCandleFeed, CoinbaseCandleFeed, _bar_to_candle
+from .datafeed import AlpacaCandleFeed, CcxtCandleFeed, CoinbaseCandleFeed, _bar_to_candle, _ohlcv_to_candle
 from .models import Candle
+
+try:
+    import ccxt.pro as ccxtpro  # type: ignore
+except Exception:  # pragma: no cover - optional third-party install
+    ccxtpro = None  # type: ignore[assignment]
 
 try:
     from alpaca.data.live import CryptoDataStream
@@ -174,6 +180,90 @@ class CoinbaseStreamFeed:
 
     def stop(self) -> None:
         self._client.close()
+
+
+class CcxtStreamFeed:
+    """Event-driven push feed backed by ccxt.pro's async ``watch_ohlcv``.
+
+    ccxt.pro is async-only, so the sync ``run()`` wraps the watch loop in
+    ``asyncio.run``. Each ``watch_ohlcv`` update returns recent OHLCV rows with
+    the final row still forming; only rows strictly newer than the last emitted
+    timestamp — excluding that forming bar — are handed to the handler, so a
+    candle is emitted exactly once, when it closes. Warmup history comes over
+    REST via an injected sync ``CcxtCandleFeed``.
+    """
+
+    def __init__(
+        self,
+        exchange: Any | None = None,
+        warmup_feed: Any | None = None,
+        timeframe: str = "1m",
+    ) -> None:
+        if exchange is None:
+            raise ValueError("CcxtStreamFeed requires an exchange or use from_exchange(...)")
+        self._ex = exchange
+        self._warmup_feed = warmup_feed
+        self._timeframe = timeframe
+        self._handler: Callable[[Candle], None] | None = None
+        self._last_ts: int | None = None
+        self._stopped = False
+        self._lock = threading.Lock()
+
+    @classmethod
+    def from_exchange(
+        cls,
+        exchange_id: str,
+        api_key: str,
+        api_secret: str,
+        password: str | None = None,
+        timeframe: str = "1m",
+    ) -> "CcxtStreamFeed":
+        if ccxtpro is None:
+            raise RuntimeError("ccxt.pro is not installed")
+        klass = getattr(ccxtpro, exchange_id)
+        config: dict[str, Any] = {"apiKey": api_key, "secret": api_secret, "enableRateLimit": True}
+        if password:
+            config["password"] = password
+        warmup_feed = CcxtCandleFeed.from_exchange(exchange_id, api_key, api_secret, password)
+        return cls(exchange=klass(config), warmup_feed=warmup_feed, timeframe=timeframe)
+
+    def warmup_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
+        if self._warmup_feed is None:
+            raise RuntimeError("CcxtStreamFeed has no warmup feed configured")
+        return self._warmup_feed.warmup_candles(symbol, timeframe, limit)
+
+    def on_bar(self, handler: Callable[[Candle], None]) -> None:
+        self._handler = handler
+
+    def _on_candles(self, candles: list) -> None:
+        """Emit newly-closed candles, dropping the forming final row and dupes."""
+        with self._lock:
+            for row in candles[:-1]:  # last row is the still-forming candle
+                ts = int(row[0])
+                if self._last_ts is not None and ts <= self._last_ts:
+                    continue
+                self._last_ts = ts
+                handler = self._handler
+                if handler is not None:
+                    handler(_ohlcv_to_candle(row))
+
+    async def _watch_loop(self, symbol: str) -> None:
+        try:
+            while not self._stopped:
+                candles = await self._ex.watch_ohlcv(symbol, self._timeframe)
+                if candles:
+                    self._on_candles(candles)
+        finally:
+            await self._ex.close()
+
+    def run(self, *symbols: str) -> None:
+        if not symbols:
+            raise ValueError("CcxtStreamFeed.run requires a symbol")
+        asyncio.run(self._watch_loop(symbols[0]))
+
+    def stop(self) -> None:
+        # Idempotent: signal the watch loop to exit after its current message.
+        self._stopped = True
 
 
 def build_stream_feed(cfg: Any) -> StreamingFeed:
