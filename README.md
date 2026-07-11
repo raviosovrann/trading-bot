@@ -1,6 +1,7 @@
 # Trading Bot
 
-An automated crypto trading bot for **Coinbase spot** (via [ccxt](https://docs.ccxt.com/)).
+An automated crypto trading bot built on [ccxt](https://docs.ccxt.com/) — set up
+for **Coinbase spot** by default, though any ccxt exchange works via `EXCHANGE`.
 It runs one strategy — the **Adaptive Momentum Velocity Ribbon (AMVR)** — on a
 market you choose, and places buy/sell orders for you.
 
