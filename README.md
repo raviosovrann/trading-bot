@@ -1,50 +1,46 @@
 # Trading Bot
 
-An automated crypto trading bot. It watches the BTC/USD market, applies a
-trading strategy, and places buy/sell orders on your exchange account —
-completely hands-free once it's running.
+An automated crypto trading bot. It watches a market, applies a trading
+strategy, and places buy/sell orders on your exchange account — hands-free once
+it's running.
 
-Supported exchanges: **Alpaca** (paper/live) and **Coinbase Advanced Trade**
-(sandbox/live).
+Exchange access is powered by [**ccxt**](https://docs.ccxt.com/), so the same
+code trades on any ccxt-supported exchange. The default target is **Coinbase**.
 
 ---
 
 ## What it does
 
-The bot connects to your exchange's live WebSocket feed and reacts the instant
-each price candle closes:
+1. Fetches recent price candles from your exchange (REST warmup).
+2. In streaming mode, connects to the exchange WebSocket and reacts the instant
+   each candle closes (no polling); in single-shot mode it processes the latest
+   closed candle once and exits.
+3. Runs each closed candle through a strategy (currently a placeholder SMA
+   crossover).
+4. When the strategy says buy/sell, it places a market order — **or, in dry-run
+   mode, just logs the order it *would* place.**
 
-1. Receives the newly closed candle (pushed by the exchange — no polling).
-2. Runs it through a strategy (currently: SMA crossover — a simple
-   moving-average signal).
-3. If the strategy says "buy" or "sell", it places an order on your account.
-4. Stays connected and keeps reacting until you stop it (Ctrl+C), auto-reconnecting
-   if the connection drops.
-
-It can also run in **single-shot mode** — process the latest candle once and
-exit — handy for a quick test or cron-style scheduling.
-
-There is no dashboard or interface. The bot logs what it does to the terminal.
+There is no dashboard. The bot logs what it does to the terminal.
 
 ---
 
-## Before you start — pick a mode
+## Dry-run vs live — the LIVE guard
 
-| Mode | Exchange | Real money? | Recommended for |
-|------|----------|-------------|-----------------|
-| **Alpaca paper** | Alpaca | No — simulated fills | First-time testing, development |
-| **Coinbase sandbox** | Coinbase | No — fake responses | Checking Coinbase wiring |
-| **Alpaca live** | Alpaca | **Yes** | Live trading after testing |
-| **Coinbase live** | Coinbase | **Yes** | Live trading after testing |
+The bot will not spend real money unless you explicitly opt in.
 
-**Start with Alpaca paper.** It gives you realistic simulated fills with zero
-financial risk, and is the fastest way to verify everything works.
+| `LIVE` | Behaviour |
+|--------|-----------|
+| unset / `0` (default) | **Dry run.** Fetches data, runs the strategy, and logs the order it would place. Sends nothing to the exchange. Spends **$0**. |
+| `1` | **Live.** Places real market orders that move real money. |
+
+**Always verify in dry-run first**, confirm the pipeline behaves, then set
+`LIVE=1`.
 
 ---
 
 ## Setup
 
-### 1. Install Python dependencies
+### 1. Install dependencies
 
 ```bash
 python3 -m venv .venv
@@ -52,165 +48,116 @@ source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Create your config file
+### 2. Create your config
 
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` in any text editor. You'll see something like:
+Edit `.env`:
 
 ```
-VENUE=alpaca
-ALPACA_API_KEY=
-ALPACA_API_SECRET=
-ALPACA_PAPER=true
-...
+EXCHANGE=coinbase
+API_KEY=<your key>
+API_SECRET=<your secret>
+API_PASSWORD=<passphrase — required for Coinbase/OKX/KuCoin>
+SYMBOL=DOGE/USD
+TIMEFRAME=5m
+ORDER_QTY=10
+STREAM=0
+LIVE=0
 ```
 
-Fill in the credentials for the exchange you want to use (see below).
-
-### 3. Load your config into the terminal
+### 3. Load config into the terminal
 
 ```bash
 set -a; source .env; set +a
 ```
 
-Run this command every time you open a new terminal window before starting
-the bot. (The `export $(…)` form breaks when `.env` has inline comments, so
-this safer form is preferred.)
+Run this in every new terminal before starting the bot.
 
 ---
 
-## Getting API keys
+## Getting Coinbase API keys
 
-### Alpaca (recommended for testing)
+1. Go to the [Coinbase Developer Platform](https://www.coinbase.com/developer-platform)
+   and sign in.
+2. Create an API key with **Trade** permission.
+3. Copy the key, secret, and passphrase into `API_KEY`, `API_SECRET`, and
+   `API_PASSWORD` in `.env`.
 
-1. Go to <https://app.alpaca.markets/> and sign in.
-2. In the top-left, switch to **Paper Trading** (not Live).
-3. Click **API Keys** → **Generate New Key**.
-4. Copy the **Key ID** and **Secret Key** into `.env`:
-
-```
-VENUE=alpaca
-ALPACA_API_KEY=<paste Key ID here>
-ALPACA_API_SECRET=<paste Secret Key here>
-ALPACA_PAPER=true        # keep this true for paper trading
-```
-
-### Coinbase Advanced Trade
-
-1. Go to <https://www.coinbase.com/developer-platform> and sign in.
-2. Create a new API key with **Trade** permission.
-3. Copy the API key and secret into `.env`:
-
-```
-VENUE=coinbase
-COINBASE_API_KEY=<paste here>
-COINBASE_API_SECRET=<paste here>
-COINBASE_SANDBOX=true    # true = no real money; false = live trades
-```
-
-> **Note:** `COINBASE_SANDBOX=true` tests the connection wiring but does not
-> produce realistic fills. For realistic testing, use Alpaca paper instead.
+To trade a different exchange, set `EXCHANGE` to its
+[ccxt id](https://docs.ccxt.com/#/README?id=exchanges) (e.g. `kraken`) and
+supply that exchange's credentials.
 
 ---
 
 ## Running the bot
 
-### Single-shot (process one candle, then exit)
+Single-shot (process one candle, then exit — good for a first smoke test):
 
 ```bash
 PYTHONPATH=src python3 -m tradingbot
 ```
 
-Good for a quick check of your setup. You'll see logs showing the candle
-fetched, whether a signal fired, and what order (if any) was placed.
-
-### Live streaming (event-driven, stays running)
+Live streaming (event-driven, stays running; Ctrl+C to stop):
 
 ```bash
 STREAM=1 PYTHONPATH=src python3 -m tradingbot
 ```
 
-The bot warms up on recent history, then connects to the exchange WebSocket and
-acts on each candle the moment it closes (frequency set by `TIMEFRAME`). If the
-connection drops it auto-reconnects with exponential backoff and back-fills any
-bars missed during the outage. Press **Ctrl+C** for a clean shutdown.
+In streaming mode the bot warms up on recent history, connects to the exchange
+WebSocket, and acts on each candle as it closes. If the connection drops it
+auto-reconnects with exponential backoff and back-fills bars missed during the
+outage.
 
 ---
 
-## Manual testing walkthrough (Alpaca paper — recommended)
+## Recommended first run (spend $0)
 
-The fastest way to confirm the whole system works end-to-end, risk-free:
-
-1. **Set up** (once):
-   ```bash
-   python3 -m venv .venv && source .venv/bin/activate
-   pip install -r requirements.txt
-   cp .env.example .env
-   ```
-2. **Add your Alpaca paper keys** to `.env` (see "Getting API keys"); keep
-   `VENUE=alpaca` and `ALPACA_PAPER=true`, then load them:
+1. Put real Coinbase keys in `.env` but keep **`LIVE=0`**.
+2. Smoke test — single shot:
    ```bash
    set -a; source .env; set +a
-   ```
-3. **Smoke test — single shot** (confirms credentials, data feed, and order path):
-   ```bash
    PYTHONPATH=src python3 -m tradingbot
    ```
-   The logs should show a candle fetched and either a signal or "no signal".
-4. **Go live — streaming.** Leave it running for a few minutes:
-   ```bash
-   STREAM=1 PYTHONPATH=src python3 -m tradingbot
-   ```
-   It warms up, connects to the live WebSocket, and acts on each closed candle.
-   Stop with **Ctrl+C**.
-5. **Verify orders.** Log in at <https://app.alpaca.markets/> → **Paper Trading
-   → Orders** — any orders the bot placed appear there.
+   Logs should show a candle fetched, a signal or "no signal", and — if a
+   signal fired — a **dry-run** order line (nothing sent).
+3. Watch streaming for a few minutes with `STREAM=1` (still `LIVE=0`).
+4. When you're satisfied, set `LIVE=1` and fund the account with a small
+   amount. Cheap alts keep test costs tiny: `DOGE/USD`, `SHIB/USD`, `XRP/USD`,
+   `XLM/USD`, `ADA/USD`, `ALGO/USD`, `ARB/USD`.
 
-> Tip: the placeholder SMA strategy only trades on a moving-average crossover,
-> so it may sit at "no signal" for a while in a flat market. For quicker
-> activity while testing, set a shorter `TIMEFRAME` (e.g. `1Min`).
-
-For Coinbase, set `VENUE=coinbase`, use `BTC-USD` for `SYMBOL`, and keep
-`COINBASE_SANDBOX=true` — but the Coinbase sandbox does not produce realistic
-fills, so Alpaca paper remains the best end-to-end test.
+> The placeholder SMA strategy only trades on a moving-average crossover, so it
+> may sit at "no signal" in a flat market. Use a shorter `TIMEFRAME` (e.g. `1m`)
+> for quicker activity while testing.
 
 ---
 
 ## Money safety — read this
 
-- `ALPACA_PAPER=true` is completely risk-free. No real money moves.
-- `COINBASE_SANDBOX=true` sends requests to a test server. No real money moves.
-- Changing either to `false` means **real money on a live account**.
-- Never commit your `.env` file — it's blocked by `.gitignore`.
-- Start with the smallest `ORDER_QTY` (default is `0.001 BTC`, about $60
-  at current prices).
-- You can stop the bot at any time with Ctrl+C. Open positions stay open on
-  the exchange until you close them manually.
+- `LIVE=0` (default) never sends an order. Completely risk-free.
+- `LIVE=1` places **real orders on a live account**.
+- Start with the smallest sensible `ORDER_QTY` on a cheap alt.
+- Never commit your `.env` — it's gitignored.
+- Ctrl+C stops the bot. Open positions stay on the exchange until you close
+  them.
 
 ---
 
-## Tuning the bot
+## Configuration reference
 
-| Setting | Default | What it controls |
-|---------|---------|-----------------|
-| `SYMBOL` | `BTC/USD` | Which market to trade (Alpaca format). Use `BTC-USD` for Coinbase. |
-| `TIMEFRAME` | `5Min` | How often a new candle closes. Alpaca: any `<N>Min`, `<N>Hour`, or `<N>Day` (e.g. `2Min`, `4Hour`). Coinbase: `1Min`, `5Min`, `15Min`, `30Min`, `1Hour`, `2Hour`, `6Hour`, `1Day`. |
-| `ORDER_QTY` | `0.001` | How much BTC to buy/sell per signal. |
-
----
-
-## Checking it worked
-
-After a run-once or a few minutes of live running:
-
-- **Alpaca paper:** log in at <https://app.alpaca.markets/>, go to
-  **Paper Trading → Orders**. You should see the bot's orders listed.
-- **Coinbase sandbox:** the sandbox returns mocked responses — no real order
-  history to inspect, but the bot logs will show success/failure.
-- **Live accounts:** check your Orders or Activity tab on the exchange.
+| Variable | Default | Description |
+| --- | --- | --- |
+| `EXCHANGE` | `coinbase` | ccxt exchange id (`coinbase`, `kraken`, …). |
+| `API_KEY` | *(empty)* | Exchange API key. |
+| `API_SECRET` | *(empty)* | Exchange API secret. |
+| `API_PASSWORD` | *(empty)* | Passphrase — required by Coinbase/OKX/KuCoin. |
+| `SYMBOL` | `BTC/USD` | Market, ccxt unified format (e.g. `DOGE/USD`). |
+| `TIMEFRAME` | `5m` | Bar timeframe, ccxt unified (`1m`, `5m`, `15m`, `1h`, `1d`). |
+| `ORDER_QTY` | `0.001` | Base-asset order size per signal. |
+| `STREAM` | `0` | `1` = event-driven WebSocket streaming; `0` = single-shot. |
+| `LIVE` | `0` | `1` = place real orders; `0`/unset = dry-run. |
 
 ---
 
@@ -222,72 +169,39 @@ After a run-once or a few minutes of live running:
 ### Architecture
 
 ```text
-DataFeed  ->  Strategy  ->  Router  ->  ExecutionVenue  ->  Exchange API
-(bars)        (signals)     (actions)   (alpaca|coinbase|   (Alpaca /
-                                          fake)              Coinbase)
+CcxtCandleFeed / CcxtStreamFeed  ->  Strategy  ->  Router  ->  CcxtVenue  ->  Exchange (ccxt)
+            (bars)                    (signals)    (actions)   (orders)
 ```
 
-The router and runtime depend only on the `ExecutionVenue` protocol — venues
-are swappable via config with no code changes.
+Feeds and the venue are the only exchange-specific pieces, and all go through
+ccxt. The router and runtime depend only on the `ExecutionVenue` /
+`CandleFeed` / `StreamingFeed` protocols.
 
-- **Design spec:** [TradingBot-Design-V3.md](TradingBot-Design-V3.md)
-- **Implementation plan:** [doc/implementation-plan.toon](doc/implementation-plan.toon) · [doc/websocket-streaming-plan.md](doc/websocket-streaming-plan.md)
+### Spot long/flat only
 
-### Configuration reference
+This milestone trades **spot**: long or flat, no shorting or leverage.
+`CcxtVenue.get_position` derives the position from the base-asset balance.
+Futures support is a future drop-in via `fetch_positions()` (a seam is already
+in place, keyed on `market_type`).
 
-| Variable              | Applies to | Default   | Description |
-| --------------------- | ---------- | --------- | ----------- |
-| `VENUE`               | all        | `alpaca`  | Venue selector: `alpaca`, `coinbase`, or `fake`. |
-| `ALPACA_API_KEY`      | alpaca     | *(empty)* | Alpaca API key ID. |
-| `ALPACA_API_SECRET`   | alpaca     | *(empty)* | Alpaca API secret key. |
-| `ALPACA_PAPER`        | alpaca     | `true`    | `true` = paper trading (risk-free); `false` = live money. |
-| `COINBASE_API_KEY`    | coinbase   | *(empty)* | Coinbase CDP API key. |
-| `COINBASE_API_SECRET` | coinbase   | *(empty)* | Coinbase CDP API secret. |
-| `COINBASE_SANDBOX`    | coinbase   | `true`    | `true` = sandbox host (mocked); `false` = live money. |
-| `SYMBOL`              | all        | `BTC/USD` | Market symbol. Alpaca: `BTC/USD`; Coinbase: `BTC-USD`. |
-| `TIMEFRAME`           | all        | `5Min`    | Bar timeframe. |
-| `ORDER_QTY`           | all        | `0.001`   | Base-asset order size. |
-| `STREAM`              | all        | `0`       | `1` = live event-driven WebSocket streaming; `0` = single-shot. |
+### Strategy
+
+Current strategy is a placeholder SMA crossover (fast=5, slow=20). Replace
+`SMACrossoverStrategy` in `src/tradingbot/strategy.py` with a real strategy — it
+only needs to implement the `Strategy` interface. (A TradingView Pine Script
+port is planned as the next step.)
 
 ### Tests
 
-The suite uses mocks and fakes only — no live network calls. 108 tests.
+The suite uses injected fakes only — no live network calls. Test-only doubles
+live in `tests/doubles.py` and are not shipped in the package.
 
 ```bash
 source .venv/bin/activate
 pytest -v
 ```
 
-### Spot long/flat only
-
-Both venues trade spot in this milestone — long or flat, no shorting or
-leverage.
-
-- `buy` opens / increases a long.
-- `sell` from a long reduces / closes it.
-- `close` flattens the current position.
-
-### Strategy
-
-Current strategy is a placeholder SMA crossover (fast=5 bars, slow=20 bars).
-Replace `SMACrossoverStrategy` in `src/tradingbot/strategy.py` to plug in a
-real strategy — it only needs to implement the `Strategy` interface.
-
-### Status
-
-All core components done:
-
-- Config, models, enums
-- Alpaca venue adapter + Coinbase venue adapter
-- Alpaca live datafeed (`AlpacaCandleFeed`) + Coinbase live datafeed (`CoinbaseCandleFeed`)
-- `build_feed()` factory wired in `__main__.py`
-- SMA crossover strategy placeholder
-- Signal router + bot runtime + entrypoint
-- Event-driven WebSocket streaming: `StreamRuntime`, `AlpacaStreamFeed` +
-  `CoinbaseStreamFeed`, reconnection with exponential backoff + gap-fill, and
-  graceful SIGINT/SIGTERM shutdown (the polling `run_forever` loop is retired)
-- CI: full matrix (3.11/3.12/3.13) on every push and pull request
-
-Remaining: real strategy port (pending client's Pine Script source).
+CI runs the full matrix (3.11/3.12/3.13) plus pyright, Bandit, and CodeQL on
+every push and pull request.
 
 </details>

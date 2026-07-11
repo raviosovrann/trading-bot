@@ -1,4 +1,4 @@
-from tradingbot.venues.fake import FakeVenue
+from doubles import FakeVenue
 from tradingbot.models import Order, PositionSide, Side, OrderType
 
 

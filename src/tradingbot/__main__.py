@@ -3,32 +3,22 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from .config import Config, load_config, require_credentials
-from .datafeed import build_feed
+from .datafeed import CcxtCandleFeed
 from .router import SignalRouter
 from .runtime import BotRuntime, StreamRuntime
 from .strategy import SMACrossoverStrategy
-from .stream import build_stream_feed
-from .venues.alpaca import AlpacaVenue
-from .venues.coinbase import CoinbaseVenue
-from .venues.fake import FakeVenue
+from .stream import CcxtStreamFeed
+from .venues.ccxt import CcxtVenue
 
 
-def _build_venue(cfg: Config):
-    if cfg.venue == "alpaca":
-        return AlpacaVenue.from_credentials(
-            api_key=cfg.alpaca_api_key,
-            api_secret=cfg.alpaca_api_secret,
-            paper=cfg.alpaca_paper,
-        )
-    if cfg.venue == "coinbase":
-        return CoinbaseVenue.from_credentials(
-            api_key=cfg.coinbase_api_key,
-            api_secret=cfg.coinbase_api_secret,
-            sandbox=cfg.coinbase_sandbox,
-        )
-    if cfg.venue == "fake":
-        return FakeVenue()
-    raise ValueError(f"Unsupported venue: {cfg.venue}")
+def _build_venue(cfg: Config) -> CcxtVenue:
+    return CcxtVenue.from_exchange(
+        cfg.exchange,
+        cfg.api_key,
+        cfg.api_secret,
+        cfg.api_password or None,
+        live=cfg.live,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -50,7 +40,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if cfg.stream:
         # Event-driven mode: block on the WebSocket feed, acting on each pushed
         # closed bar. Ctrl+C / SIGTERM triggers a graceful shutdown.
-        stream_feed = build_stream_feed(cfg)
+        stream_feed = CcxtStreamFeed.from_exchange(
+            cfg.exchange,
+            cfg.api_key,
+            cfg.api_secret,
+            cfg.api_password or None,
+            timeframe=cfg.timeframe,
+        )
         StreamRuntime(
             feed=stream_feed,
             strategy=strategy,
@@ -63,7 +59,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # Single-shot mode: process the latest closed candle over REST, then exit
     # (suitable for cron-style invocation).
-    feed = build_feed(cfg)
+    feed = CcxtCandleFeed.from_exchange(
+        cfg.exchange,
+        cfg.api_key,
+        cfg.api_secret,
+        cfg.api_password or None,
+    )
     BotRuntime(
         feed=feed,
         strategy=strategy,

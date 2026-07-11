@@ -4,8 +4,7 @@ from tradingbot.config import load_config
 from tradingbot.models import Action, Candle, OrderType, PositionSide, Signal
 from tradingbot.router import SignalRouter
 from tradingbot.runtime import StreamRuntime
-from tradingbot.stream import AlpacaStreamFeed, CoinbaseStreamFeed, build_stream_feed
-from tradingbot.venues.fake import FakeVenue
+from doubles import FakeVenue
 
 
 class _FakeStreamingFeed:
@@ -146,18 +145,6 @@ def test_stream_runtime_stop_is_idempotent():
     rt.stop()
     rt.stop()
     assert feed.stopped == 1
-
-
-def test_build_stream_feed_alpaca():
-    cfg = load_config({"VENUE": "alpaca", "ALPACA_API_KEY": "k", "ALPACA_API_SECRET": "s"})
-    feed = build_stream_feed(cfg)
-    assert isinstance(feed, AlpacaStreamFeed)
-
-
-def test_build_stream_feed_coinbase():
-    cfg = load_config({"VENUE": "coinbase", "COINBASE_API_KEY": "k", "COINBASE_API_SECRET": "s"})
-    feed = build_stream_feed(cfg)
-    assert isinstance(feed, CoinbaseStreamFeed)
 
 
 def test_config_stream_flag_defaults_false_and_parses_true():

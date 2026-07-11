@@ -1,4 +1,4 @@
-from tradingbot.datafeed import InMemoryCandleFeed, normalize_candle
+from doubles import InMemoryCandleFeed, normalize_candle
 from tradingbot.models import Candle
 
 
