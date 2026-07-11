@@ -45,7 +45,9 @@ jobs:
           # confidence: # optional, default is UNDEFINED
           # comma-separated list of paths (glob patterns supported) to exclude from scan (note that these are in addition to the excluded paths provided in the config file) (default: .svn,CVS,.bzr,.hg,.git,__pycache__,.tox,.eggs,*.egg)
           # excluded_paths: # optional, default is DEFAULT
-          # comma-separated list of test IDs to skip
-          # skips: # optional, default is DEFAULT
+          # comma-separated list of test IDs to skip.
+          # B101 = "assert used": expected/idiomatic in the test suite, so it is
+          # pure noise here (all findings were asserts in tests/). src/ uses none.
+          skips: B101
           # path to a .bandit file that supplies command line arguments
           # ini_path: # optional, default is DEFAULT

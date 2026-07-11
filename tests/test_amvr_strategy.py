@@ -152,3 +152,17 @@ def test_exit_does_not_fetch_mtf():
     strat._in_position = True
     strat.on_bar(_candles(_reversal_base()))
     assert feed.calls == []
+
+
+class _RaisingFeed:
+    def warmup_candles(self, symbol, timeframe, limit):
+        raise RuntimeError("transient REST failure")
+
+
+def test_mtf_fetch_failure_does_not_crash_and_blocks_entry():
+    # A network/ccxt blip while fetching HTF data must not raise out of on_bar;
+    # without HTF confirmation, entry is conservatively suppressed.
+    strat = AdaptiveMomentumRibbonStrategy(
+        symbol="XRP/USD", mtf_feed=_RaisingFeed(), mtf_cache_seconds=0.0
+    )
+    assert strat.on_bar(_candles(_bullish_base())) is None
