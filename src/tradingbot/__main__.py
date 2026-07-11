@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 
 from .amvr import AdaptiveMomentumRibbonStrategy
@@ -27,8 +28,20 @@ def _build_venue(cfg: Config) -> CcxtVenue:
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     cfg = load_config()
     require_credentials(cfg)
+
+    mode = "LIVE (real orders)" if cfg.live else "DRY-RUN (no orders sent)"
+    logging.info(
+        "starting: exchange=%s symbol=%s timeframe=%s stream=%s | %s",
+        cfg.exchange, cfg.symbol, cfg.timeframe, cfg.stream, mode,
+    )
 
     venue = _build_venue(cfg)
 

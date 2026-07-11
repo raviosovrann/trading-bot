@@ -11,12 +11,15 @@ bearish prepare signal. Being spot, it never shorts.
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from collections.abc import Callable, Sequence
 from typing import Protocol
 
 from .models import Action, Candle, OrderType, PositionSide, Signal
+
+_log = logging.getLogger(__name__)
 
 
 class WarmupSource(Protocol):
@@ -217,14 +220,17 @@ class AdaptiveMomentumRibbonStrategy:
         vel2 = _velocity(hma2, self.lookback, last)
         vel3 = _velocity(hma3, self.lookback, last)
         if vel1 is None or vel2 is None or vel3 is None:
+            _log.info("%s: warming up — %d bars, not enough history yet", self.symbol, len(closes))
             return None
 
+        price = closes[-1]
         vel1_series = _velocity_series(hma1, self.lookback)
 
         # Exit first: bearish prepare flattens an open long (base timeframe only).
         if self._in_position:
             if self._bear_cross(vel1_series, last):
                 self._in_position = False
+                _log.info("%s @ %.6g: EXIT signal — bearish prepare, flattening to cash", self.symbol, price)
                 return Signal(
                     strategy=self.strategy_name,
                     action=Action.close,
@@ -233,18 +239,31 @@ class AdaptiveMomentumRibbonStrategy:
                     quantity=self.quantity,
                     position_side=PositionSide.flat,
                 )
+            _log.info("%s @ %.6g: holding long — no bearish prepare", self.symbol, price)
             return None
 
         # Entry: all base conditions, then confirm on the higher timeframes.
+        armed = self._bull_armed(vel1_series, last)
         all_ribbons_green = vel1 > 0 and vel2 > 0 and vel3 > 0
         base_accelerating = _accelerating_up(hma1, self.lookback, last)
-        if not (self._bull_armed(vel1_series, last) and all_ribbons_green and base_accelerating):
+        if not (armed and all_ribbons_green and base_accelerating):
+            _log.info(
+                "%s @ %.6g: HOLD — prepare=%s ribbons_green=%s base_accel=%s",
+                self.symbol, price, armed, all_ribbons_green, base_accelerating,
+            )
             return None
 
-        if not (self._htf_accelerating(self.htf1) and self._htf_accelerating(self.htf2)):
+        htf1_ok = self._htf_accelerating(self.htf1)
+        htf2_ok = self._htf_accelerating(self.htf2) if htf1_ok else False
+        if not (htf1_ok and htf2_ok):
+            _log.info(
+                "%s @ %.6g: HOLD — base ready but HTF not accelerating (%s=%s %s=%s)",
+                self.symbol, price, self.htf1, htf1_ok, self.htf2, htf2_ok,
+            )
             return None
 
         self._in_position = True
+        _log.info("%s @ %.6g: BUY signal — all conditions aligned", self.symbol, price)
         return Signal(
             strategy=self.strategy_name,
             action=Action.buy,

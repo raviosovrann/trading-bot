@@ -141,6 +141,23 @@ def test_exits_on_bearish_prepare_when_in_position():
     assert sig.position_side is PositionSide.flat
 
 
+def test_logs_buy_decision(caplog):
+    import logging
+    strat, _ = _make(_HTF_BULL)
+    with caplog.at_level(logging.INFO):
+        strat.on_bar(_candles(_bullish_base()))
+    assert any("BUY signal" in r.message for r in caplog.records)
+
+
+def test_logs_hold_reason_when_htf_blocks(caplog):
+    import logging
+    htf = {"1h": _expup(40, 100.0), "4h": _down(40)}
+    strat, _ = _make(htf)
+    with caplog.at_level(logging.INFO):
+        strat.on_bar(_candles(_bullish_base()))
+    assert any("HOLD" in r.message for r in caplog.records)
+
+
 def test_returns_none_on_insufficient_history():
     strat, _ = _make(_HTF_BULL)
     assert strat.on_bar(_candles(_expup(20, 100.0))) is None
