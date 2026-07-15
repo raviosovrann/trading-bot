@@ -236,10 +236,14 @@ def test_futures_get_position_flat_returns_none():
 def test_futures_get_position_infers_side_from_buy_sell_and_sign():
     # ccxt normally returns side "long"/"short", but some exchanges use
     # "buy"/"sell" or omit it; fall back to the sign of contracts.
-    buy = _FakeFuturesExchange([{"symbol": "S", "side": "buy", "contracts": 1}])
-    assert CcxtVenue(buy, market_type="futures").get_position("S").side is PositionSide.long
-    sell = _FakeFuturesExchange([{"symbol": "S", "side": "sell", "contracts": 1}])
-    assert CcxtVenue(sell, market_type="futures").get_position("S").side is PositionSide.short
+    buy_pos = CcxtVenue(
+        _FakeFuturesExchange([{"symbol": "S", "side": "buy", "contracts": 1}]), market_type="futures"
+    ).get_position("S")
+    assert buy_pos is not None and buy_pos.side is PositionSide.long
+    sell_pos = CcxtVenue(
+        _FakeFuturesExchange([{"symbol": "S", "side": "sell", "contracts": 1}]), market_type="futures"
+    ).get_position("S")
+    assert sell_pos is not None and sell_pos.side is PositionSide.short
     neg = _FakeFuturesExchange([{"symbol": "S", "contracts": -2}])  # no side, signed
     p = CcxtVenue(neg, market_type="futures").get_position("S")
     assert p is not None and p.side is PositionSide.short and p.size == 2
