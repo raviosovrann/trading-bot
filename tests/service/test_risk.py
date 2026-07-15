@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Tests for the risk guard and global exposure."""
+
 from tradingbot.models import Order, OrderResult, OrderType, Position, PositionSide, Side
 from tradingbot.service.risk import GlobalExposure, RiskGuard
 
@@ -56,6 +58,7 @@ def _result_notional(result: OrderResult) -> float:
 
 
 def test_within_cap_delegates_and_increases_global_exposure() -> None:
+    """Verify that an order within the cap delegates and increases global exposure."""
     venue = _FakeVenue()
     exposure = GlobalExposure()
     guard = RiskGuard(
@@ -75,6 +78,7 @@ def test_within_cap_delegates_and_increases_global_exposure() -> None:
 
 
 def test_per_bot_cap_violation_is_blocked_without_calling_venue() -> None:
+    """Verify that a per-bot cap violation is blocked without calling the venue."""
     venue = _FakeVenue()
     result = RiskGuard(
         venue,
@@ -96,6 +100,7 @@ def test_per_bot_cap_violation_is_blocked_without_calling_venue() -> None:
 
 
 def test_global_cap_violation_is_blocked() -> None:
+    """Verify that a global cap violation is blocked."""
     venue = _FakeVenue()
     exposure = GlobalExposure(used=75.0)
     result = RiskGuard(
@@ -113,6 +118,7 @@ def test_global_cap_violation_is_blocked() -> None:
 
 
 def test_reduce_only_always_delegates_and_decreases_exposure() -> None:
+    """Verify that reduce-only orders always delegate and decrease exposure."""
     venue = _FakeVenue()
     exposure = GlobalExposure(used=100.0)
     guard = RiskGuard(
@@ -132,6 +138,7 @@ def test_reduce_only_always_delegates_and_decreases_exposure() -> None:
 
 
 def test_reduction_uses_confirmed_filled_quantity() -> None:
+    """Verify that exposure reduction uses the confirmed filled quantity."""
     venue = _FakeVenue(filled_qty=0.1)
     exposure = GlobalExposure(used=100.0)
     guard = RiskGuard(
@@ -150,6 +157,7 @@ def test_reduction_uses_confirmed_filled_quantity() -> None:
 
 
 def test_unfilled_reduction_does_not_decrease_exposure() -> None:
+    """Verify that an unfilled reduction does not decrease exposure."""
     venue = _FakeVenue(filled_qty=0.0)
     exposure = GlobalExposure(used=100.0)
     guard = RiskGuard(
@@ -167,6 +175,7 @@ def test_unfilled_reduction_does_not_decrease_exposure() -> None:
 
 
 def test_reduce_only_bypasses_missing_price() -> None:
+    """Verify that reduce-only orders bypass the missing price check."""
     venue = _FakeVenue()
     guard = RiskGuard(
         venue,
@@ -183,6 +192,7 @@ def test_reduce_only_bypasses_missing_price() -> None:
 
 
 def test_missing_price_fails_safe() -> None:
+    """Verify that a missing price fails safely with a risk-blocked result."""
     venue = _FakeVenue()
     result = RiskGuard(
         venue,
@@ -200,6 +210,7 @@ def test_missing_price_fails_safe() -> None:
 
 
 def test_invalid_order_size_fails_safe() -> None:
+    """Verify that an invalid order size fails safely with a risk-blocked result."""
     venue = _FakeVenue()
     result = RiskGuard(
         venue,
@@ -216,6 +227,7 @@ def test_invalid_order_size_fails_safe() -> None:
 
 
 def test_execution_venue_methods_delegate() -> None:
+    """Verify that close_position, get_position and health_check delegate to the venue."""
     venue = _FakeVenue()
     guard = RiskGuard(
         venue,

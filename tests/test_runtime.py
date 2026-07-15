@@ -1,3 +1,5 @@
+"""Tests for the bot runtime run loop."""
+
 from doubles import InMemoryCandleFeed
 from tradingbot.models import Action, Candle, OrderResult, OrderType, PositionSide, Signal
 from tradingbot.router import SignalRouter
@@ -39,6 +41,7 @@ def _candle(ts: int, close: float) -> Candle:
 
 
 def test_runtime_run_once_processes_candle_signal_and_order():
+    """Verify that run_once processes a candle, generates a signal, and routes an order."""
     symbol = "BTC/USD"
     feed = InMemoryCandleFeed({symbol: [_candle(1, 100.0)]})
     signal = Signal(
@@ -76,6 +79,7 @@ class _OverlapFeed:
 
 
 def test_run_once_evaluates_even_when_latest_equals_warmup_tail():
+    """Verify run_once evaluates the strategy even when the latest candle overlaps the warmup tail."""
     # Regression: with warmup covering up to the latest closed candle, run_once
     # must still evaluate the buffer (previously the duplicate was deduped and
     # the strategy never ran).
@@ -100,6 +104,7 @@ def test_run_once_evaluates_even_when_latest_equals_warmup_tail():
 
 
 def test_runtime_run_once_no_signal_returns_none_and_no_order():
+    """Verify that run_once returns None and places no order when the strategy is silent."""
     symbol = "BTC/USD"
     feed = InMemoryCandleFeed({symbol: [_candle(1, 100.0)]})
     strategy = StubStrategy(None)
@@ -114,6 +119,7 @@ def test_runtime_run_once_no_signal_returns_none_and_no_order():
 
 
 def test_runtime_process_candle_appends_and_routes_signal():
+    """Verify that process_candle appends to the buffer and routes the generated signal."""
     symbol = "BTC/USD"
     feed = InMemoryCandleFeed({symbol: []})
     signal = Signal(
@@ -137,6 +143,7 @@ def test_runtime_process_candle_appends_and_routes_signal():
 
 
 def test_runtime_process_candle_dedups_stale_timestamp_and_does_not_route():
+    """Verify that process_candle ignores duplicate timestamps and does not route twice."""
     symbol = "BTC/USD"
     feed = InMemoryCandleFeed({symbol: []})
     signal = Signal(
@@ -161,6 +168,7 @@ def test_runtime_process_candle_dedups_stale_timestamp_and_does_not_route():
 
 
 def test_runtime_process_candle_no_signal_returns_none_and_no_order():
+    """Verify that process_candle returns None and places no order when the strategy is silent."""
     symbol = "BTC/USD"
     feed = InMemoryCandleFeed({symbol: []})
     strategy = StubStrategy(None)

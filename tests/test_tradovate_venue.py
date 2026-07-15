@@ -1,3 +1,5 @@
+"""Tests for the Tradovate venue integration."""
+
 import pytest
 
 from tradingbot.models import Order, OrderType, PositionSide, Side
@@ -32,6 +34,7 @@ def _venue(client, *, live=True):
 # --- construction ---------------------------------------------------------- #
 
 def test_construct_requires_client():
+    """Verify that TradovateVenue requires a client."""
     with pytest.raises(ValueError):
         TradovateVenue(None)
 
@@ -39,6 +42,7 @@ def test_construct_requires_client():
 # --- place_order: dry-run guard ------------------------------------------- #
 
 def test_dry_run_does_not_call_client():
+    """Verify that dry-run mode does not call the Tradovate client."""
     client = _FakeClient()
     venue = _venue(client, live=False)
     r = venue.place_order(Order(symbol="MBTF6", side=Side.buy, order_type=OrderType.market, qty=1))
@@ -50,6 +54,7 @@ def test_dry_run_does_not_call_client():
 # --- place_order: live path (long/short/limit/failure/exception) ----------- #
 
 def test_live_market_buy_maps_ok_and_sends_buy():
+    """Verify that a live market buy maps to a buy order sent to the client."""
     client = _FakeClient(place_result={"orderId": 555})
     venue = _venue(client, live=True)
     r = venue.place_order(Order(symbol="MBTF6", side=Side.buy, order_type=OrderType.market, qty=2))
@@ -58,6 +63,7 @@ def test_live_market_buy_maps_ok_and_sends_buy():
 
 
 def test_live_market_sell_sends_sell_for_short():
+    """Verify that a live market sell sends a sell order to the client."""
     client = _FakeClient(place_result={"orderId": 7})
     venue = _venue(client, live=True)
     venue.place_order(Order(symbol="MBTF6", side=Side.sell, order_type=OrderType.market, qty=1))
@@ -65,6 +71,7 @@ def test_live_market_sell_sends_sell_for_short():
 
 
 def test_live_limit_passes_price():
+    """Verify that a live limit order passes the price to the client."""
     client = _FakeClient(place_result={"orderId": 9})
     venue = _venue(client, live=True)
     venue.place_order(Order(symbol="MBTF6", side=Side.buy, order_type=OrderType.limit, qty=1, price=64000.0))
@@ -72,6 +79,7 @@ def test_live_limit_passes_price():
 
 
 def test_live_failure_returns_not_ok():
+    """Verify that a failure response from the client maps to a non-ok result."""
     client = _FakeClient(place_result={"failureReason": "InsufficientMargin", "failureText": "no funds"})
     venue = _venue(client, live=True)
     r = venue.place_order(Order(symbol="MBTF6", side=Side.buy, order_type=OrderType.market, qty=1))
@@ -79,6 +87,7 @@ def test_live_failure_returns_not_ok():
 
 
 def test_live_without_account_returns_error_and_sends_nothing():
+    """Verify that missing account details return an error and send nothing."""
     client = _FakeClient(place_result={"orderId": 1})
     venue = TradovateVenue(client, account_id=None, account_spec=None, live=True)
     r = venue.place_order(Order(symbol="MBTF6", side=Side.buy, order_type=OrderType.market, qty=1))
@@ -87,6 +96,7 @@ def test_live_without_account_returns_error_and_sends_nothing():
 
 
 def test_live_client_exception_returns_error():
+    """Verify that client exceptions during order placement are returned as an error."""
     class _Boom(_FakeClient):
         def place_order(self, *a, **k):
             raise RuntimeError("network down")
@@ -99,6 +109,7 @@ def test_live_client_exception_returns_error():
 # --- get_position: long/short/flat ---------------------------------------- #
 
 def test_get_position_long_from_positive_netpos():
+    """Verify that a positive net position maps to a long position."""
     client = _FakeClient(positions=[{"symbol": "MBTF6", "netPos": 3, "netPrice": 64000.0}])
     pos = _venue(client).get_position("MBTF6")
     assert pos is not None and pos.side is PositionSide.long
@@ -106,12 +117,14 @@ def test_get_position_long_from_positive_netpos():
 
 
 def test_get_position_short_from_negative_netpos():
+    """Verify that a negative net position maps to a short position."""
     client = _FakeClient(positions=[{"symbol": "MBTF6", "netPos": -2}])
     pos = _venue(client).get_position("MBTF6")
     assert pos is not None and pos.side is PositionSide.short and pos.size == 2
 
 
 def test_get_position_flat_or_absent_returns_none():
+    """Verify that a flat or absent position returns None."""
     assert _venue(_FakeClient(positions=[])).get_position("MBTF6") is None
     zero = _FakeClient(positions=[{"symbol": "MBTF6", "netPos": 0}])
     assert _venue(zero).get_position("MBTF6") is None
@@ -120,6 +133,7 @@ def test_get_position_flat_or_absent_returns_none():
 # --- close_position -------------------------------------------------------- #
 
 def test_close_long_sells_size_reduce_only():
+    """Verify that closing a long sells the position size with reduce-only."""
     client = _FakeClient(positions=[{"symbol": "MBTF6", "netPos": 3}], place_result={"orderId": 1})
     r = _venue(client, live=True).close_position("MBTF6")
     assert r.ok is True
@@ -127,12 +141,14 @@ def test_close_long_sells_size_reduce_only():
 
 
 def test_close_short_buys_size_reduce_only():
+    """Verify that closing a short buys the position size with reduce-only."""
     client = _FakeClient(positions=[{"symbol": "MBTF6", "netPos": -2}], place_result={"orderId": 1})
     _venue(client, live=True).close_position("MBTF6")
     assert client.calls[0][0] == "Buy" and client.calls[0][5] is True
 
 
 def test_close_when_flat_is_noop():
+    """Verify that closing a flat position is a no-op."""
     client = _FakeClient(positions=[])
     r = _venue(client, live=True).close_position("MBTF6")
     assert r.ok is True and r.status == "no position" and client.calls == []
@@ -141,11 +157,13 @@ def test_close_when_flat_is_noop():
 # --- health + contract multiplier ----------------------------------------- #
 
 def test_health_check_true_then_false():
+    """Verify that health check reflects the client's account availability."""
     assert _venue(_FakeClient()).health_check() is True
     assert _venue(_FakeClient(account_raises=True)).health_check() is False
 
 
 def test_contract_multiplier_micro_and_standard():
+    """Verify contract multiplier values for micro and standard contracts."""
     v = _venue(_FakeClient())
     assert v.contract_multiplier("MBTF6") == 0.1    # Micro Bitcoin = 0.1 BTC
     assert v.contract_multiplier("METF6") == 0.1    # Micro Ether = 0.1 ETH
@@ -157,6 +175,7 @@ def test_contract_multiplier_micro_and_standard():
 # --- from_credentials offline guard --------------------------------------- #
 
 def test_from_credentials_requires_httpx(monkeypatch):
+    """Verify that from_credentials requires httpx to be available."""
     import tradingbot.venues.tradovate as tv
 
     monkeypatch.setattr(tv, "httpx", None)

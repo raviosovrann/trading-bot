@@ -1,8 +1,11 @@
+"""Tests for the in-memory candle feed doubles."""
+
 from doubles import InMemoryCandleFeed, normalize_candle
 from tradingbot.models import Candle
 
 
 def test_normalize_candle_accepts_short_and_long_keys():
+    """Verify that normalize_candle handles both long and short field names."""
     c1 = normalize_candle({"timestamp": 1, "open": 10, "high": 11, "low": 9, "close": 10.5, "volume": 100})
     c2 = normalize_candle({"t": 2, "o": 20, "h": 22, "l": 19, "c": 21, "v": 200})
 
@@ -12,6 +15,7 @@ def test_normalize_candle_accepts_short_and_long_keys():
 
 
 def test_inmemory_feed_warmup_then_streams_latest_closed_candles():
+    """Verify that the in-memory feed serves warmup then streams latest closed candles."""
     symbol = "BTC/USD"
     feed = InMemoryCandleFeed(
         {
@@ -33,6 +37,7 @@ def test_inmemory_feed_warmup_then_streams_latest_closed_candles():
 
 
 def test_inmemory_feed_unknown_symbol_is_empty():
+    """Verify that an unknown symbol returns empty candles."""
     feed = InMemoryCandleFeed()
     assert feed.warmup_candles("ETH/USD", "5Min", 10) == []
     assert feed.latest_closed_candle("ETH/USD", "5Min") is None

@@ -1,3 +1,5 @@
+"""Tests for signal routing and risk integration."""
+
 from tradingbot.models import Action, OrderResult, OrderType, PositionSide, Side, Signal
 from tradingbot.router import SignalRouter
 from tradingbot.service.risk import GlobalExposure
@@ -25,6 +27,7 @@ class StubVenue:
 
 
 def test_router_maps_buy_signal_to_place_order():
+    """Verify that a buy signal is routed to a place_order call."""
     venue = StubVenue()
     router = SignalRouter(venue)
     signal = Signal(
@@ -50,6 +53,7 @@ def test_router_maps_buy_signal_to_place_order():
 
 
 def test_router_maps_close_signal_to_close_position():
+    """Verify that a close signal is routed to a close_position call."""
     venue = StubVenue()
     router = SignalRouter(venue)
     signal = Signal(
@@ -69,6 +73,7 @@ def test_router_maps_close_signal_to_close_position():
 
 
 def test_router_with_risk_guard_blocks_orders_over_cap() -> None:
+    """Verify that the risk guard blocks orders exceeding the configured cap."""
     venue = StubVenue()
     router = SignalRouter.with_risk_guard(
         venue,

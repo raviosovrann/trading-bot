@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Tests for the CLI entry point wiring."""
+
 from typing import Any
 
 from tradingbot import __main__ as cli
@@ -18,6 +20,7 @@ class _FakeFeed:
 
 
 def test_main_builds_strategy_from_config(monkeypatch) -> None:
+    """Verify that main wires the strategy, feed, and runtime from the config."""
     cfg = load_config({
         "API_KEY": "key",
         "API_SECRET": "secret",

@@ -1,3 +1,5 @@
+"""Tests for the CCXT REST candle feed."""
+
 from tradingbot.datafeed import CcxtCandleFeed
 from tradingbot.models import Candle
 
@@ -20,6 +22,7 @@ def _row(ts, o, h, l, c, v):
 
 
 def test_construct_requires_exchange():
+    """Verify that CcxtCandleFeed requires an exchange."""
     import pytest
 
     with pytest.raises(ValueError):
@@ -27,6 +30,7 @@ def test_construct_requires_exchange():
 
 
 def test_warmup_maps_ohlcv_rows_to_candles():
+    """Verify that warmup maps OHLCV rows to candles and drops the forming bar."""
     # 4 rows returned; with limit=3 we ask for 4 (limit+1) and drop the forming last bar.
     rows = [
         _row(1000, 1.0, 2.0, 0.5, 1.5, 10.0),
@@ -49,6 +53,7 @@ def test_warmup_maps_ohlcv_rows_to_candles():
 
 
 def test_warmup_zero_limit_returns_empty():
+    """Verify that a zero limit returns empty candles without fetching."""
     ex = _FakeExchange([_row(1000, 1, 2, 0, 1, 5)])
     feed = CcxtCandleFeed(ex)
     assert feed.warmup_candles("BTC/USD", "5m", 0) == []
@@ -56,6 +61,7 @@ def test_warmup_zero_limit_returns_empty():
 
 
 def test_latest_closed_skips_forming_bar():
+    """Verify that the latest closed candle skips the forming bar."""
     rows = [
         _row(1000, 1.0, 2.0, 0.5, 1.5, 10.0),  # last closed
         _row(2000, 1.5, 2.5, 1.0, 2.0, 11.0),  # forming
@@ -71,12 +77,14 @@ def test_latest_closed_skips_forming_bar():
 
 
 def test_latest_closed_empty_returns_none():
+    """Verify that an empty OHLCV result returns None for latest closed."""
     ex = _FakeExchange([])
     feed = CcxtCandleFeed(ex)
     assert feed.latest_closed_candle("BTC/USD", "5m") is None
 
 
 def test_latest_closed_single_row_treated_as_closed():
+    """Verify that a single OHLCV row is treated as closed."""
     ex = _FakeExchange([_row(1000, 1.0, 2.0, 0.5, 1.5, 10.0)])
     feed = CcxtCandleFeed(ex)
     candle = feed.latest_closed_candle("BTC/USD", "5m")

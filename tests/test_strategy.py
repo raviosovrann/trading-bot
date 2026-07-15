@@ -1,3 +1,5 @@
+"""Tests for the SMA crossover strategy."""
+
 from tradingbot.models import Action, Candle, PositionSide
 from tradingbot.strategy import SMACrossoverStrategy
 
@@ -19,12 +21,14 @@ def _candles_from_closes(closes: list[float]):
 
 
 def test_sma_strategy_no_signal_when_insufficient_bars():
+    """Verify that the SMA strategy stays silent when there are not enough bars."""
     strategy = SMACrossoverStrategy(symbol="BTC/USD", fast_length=2, slow_length=3, quantity=0.01)
     candles = _candles_from_closes([10, 11, 12])
     assert strategy.on_bar(candles) is None
 
 
 def test_sma_strategy_emits_buy_on_cross_up():
+    """Verify that the SMA strategy emits a buy signal when the fast SMA crosses above the slow SMA."""
     strategy = SMACrossoverStrategy(symbol="BTC/USD", fast_length=2, slow_length=3, quantity=0.02)
     candles = _candles_from_closes([10, 9, 8, 12])
 
@@ -38,6 +42,7 @@ def test_sma_strategy_emits_buy_on_cross_up():
 
 
 def test_sma_strategy_emits_sell_on_cross_down():
+    """Verify that the SMA strategy emits a sell signal when the fast SMA crosses below the slow SMA."""
     strategy = SMACrossoverStrategy(symbol="BTC/USD", fast_length=2, slow_length=3, quantity=0.02)
     candles = _candles_from_closes([8, 9, 10, 6])
 
