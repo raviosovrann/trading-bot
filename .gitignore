@@ -8,6 +8,8 @@ venv/
 .remember/
 .DS_Store
 .superpowers/
+.coverage
+htmlcov/
 
 # local planning ledger (briefs/reports)
 .plan/
