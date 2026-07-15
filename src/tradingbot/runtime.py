@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import signal
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 
 from .datafeed import CandleFeed
 from .models import Candle, OrderResult
@@ -29,11 +30,13 @@ class CandleProcessor:
         router: SignalRouter,
         max_buffer: int = 500,
         on_event: Callable[[str], None] | None = None,
+        event_symbol: str | None = None,
     ) -> None:
         self._strategy = strategy
         self._router = router
         self._max_buffer = max_buffer
         self._on_event = on_event
+        self._event_symbol = event_symbol
         self._candles: list[Candle] = []
 
     def _emit(self, event: dict[str, object]) -> None:
@@ -74,7 +77,7 @@ class CandleProcessor:
         if signal is None:
             self._emit({
                 "type": "decision",
-                "symbol": "",
+                "symbol": self._event_symbol,
                 "ts": self._candles[-1].timestamp,
                 "text": "no signal",
             })
@@ -125,7 +128,12 @@ class BotRuntime:
         self._feed = feed
         self._symbol = symbol
         self._timeframe = timeframe
-        self._proc = CandleProcessor(strategy=strategy, router=router, max_buffer=max_buffer)
+        self._proc = CandleProcessor(
+            strategy=strategy,
+            router=router,
+            max_buffer=max_buffer,
+            event_symbol=symbol,
+        )
 
         if warmup_bars > 0:
             self._proc.seed(feed.warmup_candles(symbol, timeframe, warmup_bars))
@@ -187,6 +195,7 @@ class StreamRuntime:
             router=router,
             max_buffer=max_buffer,
             on_event=on_event,
+            event_symbol=symbol,
         )
 
         if warmup_bars > 0:
@@ -222,8 +231,13 @@ class StreamRuntime:
             max_backoff=self._max_backoff,
         )
 
-    async def start_async(self, *, install_signals: bool = False) -> None:
-        """Start streaming without nesting ``asyncio.run`` in a service loop."""
+    async def start_async(
+        self,
+        *,
+        install_signals: bool = False,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        """Start async streaming with reconnect and gap-fill supervision."""
         if install_signals:
             self._install_signal_handlers()
         _log.info(
@@ -231,7 +245,26 @@ class StreamRuntime:
             self._symbol, len(self._proc.candles),
         )
         self._proc.evaluate()
-        await self._feed.run_async(self._symbol)
+        backoff = self._base_backoff
+        while not self._stopped:
+            try:
+                await self._feed.run_async(self._symbol)
+                healthy = True
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                healthy = False
+                _log.exception("%s: async stream disconnected", self._symbol)
+            if self._stopped:
+                break
+            if healthy:
+                backoff = self._base_backoff
+            await sleep(backoff)
+            if self._stopped:
+                break
+            await asyncio.to_thread(self._gap_fill)
+            if not healthy:
+                backoff = min(backoff * 2, self._max_backoff)
 
     def _gap_fill(self) -> None:
         """REST-fill bars missed during an outage; process_candle dedups overlap."""

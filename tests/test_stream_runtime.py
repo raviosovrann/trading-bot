@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -73,7 +74,7 @@ def _candle(ts, close=100.0):
     return Candle(timestamp=ts, open=close, high=close, low=close, close=close, volume=1.0)
 
 
-def _make(symbol="BTC/USD", warmup=None, strategy=None):
+def _make(symbol="BTC/USD", warmup=None, strategy=None, on_event=None):
     feed = _FakeStreamingFeed(warmup=warmup)
     venue = FakeVenue()
     router = SignalRouter(venue)
@@ -85,6 +86,7 @@ def _make(symbol="BTC/USD", warmup=None, strategy=None):
         symbol=symbol,
         timeframe="5Min",
         warmup_bars=len(warmup or []),
+        on_event=on_event,
     )
     return rt, feed, venue
 
@@ -146,6 +148,44 @@ async def test_stream_runtime_start_async_uses_callers_event_loop():
 
     rt.stop()
     await task
+
+
+def test_decision_event_contains_runtime_symbol():
+    events = []
+    rt, feed, venue = _make(on_event=events.append, strategy=_NoSignalStrategy())
+
+    feed.push(_candle(10))
+
+    assert events
+    assert json.loads(events[-1])["symbol"] == "BTC/USD"
+
+
+@pytest.mark.asyncio
+async def test_stream_runtime_start_async_reconnects_and_gap_fills():
+    rt, feed, venue = _make()
+    attempts = []
+    original_run_async = feed.run_async
+
+    async def flaky_run_async(*symbols):
+        attempts.append(symbols)
+        if len(attempts) == 1:
+            raise RuntimeError("disconnect")
+        rt.stop()
+        await original_run_async(*symbols)
+
+    feed.run_async = flaky_run_async
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        feed._warmup = [_candle(30)]
+
+    task = asyncio.create_task(rt.start_async(install_signals=False, sleep=fake_sleep))
+    await task
+
+    assert attempts == [("BTC/USD",), ("BTC/USD",)]
+    assert sleeps == [1.0]
+    assert feed.warmup_calls[-1] == ("BTC/USD", "5Min", 50)
 
 
 def test_stream_runtime_gap_fill_dedups_and_fills():
