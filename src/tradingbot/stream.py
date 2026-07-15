@@ -45,7 +45,9 @@ class CcxtStreamFeed:
         self._warmup_feed = warmup_feed
         self._timeframe = timeframe
         self._handler: Callable[[Candle], None] | None = None
+        self._symbol_handlers: dict[str, Callable[[Candle], None]] = {}
         self._last_ts: int | None = None
+        self._last_ts_by_symbol: dict[str, int] = {}
         self._stopped = False
         self._lock = threading.Lock()
 
@@ -75,15 +77,23 @@ class CcxtStreamFeed:
     def on_bar(self, handler: Callable[[Candle], None]) -> None:
         self._handler = handler
 
-    def _on_candles(self, candles: list) -> None:
+    def on_bar_for(self, symbol: str, handler: Callable[[Candle], None]) -> None:
+        self._symbol_handlers[symbol] = handler
+
+    def _on_candles(self, candles: list, symbol: str | None = None) -> None:
         """Emit newly-closed candles, dropping the forming final row and dupes."""
         with self._lock:
             for row in candles[:-1]:  # last row is the still-forming candle
                 ts = int(row[0])
-                if self._last_ts is not None and ts <= self._last_ts:
+                last_ts = self._last_ts_by_symbol.get(symbol) if symbol is not None else self._last_ts
+                if last_ts is not None and ts <= last_ts:
                     continue
-                self._last_ts = ts
-                handler = self._handler
+                if symbol is None:
+                    self._last_ts = ts
+                else:
+                    self._last_ts_by_symbol[symbol] = ts
+                handler = self._symbol_handlers.get(symbol) if symbol is not None else None
+                handler = handler or self._handler
                 if handler is not None:
                     handler(_ohlcv_to_candle(row))
 
@@ -92,14 +102,19 @@ class CcxtStreamFeed:
             while not self._stopped:
                 candles = await self._ex.watch_ohlcv(symbol, self._timeframe)
                 if candles:
-                    self._on_candles(candles)
+                    self._on_candles(candles, symbol)
         finally:
             await self._ex.close()
+
+    async def run_async(self, *symbols: str) -> None:
+        if not symbols:
+            raise ValueError("CcxtStreamFeed.run_async requires a symbol")
+        await self._watch_loop(symbols[0])
 
     def run(self, *symbols: str) -> None:
         if not symbols:
             raise ValueError("CcxtStreamFeed.run requires a symbol")
-        asyncio.run(self._watch_loop(symbols[0]))
+        asyncio.run(self.run_async(*symbols))
 
     def stop(self) -> None:
         # Idempotent: signal the watch loop to exit after its current message.
