@@ -1,3 +1,5 @@
+"""API request/response models for the trading console."""
+
 from __future__ import annotations
 
 from typing import Any

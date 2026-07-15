@@ -1,3 +1,5 @@
+"""Venue and strategy builders used by the supervisor and API."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -17,6 +19,18 @@ _VenueBuilder = Callable[[_Credentials, bool], ExecutionVenue]
 
 
 def _build_coinbase(creds: _Credentials, live: bool) -> ExecutionVenue:
+    """Build a Coinbase ccxt venue from stored credentials.
+
+    Args:
+        creds: Dictionary containing ``api_key`` and ``api_secret``.
+        live: Whether to use live trading endpoints.
+
+    Returns:
+        Configured ``CcxtVenue``.
+
+    Raises:
+        ValueError: If required credentials are missing.
+    """
     missing = [key for key in ("api_key", "api_secret") if not creds.get(key)]
     if missing:
         raise ValueError(f"Missing Coinbase credential(s): {', '.join(missing)}")
@@ -30,6 +44,18 @@ def _build_coinbase(creds: _Credentials, live: bool) -> ExecutionVenue:
 
 
 def _build_tradovate(creds: _Credentials, live: bool) -> ExecutionVenue:
+    """Build a Tradovate venue from stored credentials.
+
+    Args:
+        creds: Dictionary with Tradovate authentication fields.
+        live: Whether to use live trading endpoints.
+
+    Returns:
+        Configured ``TradovateVenue``.
+
+    Raises:
+        ValueError: If credentials are invalid or incomplete.
+    """
     request = {key: value for key, value in creds.items() if key != "live"}
     try:
         return TradovateVenue.from_credentials(**request, live=live)  # type: ignore[arg-type]
@@ -50,6 +76,20 @@ def build_venue(
     creds: dict,
     live: bool,
 ) -> ExecutionVenue:
+    """Build an execution venue for the given ``venue``/``market_type`` pair.
+
+    Args:
+        venue: Venue identifier, e.g. ``coinbase``.
+        market_type: Market type, e.g. ``spot``.
+        creds: Stored credentials required by the venue.
+        live: Whether the venue should use live trading endpoints.
+
+    Returns:
+        An ``ExecutionVenue`` instance.
+
+    Raises:
+        ValueError: If the venue/market-type mapping is not supported.
+    """
     key = (venue.strip().lower(), market_type.strip().lower())
     builder = _VENUE_BUILDERS.get(key)
     if builder is None:
@@ -58,6 +98,7 @@ def build_venue(
 
 
 def available_venues() -> list[dict[str, str]]:
+    """Return all supported venue/market-type mappings."""
     return [
         {"venue": venue, "market_type": market_type}
         for venue, market_type in sorted(_VENUE_BUILDERS)
@@ -65,8 +106,18 @@ def available_venues() -> list[dict[str, str]]:
 
 
 def build_strategy(name: str, ctx: StrategyContext) -> Strategy:
+    """Build a strategy by delegating to the strategy registry.
+
+    Args:
+        name: Registered strategy name.
+        ctx: Runtime context for the strategy.
+
+    Returns:
+        A strategy instance implementing the ``Strategy`` protocol.
+    """
     return _build_strategy(name, ctx)
 
 
 def available_strategies() -> list[str]:
+    """Return all registered strategy names in alphabetical order."""
     return _available_strategies()

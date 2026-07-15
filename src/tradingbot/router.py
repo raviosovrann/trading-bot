@@ -1,3 +1,5 @@
+"""Route strategy signals to execution venues, optionally through risk guards."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -11,7 +13,14 @@ if TYPE_CHECKING:
 
 
 class SignalRouter:
+    """Convert ``Signal`` objects into venue orders."""
+
     def __init__(self, venue: ExecutionVenue) -> None:
+        """Create a router backed by ``venue``.
+
+        Args:
+            venue: Venue used to place orders and close positions.
+        """
         self._venue = venue
 
     @classmethod
@@ -30,6 +39,17 @@ class SignalRouter:
         The deferred import keeps the core router usable without importing the
         service package, while providing one explicit production wiring point
         for supervised bots.
+
+        Args:
+            venue: Underlying execution venue.
+            per_bot_cap: Maximum notional exposure allowed for one bot.
+            global_cap: Maximum notional exposure allowed across all bots.
+            global_state: Shared exposure tracker.
+            price_source: Callable returning the latest price for notional checks.
+            multiplier: Contract multiplier applied to notional calculations.
+
+        Returns:
+            A router wrapped with per-bot and global risk limits.
         """
         from .service.risk import RiskGuard
 
@@ -45,6 +65,17 @@ class SignalRouter:
         )
 
     def route(self, signal: Signal) -> OrderResult:
+        """Translate ``signal`` into an order and send it to the venue.
+
+        Args:
+            signal: Strategy signal to execute.
+
+        Returns:
+            The venue's order result.
+
+        Raises:
+            ValueError: If the signal action is not supported.
+        """
         if signal.action is Action.close:
             return self._venue.close_position(signal.symbol)
 
