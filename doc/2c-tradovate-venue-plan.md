@@ -477,10 +477,12 @@ def test_health_check_true_then_false():
     assert _venue(_FakeClient(account_raises=True)).health_check() is False
 
 
-def test_contract_multiplier_micro_contracts():
+def test_contract_multiplier_micro_and_standard():
     v = _venue(_FakeClient())
-    assert v.contract_multiplier("MBTF6") == 0.1   # Micro Bitcoin = 0.1 BTC
+    assert v.contract_multiplier("MBTF6") == 0.1    # Micro Bitcoin = 0.1 BTC
     assert v.contract_multiplier("METF6") == 0.1    # Micro Ether = 0.1 ETH
+    assert v.contract_multiplier("BTCF6") == 5.0    # Bitcoin (full) = 5 BTC
+    assert v.contract_multiplier("ETHF6") == 50.0   # Ether (full) = 50 ETH
     assert v.contract_multiplier("UNKNOWN") == 1.0  # safe default
 ```
 
