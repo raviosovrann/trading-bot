@@ -1,3 +1,5 @@
+"""Tests for the streaming runtime."""
+
 import asyncio
 import json
 
@@ -92,17 +94,20 @@ def _make(symbol="BTC/USD", warmup=None, strategy=None, on_event=None):
 
 
 def test_stream_runtime_warms_up_once():
+    """Verify that the stream runtime requests warmup candles once."""
     warmup = [_candle(1), _candle(2)]
     rt, feed, venue = _make(warmup=warmup)
     assert feed.warmup_calls == [("BTC/USD", "5Min", 2)]
 
 
 def test_stream_runtime_registers_handler_before_run():
+    """Verify that the stream runtime registers a bar handler before starting the feed."""
     rt, feed, venue = _make()
     assert feed._handler is not None
 
 
 def test_stream_runtime_evaluates_warmup_on_start():
+    """Verify that the runtime evaluates warmup candles and routes signals on start."""
     # last warmup bar (close=200) satisfies the stub strategy -> a buy should be
     # routed immediately on start, before any live candle is pushed.
     warmup = [_candle(1, 100.0), _candle(2, 200.0)]
@@ -113,6 +118,7 @@ def test_stream_runtime_evaluates_warmup_on_start():
 
 
 def test_stream_runtime_pushed_bar_drives_strategy_and_router():
+    """Verify that a pushed bar drives the strategy and routes an order."""
     rt, feed, venue = _make()
     feed.push(_candle(10, close=100.0))  # no signal
     assert venue.orders == []
@@ -123,6 +129,7 @@ def test_stream_runtime_pushed_bar_drives_strategy_and_router():
 
 
 def test_stream_runtime_dedups_stale_timestamp():
+    """Verify that the runtime deduplicates bars with the same timestamp."""
     rt, feed, venue = _make()
     feed.push(_candle(20, close=200.0))
     feed.push(_candle(20, close=200.0))  # same ts -> ignored
@@ -130,6 +137,7 @@ def test_stream_runtime_dedups_stale_timestamp():
 
 
 def test_stream_runtime_start_runs_feed_with_symbol():
+    """Verify that start passes the configured symbol to the feed's run method."""
     rt, feed, venue = _make()
     # start() now drives a reconnect loop; a sleep that stops ends it after one pass.
     rt.start(install_signals=False, sleep=lambda _: rt.stop())
@@ -138,6 +146,7 @@ def test_stream_runtime_start_runs_feed_with_symbol():
 
 @pytest.mark.asyncio
 async def test_stream_runtime_start_async_uses_callers_event_loop():
+    """Verify that start_async runs the feed asynchronously on the caller's event loop."""
     rt, feed, venue = _make()
 
     task = asyncio.create_task(rt.start_async(install_signals=False))
@@ -151,6 +160,7 @@ async def test_stream_runtime_start_async_uses_callers_event_loop():
 
 
 def test_decision_event_contains_runtime_symbol():
+    """Verify that emitted decision events include the runtime symbol."""
     events = []
     rt, feed, venue = _make(on_event=events.append, strategy=_NoSignalStrategy())
 
@@ -162,6 +172,7 @@ def test_decision_event_contains_runtime_symbol():
 
 @pytest.mark.asyncio
 async def test_stream_runtime_start_async_reconnects_and_gap_fills():
+    """Verify that start_async reconnects after a failure and performs gap fill."""
     rt, feed, venue = _make()
     attempts = []
     original_run_async = feed.run_async
@@ -189,6 +200,7 @@ async def test_stream_runtime_start_async_reconnects_and_gap_fills():
 
 
 def test_stream_runtime_gap_fill_dedups_and_fills():
+    """Verify that gap fill deduplicates against the buffer and adds missing bars."""
     feed = _FakeStreamingFeed()
     venue = FakeVenue()
     router = SignalRouter(venue)
@@ -208,12 +220,14 @@ def test_stream_runtime_gap_fill_dedups_and_fills():
 
 
 def test_stream_runtime_stop_calls_feed_stop():
+    """Verify that stop delegates to the feed's stop method."""
     rt, feed, venue = _make()
     rt.stop()
     assert feed.stopped == 1
 
 
 def test_stream_runtime_stop_is_idempotent():
+    """Verify that stop can be called multiple times safely."""
     rt, feed, venue = _make()
     rt.stop()
     rt.stop()
@@ -221,5 +235,6 @@ def test_stream_runtime_stop_is_idempotent():
 
 
 def test_config_stream_flag_defaults_false_and_parses_true():
+    """Verify the stream config flag defaults to false and parses true."""
     assert load_config({}).stream is False
     assert load_config({"STREAM": "true"}).stream is True

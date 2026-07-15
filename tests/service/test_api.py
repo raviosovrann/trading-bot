@@ -1,3 +1,5 @@
+"""Tests for the REST API and WebSocket endpoints."""
+
 from __future__ import annotations
 
 import asyncio
@@ -14,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from tradingbot.models import Action, Candle, Order, OrderResult, OrderType, Position, PositionSide, Signal
 from tradingbot.service.api import create_app
-from tradingbot.service.events import EventBus, OrderEvent
+from tradingbot.service.events import DecisionEvent, EventBus, OrderEvent
 from tradingbot.service.risk import GlobalExposure
 from tradingbot.service.store import BotStore
 from tradingbot.service.supervisor import BotConfig, BotSupervisor
@@ -130,12 +132,14 @@ def _auth() -> dict[str, str]:
 
 class TestAuth:
     def test_unauthenticated_request_returns_401(self, client: TestClient) -> None:
+        """Verify that unauthenticated requests return 401."""
         response = client.get("/bots")
         assert response.status_code == 401
 
 
 class TestListMeta:
     def test_venues_and_strategies_are_non_empty(self, client: TestClient) -> None:
+        """Verify that venues and strategies endpoints return non-empty lists."""
         venues = client.get("/venues", headers=_auth()).json()
         strategies = client.get("/strategies", headers=_auth()).json()
         assert any(v["venue"] == "coinbase" and v["market_type"] == "spot" for v in venues)
@@ -161,11 +165,13 @@ class TestBotLifecycle:
         return response.json()
 
     def test_create_bot_dry_run_default(self, client: TestClient) -> None:
+        """Verify that a newly created bot defaults to dry-run and created status."""
         bot = self._create(client)
         assert bot["live"] is False
         assert bot["status"] == "created"
 
     def test_start_bot_then_get_shows_running(self, client: TestClient) -> None:
+        """Verify that starting a bot sets its status to running and stopping sets it to stopped."""
         bot = self._create(client)
         bot_id = bot["id"]
         response = client.post(f"/bots/{bot_id}/start", headers=_auth())
@@ -181,6 +187,7 @@ class TestBotLifecycle:
         assert response.json()["status"] == "stopped"
 
     def test_patch_bot_flips_live(self, client: TestClient) -> None:
+        """Verify that patching a bot flips the live flag."""
         bot = self._create(client)
         bot_id = bot["id"]
         response = client.patch(f"/bots/{bot_id}", json={"live": True}, headers=_auth())
@@ -191,6 +198,7 @@ class TestBotLifecycle:
         assert response.json()["live"] is True
 
     def test_bot_response_hides_secrets(self, client: TestClient) -> None:
+        """Verify that bot responses do not expose credential fields."""
         bot = self._create(client)
         bot_id = bot["id"]
         response = client.get(f"/bots/{bot_id}", headers=_auth())
@@ -201,20 +209,24 @@ class TestBotLifecycle:
         assert "api_secret" not in body
 
     def test_list_bots_after_create(self, client: TestClient) -> None:
+        """Verify that the created bot appears in the list."""
         bot = self._create(client)
         response = client.get("/bots", headers=_auth())
         assert response.status_code == 200
         assert any(b["id"] == bot["id"] for b in response.json())
 
     def test_get_unknown_bot_returns_404(self, client: TestClient) -> None:
+        """Verify that fetching an unknown bot returns 404."""
         response = client.get("/bots/no-such-bot", headers=_auth())
         assert response.status_code == 404
 
     def test_start_unknown_bot_returns_404(self, client: TestClient) -> None:
+        """Verify that starting an unknown bot returns 404."""
         response = client.post("/bots/no-such-bot/start", headers=_auth())
         assert response.status_code == 404
 
     def test_start_bot_returns_400_when_venue_build_fails(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify that starting a bot returns 400 when the venue cannot be built."""
         def _raise(*a: object, **k: object) -> None:
             raise ValueError("bad creds")
 
@@ -227,6 +239,7 @@ class TestBotLifecycle:
 
 class TestWebSocket:
     def test_ws_receives_published_order_event(self, client: TestClient) -> None:
+        """Verify that the WebSocket receives published order events."""
         app = cast(FastAPI, client.app)
         store = app.state.store
         supervisor = app.state.supervisor
@@ -242,6 +255,7 @@ class TestWebSocket:
             assert data["action"] == "buy"
 
     def test_ws_without_token_is_closed(self, client: TestClient) -> None:
+        """Verify that WebSocket connections without a token are closed."""
         with client.websocket_connect("/ws") as ws:
             # FastAPI closes with code 1008 when authentication fails.
             with pytest.raises(Exception):
@@ -250,10 +264,12 @@ class TestWebSocket:
 
 class TestTrades:
     def test_get_trades_for_unknown_bot_returns_404(self, client: TestClient) -> None:
+        """Verify that fetching trades for an unknown bot returns 404."""
         response = client.get("/bots/no-such-bot/trades", headers=_auth())
         assert response.status_code == 404
 
     def test_get_trades_for_bot(self, client: TestClient) -> None:
+        """Verify that trades for a bot can be retrieved."""
         bot = TestBotLifecycle()._create(client)
         bot_id = bot["id"]
         store = cast(FastAPI, client.app).state.store
@@ -261,3 +277,69 @@ class TestTrades:
         response = client.get(f"/bots/{bot_id}/trades", headers=_auth())
         assert response.status_code == 200
         assert response.json() == [{"action": "buy", "status": "filled"}]
+
+
+class TestAuthErrors:
+    def test_non_bearer_scheme_returns_401(self, client: TestClient) -> None:
+        """Verify that a non-Bearer authorization scheme is rejected."""
+        response = client.get("/bots", headers={"Authorization": "Basic abc"})
+        assert response.status_code == 401
+
+    def test_invalid_token_returns_401(self, client: TestClient) -> None:
+        """Verify that an invalid bearer token is rejected."""
+        response = client.get("/bots", headers={"Authorization": "Bearer wrong-token"})
+        assert response.status_code == 401
+
+    def test_non_list_users_file_returns_401(self, client: TestClient) -> None:
+        """Verify that a malformed users file falls back to no valid users."""
+        store = cast(FastAPI, client.app).state.store
+        store._users_file.write_text(json.dumps({"users": "not-a-list"}), encoding="utf-8")
+        response = client.get("/bots", headers=_auth())
+        assert response.status_code == 401
+
+
+class TestPatchBot:
+    def test_patch_bot_preserves_omitted_fields(self, client: TestClient) -> None:
+        """Verify that omitted patch fields leave the bot unchanged."""
+        bot = TestBotLifecycle()._create(client, live=False)
+        bot_id = bot["id"]
+        response = client.patch(f"/bots/{bot_id}", json={}, headers=_auth())
+        assert response.status_code == 200
+        assert response.json()["live"] is False
+
+    def test_patch_unknown_bot_returns_404(self, client: TestClient) -> None:
+        """Verify that patching an unknown bot returns 404."""
+        response = client.patch("/bots/no-such-bot", json={"live": True}, headers=_auth())
+        assert response.status_code == 404
+
+
+class TestStopBot:
+    def test_stop_unknown_bot_returns_404(self, client: TestClient) -> None:
+        """Verify that stopping an unknown bot returns 404."""
+        response = client.post("/bots/no-such-bot/stop", headers=_auth())
+        assert response.status_code == 404
+
+
+class TestWebSocketEvents:
+    def test_ws_receives_decision_event(self, client: TestClient) -> None:
+        """Verify that the WebSocket forwards decision events."""
+        app = cast(FastAPI, client.app)
+        supervisor = app.state.supervisor
+        with client.websocket_connect(f"/ws?token={_TOKEN}") as ws:
+            _wait_for_subscribers(supervisor.event_bus)
+            supervisor.event_bus.publish(
+                DecisionEvent(bot_id="b1", symbol="BTC/USD", ts=1, text="no signal")
+            )
+            data = ws.receive_json()
+            assert data["type"] == "decision"
+            assert data["bot_id"] == "b1"
+
+    def test_ws_receives_unknown_event(self, client: TestClient) -> None:
+        """Verify that the WebSocket serializes unknown events safely."""
+        app = cast(FastAPI, client.app)
+        supervisor = app.state.supervisor
+        with client.websocket_connect(f"/ws?token={_TOKEN}") as ws:
+            _wait_for_subscribers(supervisor.event_bus)
+            supervisor.event_bus.publish("plain-string")
+            data = ws.receive_json()
+            assert data["type"] == "unknown"

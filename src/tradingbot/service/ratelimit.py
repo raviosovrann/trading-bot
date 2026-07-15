@@ -16,6 +16,17 @@ class RateLimiter:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
+        """Initialize a token bucket.
+
+        Args:
+            rate_per_sec: Tokens refilled per second. Must be positive.
+            burst: Maximum tokens the bucket can hold. Must be positive.
+            clock: Callable returning the current time in seconds.
+            sleep: Async sleep callable used to wait for tokens.
+
+        Raises:
+            ValueError: If ``rate_per_sec`` or ``burst`` is not positive.
+        """
         if rate_per_sec <= 0:
             raise ValueError("rate_per_sec must be greater than zero")
         if burst <= 0:

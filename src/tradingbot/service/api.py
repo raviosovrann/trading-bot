@@ -1,3 +1,5 @@
+"""FastAPI application exposing the trading console REST and WebSocket API."""
+
 from __future__ import annotations
 
 import asyncio
@@ -24,10 +26,19 @@ _security = HTTPBearer(auto_error=False)
 
 
 def _hash_token(token: str) -> str:
+    """Return the SHA-256 hex digest of ``token``."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def _load_token_hashes(store: BotStore) -> set[str]:
+    """Load valid bearer token hashes from ``store``.
+
+    Args:
+        store: Persistence layer containing user records.
+
+    Returns:
+        Set of configured SHA-256 token hashes.
+    """
     data = store.load_users()
     users = data.get("users", [])
     if not isinstance(users, list):
@@ -36,10 +47,12 @@ def _load_token_hashes(store: BotStore) -> set[str]:
 
 
 def _get_store(request: Request) -> BotStore:
+    """Return the ``BotStore`` attached to the app state."""
     return request.app.state.store
 
 
 def _get_supervisor(request: Request) -> BotSupervisor:
+    """Return the ``BotSupervisor`` attached to the app state."""
     return request.app.state.supervisor
 
 
@@ -47,6 +60,18 @@ async def require_auth(
     credentials: HTTPAuthorizationCredentials | None = Depends(_security),
     store: BotStore = Depends(_get_store),
 ) -> str:
+    """Validate the bearer token against stored token hashes.
+
+    Args:
+        credentials: Authorization header parsed by FastAPI.
+        store: Persistence layer containing user records.
+
+    Returns:
+        The raw bearer token when authentication succeeds.
+
+    Raises:
+        HTTPException: If the token is missing, malformed or invalid.
+    """
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -65,6 +90,14 @@ async def require_auth(
 
 
 def _event_to_dict(event: Any) -> dict[str, Any]:
+    """Serialize a supervisor event into a dictionary for the WebSocket.
+
+    Args:
+        event: Decision or order event from the event bus.
+
+    Returns:
+        Dictionary with ``type`` and event fields.
+    """
     if isinstance(event, DecisionEvent):
         return {"type": "decision", **asdict(event)}
     if isinstance(event, OrderEvent):
@@ -73,10 +106,26 @@ def _event_to_dict(event: Any) -> dict[str, Any]:
 
 
 def _position_to_dict(position: Position | None) -> dict[str, Any] | None:
+    """Convert a ``Position`` model to a dictionary or ``None``.
+
+    Args:
+        position: Position instance, or ``None`` when flat.
+
+    Returns:
+        Dictionary representation, or ``None`` if ``position`` is ``None``.
+    """
     return position.model_dump() if position is not None else None
 
 
 def _to_view(bot: BotInstance) -> BotView:
+    """Map a ``BotInstance`` to its API-safe view.
+
+    Args:
+        bot: Running or created bot instance.
+
+    Returns:
+        ``BotView`` without credentials.
+    """
     return BotView(
         id=bot.config.id,
         venue=bot.config.venue,
@@ -97,6 +146,16 @@ def _to_view(bot: BotInstance) -> BotView:
 
 
 def _load_credentials(store: BotStore, venue: str, market_type: str) -> dict[str, object]:
+    """Load stored credentials for a venue/market-type pair.
+
+    Args:
+        store: Persistence layer containing secrets.
+        venue: Venue identifier.
+        market_type: Market type identifier.
+
+    Returns:
+        Credential dictionary, or an empty dictionary when none are configured.
+    """
     secrets = store.load_secrets()
     venue_secrets = secrets.get(venue)
     if not isinstance(venue_secrets, dict):
@@ -106,16 +165,27 @@ def _load_credentials(store: BotStore, venue: str, market_type: str) -> dict[str
 
 
 def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
+    """Create and configure the FastAPI trading console app.
+
+    Args:
+        store: Persistence layer attached to app state.
+        supervisor: Bot supervisor attached to app state.
+
+    Returns:
+        Configured ``FastAPI`` application.
+    """
     app = FastAPI(title="Trading Console")
     app.state.store = store
     app.state.supervisor = supervisor
 
     @app.get("/venues")
     async def list_venues(_: str = Depends(require_auth)) -> list[dict[str, str]]:
+        """List supported venue/market-type mappings."""
         return available_venues()
 
     @app.get("/strategies")
     async def list_strategies(_: str = Depends(require_auth)) -> list[str]:
+        """List registered strategy names."""
         return available_strategies()
 
     @app.post("/bots", status_code=status.HTTP_201_CREATED)
@@ -123,6 +193,17 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
         request: CreateBotRequest,
         _: str = Depends(require_auth),
     ) -> BotView:
+        """Create and persist a new bot from ``request``.
+
+        Args:
+            request: Bot creation payload.
+
+        Returns:
+            API view of the newly created bot.
+
+        Raises:
+            HTTPException: If the bot cannot be retrieved after creation.
+        """
         bot_id = str(uuid.uuid4())
         cfg = BotConfig(
             id=bot_id,
@@ -146,10 +227,22 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
 
     @app.get("/bots")
     async def list_bots(_: str = Depends(require_auth)) -> list[BotView]:
+        """List all created bots."""
         return [_to_view(bot) for bot in supervisor.list()]
 
     @app.get("/bots/{bot_id}")
     async def get_bot(bot_id: str, _: str = Depends(require_auth)) -> BotView:
+        """Return the bot identified by ``bot_id``.
+
+        Args:
+            bot_id: UUID of the bot.
+
+        Returns:
+            API view of the bot.
+
+        Raises:
+            HTTPException: If the bot does not exist.
+        """
         bot = supervisor.get(bot_id)
         if bot is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="bot not found")
@@ -161,6 +254,18 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
         request: PatchBotRequest,
         _: str = Depends(require_auth),
     ) -> BotView:
+        """Update mutable fields of the bot identified by ``bot_id``.
+
+        Args:
+            bot_id: UUID of the bot.
+            request: Fields to update.
+
+        Returns:
+            API view of the updated bot.
+
+        Raises:
+            HTTPException: If the bot does not exist.
+        """
         bot = supervisor.get(bot_id)
         if bot is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="bot not found")
@@ -177,6 +282,20 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
 
     @app.post("/bots/{bot_id}/start")
     async def start_bot(bot_id: str, _: str = Depends(require_auth)) -> BotView:
+        """Start the bot identified by ``bot_id``.
+
+        Credentials are loaded from the store and attached to the bot config
+        before starting.
+
+        Args:
+            bot_id: UUID of the bot.
+
+        Returns:
+            API view of the started bot.
+
+        Raises:
+            HTTPException: If the bot does not exist or cannot be started.
+        """
         bot = supervisor.get(bot_id)
         if bot is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="bot not found")
@@ -192,6 +311,17 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
 
     @app.post("/bots/{bot_id}/stop")
     async def stop_bot(bot_id: str, _: str = Depends(require_auth)) -> BotView:
+        """Stop the bot identified by ``bot_id``.
+
+        Args:
+            bot_id: UUID of the bot.
+
+        Returns:
+            API view of the stopped bot.
+
+        Raises:
+            HTTPException: If the bot does not exist.
+        """
         bot = supervisor.get(bot_id)
         if bot is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="bot not found")
@@ -200,12 +330,30 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
 
     @app.get("/bots/{bot_id}/trades")
     async def list_trades(bot_id: str, _: str = Depends(require_auth)) -> list[dict[str, Any]]:
+        """List persisted trade events for ``bot_id``.
+
+        Args:
+            bot_id: UUID of the bot.
+
+        Returns:
+            Trade events recorded for the bot.
+
+        Raises:
+            HTTPException: If the bot does not exist.
+        """
         if supervisor.get(bot_id) is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="bot not found")
         return store.read_trades(bot_id)
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
+        """Stream supervisor events to authenticated WebSocket clients.
+
+        Clients must provide a valid ``token`` query parameter.
+
+        Args:
+            websocket: Accepted WebSocket connection.
+        """
         await websocket.accept()
         store = websocket.app.state.store
         supervisor = websocket.app.state.supervisor

@@ -1,3 +1,5 @@
+"""Tests for the bot supervisor and event bus."""
+
 from __future__ import annotations
 
 import asyncio
@@ -82,6 +84,7 @@ def _config(bot_id: str) -> BotConfig:
 
 @pytest.mark.asyncio
 async def test_event_bus_fans_out_and_unsubscribes() -> None:
+    """Verify that the event bus fans out events and supports unsubscribing."""
     bus = EventBus()
     first = bus.subscribe()
     second = bus.subscribe()
@@ -99,6 +102,7 @@ async def test_event_bus_fans_out_and_unsubscribes() -> None:
 
 @pytest.mark.asyncio
 async def test_event_bus_concurrent_subscribe_and_publish() -> None:
+    """Verify that concurrent subscribe and publish on the event bus works correctly."""
     bus = EventBus()
     received: list[OrderEvent] = []
 
@@ -124,6 +128,7 @@ async def test_event_bus_concurrent_subscribe_and_publish() -> None:
 
 @pytest.mark.asyncio
 async def test_supervisor_start_stop_and_order_event(monkeypatch) -> None:
+    """Verify that the supervisor can start/stop a bot and emits an order event."""
     hub = _FakeHub()
     bus = EventBus()
     monkeypatch.setattr("tradingbot.service.supervisor.build_venue", lambda *args, **kwargs: _FakeVenue())
@@ -150,6 +155,7 @@ async def test_supervisor_start_stop_and_order_event(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_two_bots_run_concurrently(monkeypatch) -> None:
+    """Verify that two bots can start and run concurrently."""
     hubs = {}
     monkeypatch.setattr("tradingbot.service.supervisor.build_venue", lambda *args, **kwargs: _FakeVenue())
     monkeypatch.setattr("tradingbot.service.supervisor.build_strategy", lambda *args, **kwargs: _SignalStrategy())

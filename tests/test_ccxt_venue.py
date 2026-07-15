@@ -37,11 +37,13 @@ class _FakeExchange:
 
 
 def test_init_requires_exchange():
+    """Verify that CcxtVenue requires an exchange."""
     with pytest.raises(ValueError):
         CcxtVenue(None)
 
 
 def test_live_market_buy_calls_create_order_once():
+    """Verify that a live market buy calls create_order once."""
     ex = _FakeExchange(create_order_return={"id": "oid1", "status": "closed", "filled": 2.5, "info": {}})
     venue = CcxtVenue(ex, live=True)
     order = Order(symbol="BTC/USD", side=Side.buy, order_type=OrderType.market, qty=2.5)
@@ -62,6 +64,7 @@ def test_live_market_buy_calls_create_order_once():
 
 
 def test_live_limit_order_passes_price():
+    """Verify that a live limit order passes the price to the exchange."""
     ex = _FakeExchange()
     venue = CcxtVenue(ex, live=True)
     order = Order(symbol="BTC/USD", side=Side.buy, order_type=OrderType.limit, qty=1.0, price=100.0)
@@ -73,6 +76,7 @@ def test_live_limit_order_passes_price():
 
 
 def test_dry_run_does_not_call_exchange():
+    """Verify that dry-run mode does not call the exchange."""
     ex = _FakeExchange()
     venue = CcxtVenue(ex, live=False)
     order = Order(symbol="BTC/USD", side=Side.buy, order_type=OrderType.market, qty=1.0)
@@ -87,6 +91,7 @@ def test_dry_run_does_not_call_exchange():
 
 
 def test_create_order_raises_returns_error_result():
+    """Verify that exchange errors during create_order are returned as an error result."""
     ex = _FakeExchange(raise_on_create=True)
     venue = CcxtVenue(ex, live=True)
     order = Order(symbol="BTC/USD", side=Side.buy, order_type=OrderType.market, qty=1.0)
@@ -100,6 +105,7 @@ def test_create_order_raises_returns_error_result():
 
 
 def test_rejected_status_maps_to_not_ok():
+    """Verify that a rejected order status maps to a non-ok result."""
     ex = _FakeExchange(create_order_return={"id": "x", "status": "rejected", "filled": 0.0, "info": {}})
     venue = CcxtVenue(ex, live=True)
     order = Order(symbol="BTC/USD", side=Side.buy, order_type=OrderType.market, qty=1.0)
@@ -111,6 +117,7 @@ def test_rejected_status_maps_to_not_ok():
 
 
 def test_get_position_returns_long_from_balance_total():
+    """Verify that a positive balance total maps to a long position."""
     ex = _FakeExchange(balance={"BTC": {"free": 0.5, "used": 0.0, "total": 1.5}})
     venue = CcxtVenue(ex, live=True)
 
@@ -124,6 +131,7 @@ def test_get_position_returns_long_from_balance_total():
 
 
 def test_get_position_zero_balance_returns_none():
+    """Verify that a zero balance returns no position."""
     ex = _FakeExchange(balance={"BTC": {"free": 0.0, "used": 0.0, "total": 0.0}})
     venue = CcxtVenue(ex, live=True)
 
@@ -131,6 +139,7 @@ def test_get_position_zero_balance_returns_none():
 
 
 def test_get_position_absent_balance_returns_none():
+    """Verify that an absent currency balance returns no position."""
     ex = _FakeExchange(balance={})
     venue = CcxtVenue(ex, live=True)
 
@@ -138,6 +147,7 @@ def test_get_position_absent_balance_returns_none():
 
 
 def test_get_position_balance_raises_returns_none():
+    """Verify that balance fetch errors return no position."""
     ex = _FakeExchange(raise_on_balance=True)
     venue = CcxtVenue(ex, live=True)
 
@@ -145,6 +155,7 @@ def test_get_position_balance_raises_returns_none():
 
 
 def test_close_position_live_places_market_sell():
+    """Verify that a live close position places a market sell for the balance."""
     ex = _FakeExchange(balance={"BTC": {"free": 0.0, "used": 0.0, "total": 3.0}})
     venue = CcxtVenue(ex, live=True)
 
@@ -159,6 +170,7 @@ def test_close_position_live_places_market_sell():
 
 
 def test_close_position_no_balance_no_order():
+    """Verify that closing a position with no balance does not place an order."""
     ex = _FakeExchange(balance={})
     venue = CcxtVenue(ex, live=True)
 
@@ -170,6 +182,7 @@ def test_close_position_no_balance_no_order():
 
 
 def test_close_position_dry_run_does_not_call_exchange():
+    """Verify that dry-run close position does not call the exchange."""
     ex = _FakeExchange(balance={"BTC": {"free": 0.0, "used": 0.0, "total": 3.0}})
     venue = CcxtVenue(ex, live=False)
 
@@ -180,6 +193,7 @@ def test_close_position_dry_run_does_not_call_exchange():
 
 
 def test_health_check_true_when_balance_ok():
+    """Verify that health check succeeds when the balance is available."""
     ex = _FakeExchange(balance={"BTC": {"total": 1.0}})
     venue = CcxtVenue(ex, live=True)
 
@@ -187,6 +201,7 @@ def test_health_check_true_when_balance_ok():
 
 
 def test_health_check_false_when_balance_raises():
+    """Verify that health check fails when the balance fetch raises."""
     ex = _FakeExchange(raise_on_balance=True)
     venue = CcxtVenue(ex, live=True)
 

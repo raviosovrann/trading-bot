@@ -1,3 +1,5 @@
+"""Candle feed implementations used by bots for market data."""
+
 from __future__ import annotations
 
 from typing import Any, Protocol
@@ -11,12 +13,45 @@ except Exception:  # pragma: no cover - optional third-party install
 
 
 class CandleFeed(Protocol):
-    def warmup_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]: ...
-    def latest_closed_candle(self, symbol: str, timeframe: str) -> Candle | None: ...
+    """Protocol for candle providers used by the runtime."""
+
+    def warmup_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
+        """Return ``limit`` closed historical candles, oldest-first.
+
+        Args:
+            symbol: Trading symbol to fetch.
+            timeframe: Candle granularity, e.g. ``1h``.
+            limit: Maximum number of closed candles to return.
+
+        Returns:
+            Closed candles ordered oldest-first.
+        """
+        ...
+
+    def latest_closed_candle(self, symbol: str, timeframe: str) -> Candle | None:
+        """Return the most recently closed candle if available.
+
+        Args:
+            symbol: Trading symbol to fetch.
+            timeframe: Candle granularity, e.g. ``1h``.
+
+        Returns:
+            The latest closed candle, or ``None`` when unavailable.
+        """
+        ...
 
 
 def _ohlcv_to_candle(row: Any) -> Candle:
-    # ccxt OHLCV row shape: [timestamp_ms, open, high, low, close, volume]
+    """Convert a ccxt OHLCV row into a ``Candle`` model.
+
+    ccxt OHLCV row shape: ``[timestamp_ms, open, high, low, close, volume]``.
+
+    Args:
+        row: OHLCV sequence returned by ccxt.
+
+    Returns:
+        A ``Candle`` populated from the row.
+    """
     return Candle(
         timestamp=int(row[0]),
         open=float(row[1]),
@@ -38,6 +73,14 @@ class CcxtCandleFeed:
     """
 
     def __init__(self, exchange: Any | None = None) -> None:
+        """Wrap an initialized ccxt exchange instance.
+
+        Args:
+            exchange: Initialized ccxt exchange. Must not be ``None``.
+
+        Raises:
+            ValueError: If ``exchange`` is ``None``.
+        """
         if exchange is None:
             raise ValueError("CcxtCandleFeed requires an exchange or use from_exchange(...)")
         self._ex = exchange
@@ -50,6 +93,20 @@ class CcxtCandleFeed:
         api_secret: str,
         password: str | None = None,
     ) -> "CcxtCandleFeed":
+        """Create a feed from a ccxt exchange id and API credentials.
+
+        Args:
+            exchange_id: ccxt exchange class name, e.g. ``coinbase``.
+            api_key: Exchange API key.
+            api_secret: Exchange API secret.
+            password: Optional exchange password.
+
+        Returns:
+            Configured ``CcxtCandleFeed`` instance.
+
+        Raises:
+            RuntimeError: If ccxt is not installed.
+        """
         if ccxt is None:
             raise RuntimeError("ccxt is not installed")
         klass = getattr(ccxt, exchange_id)
@@ -59,6 +116,16 @@ class CcxtCandleFeed:
         return cls(klass(config))
 
     def warmup_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
+        """Fetch ``limit`` closed historical candles.
+
+        Args:
+            symbol: Trading symbol to fetch.
+            timeframe: Candle granularity.
+            limit: Number of closed candles to return.
+
+        Returns:
+            Closed candles ordered oldest-first.
+        """
         if limit <= 0:
             return []
         rows = self._ex.fetch_ohlcv(symbol, timeframe, limit=limit + 1)
@@ -69,6 +136,15 @@ class CcxtCandleFeed:
         return [_ohlcv_to_candle(r) for r in closed[-limit:]]
 
     def latest_closed_candle(self, symbol: str, timeframe: str) -> Candle | None:
+        """Fetch the most recently closed candle.
+
+        Args:
+            symbol: Trading symbol to fetch.
+            timeframe: Candle granularity.
+
+        Returns:
+            The latest closed candle, or ``None`` when unavailable.
+        """
         rows = self._ex.fetch_ohlcv(symbol, timeframe, limit=2)
         if not rows:
             return None

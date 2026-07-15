@@ -1,3 +1,9 @@
+"""Strategy plugin package.
+
+Importing this package auto-discovers and registers every public strategy
+module under ``src/tradingbot/strategies``.
+"""
+
 from __future__ import annotations
 
 from importlib import import_module
@@ -8,6 +14,7 @@ from .registry import available_strategies, build_strategy, strategy
 
 
 def _discover() -> None:
+    """Import every non-private strategy module to register decorators."""
     for module in iter_modules(__path__):
         if module.name.startswith("_"):
             continue

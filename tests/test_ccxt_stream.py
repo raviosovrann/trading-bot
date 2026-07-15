@@ -1,3 +1,5 @@
+"""Tests for the CCXT streaming candle feed."""
+
 from typing import Any
 
 from tradingbot.models import Candle
@@ -49,6 +51,7 @@ def _make(batches):
 
 
 def test_construct_requires_exchange():
+    """Verify that CcxtStreamFeed requires an exchange."""
     import pytest
 
     with pytest.raises(ValueError):
@@ -56,6 +59,7 @@ def test_construct_requires_exchange():
 
 
 def test_warmup_delegates_to_warmup_feed():
+    """Verify that warmup delegates to the provided warmup feed."""
     warmup = _WarmupStub()
     ex = _FakeProExchange([[_row(1000)]])
     feed = CcxtStreamFeed(exchange=ex, warmup_feed=warmup, timeframe="5m")
@@ -65,6 +69,7 @@ def test_warmup_delegates_to_warmup_feed():
 
 
 def test_run_emits_closed_bar_and_closes_exchange():
+    """Verify that the run loop emits only closed bars and closes the exchange."""
     # one batch: [closed@1000, forming@2000] -> only 1000 emitted
     feed, ex, received = _make([[_row(1000), _row(2000)]])
     feed.run("BTC/USD")
@@ -74,6 +79,7 @@ def test_run_emits_closed_bar_and_closes_exchange():
 
 
 def test_run_dedups_forming_candle_across_batches():
+    """Verify that the run loop deduplicates forming candles across batches."""
     # batch1: closed 1000, forming 2000 ; batch2: closed 1000+2000, forming 3000
     feed, ex, received = _make([
         [_row(1000), _row(2000)],
@@ -85,6 +91,7 @@ def test_run_dedups_forming_candle_across_batches():
 
 
 def test_stop_is_idempotent():
+    """Verify that stop can be called multiple times safely."""
     feed, ex, _ = _make([[_row(1000)]])
     feed.stop()
     feed.stop()  # second call must not raise

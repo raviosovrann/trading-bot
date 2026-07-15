@@ -1,41 +1,42 @@
-# Trading Bot
+# Trading Console
 
-An automated crypto trading bot built on [ccxt](https://docs.ccxt.com/) — set up
-for **Coinbase spot** by default, though any ccxt exchange works via `EXCHANGE`.
-It runs one strategy — the **Adaptive Momentum Velocity Ribbon (AMVR)** — on a
-market you choose, and places buy/sell orders for you.
+A multi-bot trading service for internal operators. Runs many bots (multiple
+strategies, multiple markets) in a single FastAPI process, with a shared
+market-data hub, rate-limited REST, per-bot and global notional risk caps, and
+an in-memory event bus that feeds both logs and a live WebSocket.
 
-It is **long-only** (spot: you're either holding the coin or in cash) and won't
-spend a cent until you explicitly turn trading on.
+Supported venues:
 
----
+- **Coinbase spot** (long-only) via ccxt.
+- **Tradovate crypto futures** (long + short) via the Tradovate API.
 
-## The strategy in one paragraph
-
-AMVR tracks three Hull moving averages (the "ribbon") and measures how fast each
-is rising. It **buys** when momentum lines up in your favour — a bullish
-"prepare" signal has fired, all three ribbons are green (rising), momentum is
-accelerating up, and both the **1H and 4H** timeframes are also accelerating up.
-It **sells everything back to cash** when momentum rolls over (the bearish
-"prepare" signal). It never shorts.
-
-Because all four conditions must align, it trades selectively — it will often sit
-in cash waiting, which is by design.
+Everything starts in **dry-run** mode (`LIVE=0`). The service never sends real
+orders until an operator explicitly toggles a bot to `live`.
 
 ---
 
-## Dry run vs live — the safety switch
+## Architecture
 
-| `LIVE` | What happens |
-|--------|--------------|
-| `0` (default) | **Dry run.** Reads real market data, decides, and *logs the order it would place*. Sends nothing. Costs **$0**. |
-| `1` | **Live.** Places real orders with real money. |
+```text
+React SPA (Phase 2B) ──REST/WebSocket──▶ FastAPI service
+                                          ├─ BotSupervisor
+                                          ├─ VenueRegistry (coinbase, tradovate)
+                                          ├─ StrategyRegistry (pluggable strategies)
+                                          ├─ MarketDataHub (shared candles/streams)
+                                          ├─ RateLimiter (token bucket per venue)
+                                          ├─ RiskGuard (per-bot + global notional caps)
+                                          ├─ EventBus ──▶ WebSocket /ws
+                                          └─ BotStore (file-based configs + trades)
+```
 
-Always run in dry run first.
+The Phase 1 engine (runtime, router, models, feeds) is reused behind the
+`ExecutionVenue` and `Strategy` protocols. Each running bot is one async task
+using the existing `StreamRuntime`, so the whole service runs on one small VM
+regardless of bot count.
 
 ---
 
-## Setup (once)
+## Quick start
 
 ```bash
 python3 -m venv .venv
@@ -44,90 +45,125 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Then get Coinbase API keys:
+Create `data/users.json` with at least one hashed bearer token:
 
-1. Go to the [Coinbase Developer Platform](https://www.coinbase.com/developer-platform), sign in.
-2. Create an API key with **Trade** permission.
-3. Put the key, secret, and passphrase into `.env`.
-
-Your `.env` should look like:
-
+```json
+{
+  "users": [
+    {"username": "operator", "token_hash": "sha256-of-your-token"}
+  ]
+}
 ```
-EXCHANGE=coinbase
-API_KEY=<your key>
-API_SECRET=<your secret>
-API_PASSWORD=<your passphrase>
-SYMBOL=XRP/USD          # any cheap alt: DOGE/USD, XRP/USD, ADA/USD, ...
-TIMEFRAME=1h            # bar size the ribbon runs on
-ORDER_QTY=25            # how much of the coin to buy per signal
-STREAM=1                # 1 = stay running and react live; 0 = one-shot
-LIVE=0                  # keep 0 until you're ready to trade real money
+
+Create `data/secrets.json` with venue credentials (server-side only):
+
+```json
+{
+  "coinbase": {
+    "spot": {
+      "api_key": "...",
+      "api_secret": "...",
+      "api_password": "..."
+    }
+  },
+  "tradovate": {
+    "futures": {
+      "username": "...",
+      "password": "...",
+      "client_id": "...",
+      "client_secret": "..."
+    }
+  }
+}
 ```
+
+Start the service (uses the default file-based store under `data/`):
+
+```bash
+PYTHONPATH=src uvicorn tradingbot.service.main:create_service_app --factory --host 0.0.0.0 --port 8000
+```
+
+Before starting bots you must configure a real `hub_factory` for your venue
+(by setting `TRADINGBOT_HUB_FACTORY` or replacing the placeholder in
+`tradingbot/service/main.py`).
 
 ---
 
-## Running it
+## API
 
-Load your config into the shell, then start the bot:
+All endpoints require `Authorization: Bearer <token>`.
+
+### Meta
+
+- `GET /venues` — list supported venue/market-type mappings.
+- `GET /strategies` — list registered strategy names.
+
+### Bots
+
+- `POST /bots` — create a bot (dry-run by default).
+- `GET /bots` — list all bots.
+- `GET /bots/{id}` — get one bot.
+- `PATCH /bots/{id}` — update `live`, caps, or params.
+- `POST /bots/{id}/start` — start the bot's runtime task.
+- `POST /bots/{id}/stop` — stop the bot.
+- `GET /bots/{id}/trades` — trade history for the bot.
+
+### WebSocket
+
+- `WS /ws?token=<token>` — live decision, order, and position events.
+
+---
+
+## CLI bot (single-bot, Phase 1 style)
+
+The original single-bot CLI still works for quick testing:
 
 ```bash
 set -a; source .env; set +a
 PYTHONPATH=src python3 -m tradingbot
 ```
 
-- With `STREAM=1` it warms up on history, then stays connected and reacts to each
-  candle as it closes. **Ctrl+C** to stop.
-- With `STREAM=0` it checks the latest candle once and exits (good for a quick test).
-
----
-
-## Recommended path with a funded account ($50–100)
-
-1. **Dry run first.** Keep `LIVE=0`. Run it and watch the logs decide over a few
-   hours across a couple of symbols. Right now it will mostly sit flat — normal.
-2. **Pick a cheap alt** so each trade is small: e.g. `SYMBOL=XRP/USD`.
-3. **Size the order** with `ORDER_QTY` — this is the amount of the *coin*, not
-   dollars. For ~$25 of XRP at ~$1.10, use `ORDER_QTY=22`. Start small.
-4. **Go live:** set `LIVE=1`, reload (`set -a; source .env; set +a`), and run.
-5. **Verify** on Coinbase → your account's Orders/Activity that fills appear.
-
-> With ~$98 in the account, keep `ORDER_QTY` well under your balance so a buy
-> always has room, and expect the bot to wait for momentum to align before its
-> first trade.
-
----
-
-## Configuration reference
+Environment variables:
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `EXCHANGE` | `coinbase` | ccxt exchange id. |
-| `API_KEY` / `API_SECRET` / `API_PASSWORD` | *(empty)* | Coinbase credentials (passphrase required). |
-| `SYMBOL` | `BTC/USD` | Market to trade (e.g. `XRP/USD`). |
-| `TIMEFRAME` | `5m` | Candle size the ribbon runs on (`1m`,`5m`,`15m`,`1h`,`4h`,`1d`). |
-| `ORDER_QTY` | `0.001` | Amount of the base coin to buy per signal. |
-| `STREAM` | `0` | `1` = stay running and react live; `0` = one-shot. |
+| `API_KEY` / `API_SECRET` / `API_PASSWORD` | *(empty)* | Coinbase credentials. |
+| `SYMBOL` | `BTC/USD` | Market to trade. |
+| `TIMEFRAME` | `5m` | Candle size. |
+| `ORDER_QTY` | `0.001` | Amount of the base coin per signal. |
+| `STRATEGY` | `example` | Strategy name from the registry. |
+| `STREAM` | `0` | `1` = stay running; `0` = one-shot. |
 | `LIVE` | `0` | `1` = real orders; `0` = dry run. |
 
 ---
 
-## For developers
+## Strategy plugins
 
-<details>
-<summary>Architecture & tests</summary>
+Add a strategy by dropping a file under `src/tradingbot/strategies/` and
+decorating the class:
 
-```text
-CcxtCandleFeed / CcxtStreamFeed  ->  AMVR strategy  ->  Router  ->  CcxtVenue  ->  Coinbase (ccxt)
-        (candles)                    (buy/sell)         (routes)    (orders)
+```python
+from __future__ import annotations
+from collections.abc import Sequence
+from tradingbot.models import Candle, Signal
+from tradingbot.strategies.base import StrategyContext
+from tradingbot.strategies.registry import strategy
+
+@strategy("mystrategy")
+class MyStrategy:
+    def __init__(self, ctx: StrategyContext) -> None:
+        self.ctx = ctx
+
+    def on_bar(self, candles: Sequence[Candle]) -> Signal | None:
+        ...
 ```
 
-- Strategy: `src/tradingbot/amvr.py` (`AdaptiveMomentumRibbonStrategy`). The 1H/4H
-  momentum is fetched via an injected `CcxtCandleFeed` (cached, and resilient to
-  transient REST failures — a fetch error blocks entry rather than crashing).
-- Spot long/flat only; `CcxtVenue.get_position` reads the base-asset balance.
-- Known limitation: the strategy tracks its own in/out-of-position state, which
-  can drift from the real venue position after a rejected/partial order or a
-  manual trade. Reconciling against `get_position()` is a planned follow-up.
+It is automatically discovered and launchable by name from the API.
+
+---
+
+## For developers
 
 ```bash
 source .venv/bin/activate
@@ -135,6 +171,17 @@ pip install -r requirements.txt
 pytest -v
 ```
 
-CI runs the full matrix (3.11/3.12/3.13) plus pyright, Bandit, and CodeQL on every push and PR.
+CI runs the full matrix (Python 3.11/3.12/3.13), `pyright`, Bandit, and
+CodeQL on every push and PR.
 
-</details>
+---
+
+## File layout
+
+- `src/tradingbot/service/` — FastAPI service, supervisor, registry, risk,
+  data hub, rate limiter, event bus, store, and DTOs.
+- `src/tradingbot/strategies/` — plugin registry and reference strategy.
+- `src/tradingbot/venues/` — `ExecutionVenue` implementations.
+- `src/tradingbot/` — Phase 1 engine: runtime, router, models, feeds, stream.
+- `tests/` — unit and integration tests using fakes; no network or real
+  credentials.

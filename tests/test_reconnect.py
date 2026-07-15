@@ -1,7 +1,10 @@
+"""Tests for the reconnect/backoff logic."""
+
 from tradingbot.stream import run_with_reconnect
 
 
 def test_backoff_schedule_1_2_4_capped_at_60():
+    """Verify the exponential backoff schedule caps at 60 seconds."""
     sleeps = []
 
     def connect():
@@ -19,6 +22,7 @@ def test_backoff_schedule_1_2_4_capped_at_60():
 
 
 def test_backoff_resets_after_healthy_connection():
+    """Verify that backoff resets after a successful connection."""
     sleeps = []
     state = {"n": 0}
 
@@ -40,6 +44,7 @@ def test_backoff_resets_after_healthy_connection():
 
 
 def test_stops_immediately_when_should_stop_true():
+    """Verify that the reconnect loop stops immediately when should_stop is true."""
     ran = []
     sleeps = []
 
@@ -53,6 +58,7 @@ def test_stops_immediately_when_should_stop_true():
 
 
 def test_gap_fill_called_after_disconnect():
+    """Verify that gap_fill is invoked after a disconnect."""
     sleeps = []
     gaps = []
 

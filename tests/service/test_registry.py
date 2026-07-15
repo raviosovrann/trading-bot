@@ -1,3 +1,5 @@
+"""Tests for venue and strategy registry builders."""
+
 from __future__ import annotations
 
 import pytest
@@ -25,6 +27,7 @@ def _context() -> StrategyContext:
 
 
 def test_coinbase_spot_builds_ccxt_venue(monkeypatch) -> None:
+    """Verify that coinbase spot builds a CcxtVenue with the provided credentials."""
     sentinel = object()
     calls = {}
 
@@ -55,11 +58,13 @@ def test_coinbase_spot_builds_ccxt_venue(monkeypatch) -> None:
 
 
 def test_coinbase_missing_credentials_raise_helpful_value_error() -> None:
+    """Verify that missing coinbase credentials raise a helpful ValueError."""
     with pytest.raises(ValueError, match="api_key.*api_secret"):
         build_venue("coinbase", "spot", creds={}, live=False)
 
 
 def test_tradovate_futures_builds_tradovate_venue(monkeypatch) -> None:
+    """Verify that tradovate futures builds a TradovateVenue with the provided credentials."""
     sentinel = object()
     calls = {}
 
@@ -88,6 +93,7 @@ def test_tradovate_futures_builds_tradovate_venue(monkeypatch) -> None:
 
 
 def test_tradovate_live_credential_is_overridden_by_argument(monkeypatch) -> None:
+    """Verify that the live flag overrides the credential-provided live value."""
     calls = {}
 
     def fake_from_credentials(cls, **kwargs):
@@ -115,11 +121,13 @@ def test_tradovate_live_credential_is_overridden_by_argument(monkeypatch) -> Non
     [("coinbase", "futures"), ("tradovate", "spot"), ("unknown", "spot")],
 )
 def test_unknown_venue_mapping_raises(venue: str, market_type: str) -> None:
+    """Verify that unsupported venue/market type mappings raise a ValueError."""
     with pytest.raises(ValueError, match="Unsupported venue"):
         build_venue(venue, market_type, creds={}, live=False)
 
 
 def test_available_venues_lists_supported_mappings() -> None:
+    """Verify that available_venues lists the supported venue mappings."""
     assert available_venues() == [
         {"venue": "coinbase", "market_type": "spot"},
         {"venue": "tradovate", "market_type": "futures"},
@@ -127,6 +135,7 @@ def test_available_venues_lists_supported_mappings() -> None:
 
 
 def test_available_venues_is_sorted_independently_of_mapping_order(monkeypatch) -> None:
+    """Verify that available_venues is sorted regardless of mapping order."""
     monkeypatch.setattr(
         registry,
         "_VENUE_BUILDERS",
@@ -143,5 +152,6 @@ def test_available_venues_is_sorted_independently_of_mapping_order(monkeypatch) 
 
 
 def test_strategy_registry_passes_through_plugin_registry() -> None:
+    """Verify that the strategy registry passes through to the plugin registry."""
     assert "example" in available_strategies()
     assert build_strategy("example", _context()).on_bar([]) is None

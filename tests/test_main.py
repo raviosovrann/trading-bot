@@ -1,3 +1,5 @@
+"""Tests for the CLI entry point wiring."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -18,6 +20,7 @@ class _FakeFeed:
 
 
 def test_main_builds_strategy_from_config(monkeypatch) -> None:
+    """Verify that main wires the strategy, feed, and runtime from the config."""
     cfg = load_config({
         "API_KEY": "key",
         "API_SECRET": "secret",

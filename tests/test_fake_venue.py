@@ -1,8 +1,11 @@
+"""Tests for the in-memory fake venue."""
+
 from doubles import FakeVenue
 from tradingbot.models import Order, PositionSide, Side, OrderType
 
 
 def test_buy_opens_long_then_close_flattens():
+    """Verify that a buy opens a long position and closing flattens it."""
     v = FakeVenue()
     r = v.place_order(Order(symbol="BTCUSDT", side=Side.buy, order_type=OrderType.market, qty=0.01))
     assert r.ok
@@ -14,6 +17,7 @@ def test_buy_opens_long_then_close_flattens():
 
 
 def test_records_orders_and_healthcheck():
+    """Verify that the venue records orders and reports healthy."""
     v = FakeVenue()
     v.place_order(Order(symbol="BTCUSDT", side=Side.sell, order_type=OrderType.market, qty=0.02))
     assert v.health_check() is True
@@ -23,6 +27,7 @@ def test_records_orders_and_healthcheck():
 
 
 def test_close_with_no_position_is_noop():
+    """Verify that closing a non-existent position is a no-op."""
     v = FakeVenue()
     assert v.get_position("BTCUSDT") is None
     r = v.close_position("BTCUSDT")
