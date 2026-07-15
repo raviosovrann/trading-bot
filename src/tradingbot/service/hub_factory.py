@@ -34,8 +34,12 @@ def _default_ccxt_feed_builder(venue: str, market_type: str, timeframe: str, cre
     api_key = str(creds.get("api_key", ""))
     api_secret = str(creds.get("api_secret", ""))
     password = str(creds["api_password"]) if creds.get("api_password") else None
-    stream_feed = CcxtStreamFeed.from_exchange(exchange_id, api_key, api_secret, password, timeframe=timeframe)
-    candle_feed = CcxtCandleFeed.from_exchange(exchange_id, api_key, api_secret, password)
+    stream_feed = CcxtStreamFeed.from_exchange(
+        exchange_id, api_key, api_secret, password, timeframe=timeframe, market_type=market_type
+    )
+    candle_feed = CcxtCandleFeed.from_exchange(
+        exchange_id, api_key, api_secret, password, market_type=market_type
+    )
     return stream_feed, candle_feed
 
 

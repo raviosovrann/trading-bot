@@ -24,8 +24,9 @@ from .supervisor import BotSupervisor
 def create_service_app() -> Any:
     """Create the FastAPI app with default file-based persistence.
 
-    Bots draw market data from a shared ``HubFactory`` (one hub per venue, so
-    the account rate limit is respected regardless of bot count).
+    Bots draw market data from a shared ``HubFactory`` — one hub per
+    ``(venue, market_type, timeframe)`` and one rate limiter per account — so
+    the account rate limit is respected regardless of bot count.
 
     Returns:
         Configured FastAPI application.

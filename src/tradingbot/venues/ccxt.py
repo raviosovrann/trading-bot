@@ -97,12 +97,20 @@ class CcxtVenue:
             for p in positions:
                 if p.get("symbol") != symbol:
                     continue
-                contracts = abs(float(p.get("contracts") or 0.0))
-                if contracts < 1e-9:
+                raw_contracts = float(p.get("contracts") or 0.0)
+                size = abs(raw_contracts)
+                if size < 1e-9:
                     return None
-                side = PositionSide.long if str(p.get("side", "")).lower() == "long" else PositionSide.short
+                raw_side = str(p.get("side", "")).lower()
+                if raw_side in ("long", "buy"):
+                    side = PositionSide.long
+                elif raw_side in ("short", "sell"):
+                    side = PositionSide.short
+                else:
+                    # Unknown/missing side: fall back to the sign of contracts.
+                    side = PositionSide.long if raw_contracts >= 0 else PositionSide.short
                 return Position(
-                    symbol=symbol, side=side, size=contracts,
+                    symbol=symbol, side=side, size=size,
                     entry_price=float(p.get("entryPrice") or 0.0),
                 )
             return None
