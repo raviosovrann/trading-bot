@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import uuid
 from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
@@ -59,8 +60,8 @@ class BotStore:
             record = asdict(cfg)
             record.pop("creds", None)
             records.append(record)
-        tmp = self._bots_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(records, indent=2))
+        tmp = self._data_dir / f"bots-{uuid.uuid4()}.json.tmp"
+        tmp.write_text(json.dumps(records, indent=2), encoding="utf-8")
         os.replace(str(tmp), str(self._bots_file))
 
     def append_trade(self, bot_id: str, order_event: dict[str, Any]) -> None:

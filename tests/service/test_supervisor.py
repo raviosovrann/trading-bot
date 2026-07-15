@@ -111,8 +111,12 @@ async def test_event_bus_concurrent_subscribe_and_publish() -> None:
 
     event = OrderEvent(bot_id="bot", action="buy", status="filled", ok=True, order_id="1")
     sub_task = asyncio.create_task(subscriber())
-    # Ensure the subscriber has started waiting before publishing.
-    await asyncio.sleep(0.05)
+    # Wait until the subscription is registered before publishing.
+    for _ in range(200):
+        if bus.subscriber_count() > 0:
+            break
+        await asyncio.sleep(0.01)
+    assert bus.subscriber_count() > 0, "subscriber was not registered"
     bus.publish(event)
     await sub_task
     assert received == [event]
