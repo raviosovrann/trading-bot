@@ -36,7 +36,7 @@ def test_save_and_load_config_excludes_creds(tmp_path: Path) -> None:
     assert loaded[0].id == cfg.id
     assert loaded[0].creds == {}
 
-    raw = json.loads((tmp_path / "bots.json").read_text())
+    raw = json.loads((tmp_path / "bots.json").read_text(encoding="utf-8"))
     assert "creds" not in raw[0]
     assert "api_key" not in json.dumps(raw)
 
@@ -46,7 +46,7 @@ def test_save_config_is_atomic(tmp_path: Path) -> None:
     store.save_config(_config("a"))
     store.save_config(_config("b"))
 
-    text = (tmp_path / "bots.json").read_text()
+    text = (tmp_path / "bots.json").read_text(encoding="utf-8")
     data = json.loads(text)
     assert {c["id"] for c in data} == {"a", "b"}
 
@@ -75,8 +75,8 @@ def test_trade_path_validation_rejects_bad_bot_ids(tmp_path: Path, bot_id: str) 
 
 
 def test_load_secrets_and_users(tmp_path: Path) -> None:
-    (tmp_path / "secrets.json").write_text(json.dumps({"coinbase": {"spot": {"api_key": "x"}}}))
-    (tmp_path / "users.json").write_text(json.dumps({"users": [{"username": "u", "token_hash": "h"}]}))
+    (tmp_path / "secrets.json").write_text(json.dumps({"coinbase": {"spot": {"api_key": "x"}}}), encoding="utf-8")
+    (tmp_path / "users.json").write_text(json.dumps({"users": [{"username": "u", "token_hash": "h"}]}), encoding="utf-8")
     store = BotStore(tmp_path)
 
     assert store.load_secrets()["coinbase"]["spot"]["api_key"] == "x"

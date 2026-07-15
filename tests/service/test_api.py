@@ -23,6 +23,13 @@ _TOKEN = "test-token"
 _TOKEN_HASH = hashlib.sha256(_TOKEN.encode()).hexdigest()
 
 
+def _wait_for_subscribers(bus: EventBus, minimum: int = 1, timeout: float = 2.0) -> None:
+    deadline = time.time() + timeout
+    while bus.subscriber_count() < minimum and time.time() < deadline:
+        time.sleep(0.01)
+    assert bus.subscriber_count() >= minimum, "subscriber not registered"
+
+
 class _FakeHub:
     def __init__(self) -> None:
         self.handlers: dict[tuple[str, str], list] = {}
@@ -225,10 +232,7 @@ class TestWebSocket:
         supervisor = app.state.supervisor
         # Authenticate the WS with the same bearer token via query param.
         with client.websocket_connect(f"/ws?token={_TOKEN}") as ws:
-            deadline = time.time() + 2.0
-            while supervisor.event_bus.subscriber_count() == 0 and time.time() < deadline:
-                time.sleep(0.01)
-            assert supervisor.event_bus.subscriber_count() > 0
+            _wait_for_subscribers(supervisor.event_bus)
             supervisor.event_bus.publish(
                 OrderEvent(bot_id="b1", action="buy", status="filled", ok=True, order_id="1")
             )
