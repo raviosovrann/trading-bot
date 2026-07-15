@@ -90,6 +90,10 @@ class BotSupervisor:
         self._global_exposure = global_exposure
         self._bots: dict[str, BotInstance] = {}
 
+    @property
+    def event_bus(self) -> EventBus:
+        return self._event_bus
+
     def create(self, cfg: BotConfig) -> BotInstance:
         if cfg.id in self._bots:
             raise ValueError(f"bot {cfg.id!r} already exists")
