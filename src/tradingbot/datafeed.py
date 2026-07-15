@@ -92,6 +92,8 @@ class CcxtCandleFeed:
         api_key: str,
         api_secret: str,
         password: str | None = None,
+        *,
+        market_type: str = "spot",
     ) -> "CcxtCandleFeed":
         """Create a feed from a ccxt exchange id and API credentials.
 
@@ -113,6 +115,9 @@ class CcxtCandleFeed:
         config: dict[str, Any] = {"apiKey": api_key, "secret": api_secret, "enableRateLimit": True}
         if password:
             config["password"] = password
+        if market_type == "futures":
+            # Fetch OHLCV from the derivatives markets, matching CcxtVenue.
+            config["options"] = {"defaultType": "swap"}
         return cls(klass(config))
 
     def warmup_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:

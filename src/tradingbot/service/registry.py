@@ -18,29 +18,28 @@ _Credentials = dict[str, object]
 _VenueBuilder = Callable[[_Credentials, bool], ExecutionVenue]
 
 
-def _build_coinbase(creds: _Credentials, live: bool) -> ExecutionVenue:
-    """Build a Coinbase ccxt venue from stored credentials.
+def _ccxt_builder(market_type: str) -> _VenueBuilder:
+    """Return a builder for a ccxt venue of the given market type (spot|futures).
 
-    Args:
-        creds: Dictionary containing ``api_key`` and ``api_secret``.
-        live: Whether to use live trading endpoints.
-
-    Returns:
-        Configured ``CcxtVenue``.
-
-    Raises:
-        ValueError: If required credentials are missing.
+    The exchange id defaults to ``coinbase`` but is overridable via
+    ``creds["exchange"]`` — Coinbase perpetual futures live on a different ccxt
+    id (e.g. ``coinbaseinternational``) with its own credentials.
     """
-    missing = [key for key in ("api_key", "api_secret") if not creds.get(key)]
-    if missing:
-        raise ValueError(f"Missing Coinbase credential(s): {', '.join(missing)}")
-    return CcxtVenue.from_exchange(
-        str(creds.get("exchange") or "coinbase"),
-        str(creds["api_key"]),
-        str(creds["api_secret"]),
-        str(creds["api_password"]) if creds.get("api_password") else None,
-        live=live,
-    )
+
+    def build(creds: _Credentials, live: bool) -> ExecutionVenue:
+        missing = [key for key in ("api_key", "api_secret") if not creds.get(key)]
+        if missing:
+            raise ValueError(f"Missing ccxt credential(s): {', '.join(missing)}")
+        return CcxtVenue.from_exchange(
+            str(creds.get("exchange") or "coinbase"),
+            str(creds["api_key"]),
+            str(creds["api_secret"]),
+            str(creds["api_password"]) if creds.get("api_password") else None,
+            live=live,
+            market_type=market_type,
+        )
+
+    return build
 
 
 def _build_tradovate(creds: _Credentials, live: bool) -> ExecutionVenue:
@@ -64,7 +63,8 @@ def _build_tradovate(creds: _Credentials, live: bool) -> ExecutionVenue:
 
 
 _VENUE_BUILDERS: dict[tuple[str, str], _VenueBuilder] = {
-    ("coinbase", "spot"): _build_coinbase,
+    ("coinbase", "spot"): _ccxt_builder("spot"),
+    ("coinbase", "futures"): _ccxt_builder("futures"),
     ("tradovate", "futures"): _build_tradovate,
 }
 

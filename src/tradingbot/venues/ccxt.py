@@ -33,14 +33,18 @@ class CcxtVenue:
         password: str | None = None,
         *,
         live: bool = False,
+        market_type: str = "spot",
     ) -> "CcxtVenue":
         if ccxt is None:
             raise RuntimeError("ccxt is not installed")
         klass = getattr(ccxt, exchange_id)
-        config = {"apiKey": api_key, "secret": api_secret, "enableRateLimit": True}
+        config: dict = {"apiKey": api_key, "secret": api_secret, "enableRateLimit": True}
         if password:
             config["password"] = password
-        return cls(klass(config), live=live)
+        if market_type == "futures":
+            # Select the exchange's derivatives markets (perps/futures).
+            config["options"] = {"defaultType": "swap"}
+        return cls(klass(config), live=live, market_type=market_type)
 
     def place_order(self, order: Order) -> OrderResult:
         # LIVE GUARD: when not live, never touch the exchange.
@@ -84,8 +88,34 @@ class CcxtVenue:
             )
 
     def get_position(self, symbol: str) -> Position | None:
-        # SPOT ONLY for now. Futures via fetch_positions() is a future drop-in
-        # keyed on self._market_type.
+        if self._market_type == "futures":
+            # Derivatives: read the signed position via fetch_positions (long/short).
+            try:
+                positions = self._ex.fetch_positions([symbol])
+            except Exception:
+                return None
+            for p in positions:
+                if p.get("symbol") != symbol:
+                    continue
+                raw_contracts = float(p.get("contracts") or 0.0)
+                size = abs(raw_contracts)
+                if size < 1e-9:
+                    return None
+                raw_side = str(p.get("side", "")).lower()
+                if raw_side in ("long", "buy"):
+                    side = PositionSide.long
+                elif raw_side in ("short", "sell"):
+                    side = PositionSide.short
+                else:
+                    # Unknown/missing side: fall back to the sign of contracts.
+                    side = PositionSide.long if raw_contracts >= 0 else PositionSide.short
+                return Position(
+                    symbol=symbol, side=side, size=size,
+                    entry_price=float(p.get("entryPrice") or 0.0),
+                )
+            return None
+
+        # Spot: derive the position from the base-asset balance (long/flat only).
         base = symbol.split("/")[0].upper()
         try:
             bal = self._ex.fetch_balance()

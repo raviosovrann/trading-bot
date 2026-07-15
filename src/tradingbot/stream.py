@@ -60,6 +60,8 @@ class CcxtStreamFeed:
         api_secret: str,
         password: str | None = None,
         timeframe: str = "1m",
+        *,
+        market_type: str = "spot",
     ) -> "CcxtStreamFeed":
         if ccxtpro is None:
             raise RuntimeError("ccxt.pro is not installed")
@@ -67,7 +69,12 @@ class CcxtStreamFeed:
         config: dict[str, Any] = {"apiKey": api_key, "secret": api_secret, "enableRateLimit": True}
         if password:
             config["password"] = password
-        warmup_feed = CcxtCandleFeed.from_exchange(exchange_id, api_key, api_secret, password)
+        if market_type == "futures":
+            # Stream the derivatives markets, matching CcxtVenue/CcxtCandleFeed.
+            config["options"] = {"defaultType": "swap"}
+        warmup_feed = CcxtCandleFeed.from_exchange(
+            exchange_id, api_key, api_secret, password, market_type=market_type
+        )
         return cls(exchange=klass(config), warmup_feed=warmup_feed, timeframe=timeframe)
 
     def warmup_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:

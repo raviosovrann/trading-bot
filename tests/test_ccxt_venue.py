@@ -206,3 +206,44 @@ def test_health_check_false_when_balance_raises():
     venue = CcxtVenue(ex, live=True)
 
     assert venue.health_check() is False
+
+
+class _FakeFuturesExchange:
+    def __init__(self, positions):
+        self._positions = positions
+    def fetch_positions(self, symbols):
+        return self._positions
+
+
+def test_futures_get_position_long_and_short():
+    ex = _FakeFuturesExchange([{"symbol": "BTC/USD:USD", "side": "long", "contracts": 3, "entryPrice": 64000.0}])
+    v = CcxtVenue(ex, market_type="futures")
+    pos = v.get_position("BTC/USD:USD")
+    assert pos is not None and pos.side is PositionSide.long
+    assert pos.size == 3 and pos.entry_price == 64000.0
+
+    ex2 = _FakeFuturesExchange([{"symbol": "BTC/USD:USD", "side": "short", "contracts": 2}])
+    short_pos = CcxtVenue(ex2, market_type="futures").get_position("BTC/USD:USD")
+    assert short_pos is not None and short_pos.side is PositionSide.short
+
+
+def test_futures_get_position_flat_returns_none():
+    ex = _FakeFuturesExchange([{"symbol": "BTC/USD:USD", "side": "long", "contracts": 0}])
+    assert CcxtVenue(ex, market_type="futures").get_position("BTC/USD:USD") is None
+    assert CcxtVenue(_FakeFuturesExchange([]), market_type="futures").get_position("BTC/USD:USD") is None
+
+
+def test_futures_get_position_infers_side_from_buy_sell_and_sign():
+    # ccxt normally returns side "long"/"short", but some exchanges use
+    # "buy"/"sell" or omit it; fall back to the sign of contracts.
+    buy_pos = CcxtVenue(
+        _FakeFuturesExchange([{"symbol": "S", "side": "buy", "contracts": 1}]), market_type="futures"
+    ).get_position("S")
+    assert buy_pos is not None and buy_pos.side is PositionSide.long
+    sell_pos = CcxtVenue(
+        _FakeFuturesExchange([{"symbol": "S", "side": "sell", "contracts": 1}]), market_type="futures"
+    ).get_position("S")
+    assert sell_pos is not None and sell_pos.side is PositionSide.short
+    neg = _FakeFuturesExchange([{"symbol": "S", "contracts": -2}])  # no side, signed
+    p = CcxtVenue(neg, market_type="futures").get_position("S")
+    assert p is not None and p.side is PositionSide.short and p.size == 2
