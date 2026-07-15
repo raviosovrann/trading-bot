@@ -20,8 +20,10 @@ except Exception:  # pragma: no cover - optional third-party install
 
 _FLAT_TOL = 1e-9
 
-_DEMO_BASE = "https://demo.tradovateapi.com/v1"
-_LIVE_BASE = "https://live.tradovateapi.com/v1"
+# Trailing slash + relative request paths (no leading "/") so httpx preserves
+# the "/v1" path segment when joining URLs.
+_DEMO_BASE = "https://demo.tradovateapi.com/v1/"
+_LIVE_BASE = "https://live.tradovateapi.com/v1/"
 
 # CME crypto-futures contract sizes (units of the underlying per contract),
 # prefix-matched against the Tradovate symbol root (e.g. "MBTF6" -> "MBT").
@@ -73,12 +75,11 @@ class TradovateVenue:
         token = _TradovateAuth.access_token(base, creds)
         client = _TradovateClient(base, token)
         account = client.account()
-        return cls(
-            client,
-            account_id=account.get("id"),
-            account_spec=account.get("name"),
-            live=live,
-        )
+        account_id = account.get("id")
+        account_spec = account.get("name")
+        if account_id is None or not account_spec:
+            raise RuntimeError(f"Tradovate account response missing id/name: {account}")
+        return cls(client, account_id=account_id, account_spec=account_spec, live=live)
 
     def place_order(self, order: Order) -> OrderResult:
         # LIVE guard: when not live, never touch the broker.
@@ -97,6 +98,14 @@ class TradovateVenue:
                     "price": order.price,
                 },
                 error=None,
+            )
+
+        # A live order without an account is a misconfiguration — fail clearly
+        # rather than sending a malformed request.
+        if self._account_id is None or self._account_spec is None:
+            return OrderResult(
+                ok=False, order_id=None, status="error", filled_qty=0.0, raw={},
+                error="TradovateVenue has no account_id/account_spec (build via from_credentials)",
             )
 
         try:
@@ -193,7 +202,9 @@ class TradovateVenue:
 class _TradovateAuth:
     @staticmethod
     def access_token(base_url: str, creds: dict) -> str:
-        resp = httpx.post(f"{base_url}/auth/accesstokenrequest", json=creds, timeout=15.0)  # type: ignore[union-attr]
+        # base_url ends with "/"; use a relative path so "/v1" is preserved.
+        resp = httpx.post(f"{base_url}auth/accesstokenrequest", json=creds, timeout=15.0)  # type: ignore[union-attr]
+        resp.raise_for_status()
         data = resp.json()
         token = data.get("accessToken")
         if not token:
@@ -206,7 +217,8 @@ class _TradovateClient:
 
     NOTE: endpoint paths and JSON field names below reflect Tradovate's
     documented v1 API but MUST be verified against https://api.tradovate.com/
-    on the demo environment before live use.
+    on the demo environment before live use. Request paths are relative (no
+    leading "/") so httpx keeps the "/v1" base path.
     """
 
     def __init__(self, base_url: str, access_token: str) -> None:
@@ -216,6 +228,16 @@ class _TradovateClient:
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=15.0,
         )
+
+    def _get(self, path: str, params: dict | None = None) -> Any:
+        resp = self._http.get(path, params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    def _post(self, path: str, json: dict) -> Any:
+        resp = self._http.post(path, json=json)
+        resp.raise_for_status()
+        return resp.json()
 
     def place_order(self, account_id, account_spec, action, symbol, qty,
                     order_type, price=None, reduce_only=False) -> dict:
@@ -232,23 +254,25 @@ class _TradovateClient:
             payload["price"] = price
         if reduce_only:
             payload["reduceOnly"] = True
-        return self._http.post("/order/placeorder", json=payload).json()
+        return self._post("order/placeorder", payload)
 
     def list_positions(self, account_id) -> list[dict]:
-        rows = self._http.get("/position/list").json()
+        rows = self._get("position/list")
         out: list[dict] = []
         for r in rows:
-            if r.get("accountId") not in (None, account_id):
+            # Filter to this account only when we know it; keep rows with no
+            # accountId. (When account_id is None we cannot filter, so keep all.)
+            if account_id is not None and r.get("accountId") not in (None, account_id):
                 continue
             contract_id = r.get("contractId")
             symbol = r.get("symbol")
             if symbol is None and contract_id is not None:
-                symbol = self._http.get(f"/contract/item?id={contract_id}").json().get("name")
+                symbol = self._get("contract/item", params={"id": contract_id}).get("name")
             out.append({"symbol": symbol, "netPos": r.get("netPos", 0), "netPrice": r.get("netPrice")})
         return out
 
     def account(self) -> dict:
-        rows = self._http.get("/account/list").json()
+        rows = self._get("account/list")
         if not rows:
             raise RuntimeError("no Tradovate account")
         return rows[0]

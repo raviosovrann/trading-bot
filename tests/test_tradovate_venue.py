@@ -78,6 +78,14 @@ def test_live_failure_returns_not_ok():
     assert r.ok is False and r.status == "rejected" and "no funds" in (r.error or "")
 
 
+def test_live_without_account_returns_error_and_sends_nothing():
+    client = _FakeClient(place_result={"orderId": 1})
+    venue = TradovateVenue(client, account_id=None, account_spec=None, live=True)
+    r = venue.place_order(Order(symbol="MBTF6", side=Side.buy, order_type=OrderType.market, qty=1))
+    assert r.ok is False and r.status == "error" and "account" in (r.error or "").lower()
+    assert client.calls == []  # never sent a malformed request
+
+
 def test_live_client_exception_returns_error():
     class _Boom(_FakeClient):
         def place_order(self, *a, **k):
