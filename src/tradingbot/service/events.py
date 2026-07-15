@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,10 +27,14 @@ class EventBus:
     def __init__(self) -> None:
         self._queues: set[asyncio.Queue[Any]] = set()
         self._loops: dict[asyncio.Queue[Any], asyncio.AbstractEventLoop] = {}
+        self._lock = threading.Lock()
 
     def publish(self, event: Any) -> None:
-        for queue in tuple(self._queues):
-            loop = self._loops.get(queue)
+        with self._lock:
+            queues = tuple(self._queues)
+            loops = dict(self._loops)
+        for queue in queues:
+            loop = loops.get(queue)
             if loop is not None and loop.is_running():
                 loop.call_soon_threadsafe(queue.put_nowait, event)
             else:
@@ -37,13 +42,21 @@ class EventBus:
 
     def subscribe(self) -> asyncio.Queue[Any]:
         queue: asyncio.Queue[Any] = asyncio.Queue()
-        self._queues.add(queue)
         try:
-            self._loops[queue] = asyncio.get_running_loop()
+            loop = asyncio.get_running_loop()
         except RuntimeError:
-            pass
+            loop = None
+        with self._lock:
+            self._queues.add(queue)
+            if loop is not None:
+                self._loops[queue] = loop
         return queue
 
     def unsubscribe(self, queue: asyncio.Queue[Any]) -> None:
-        self._queues.discard(queue)
-        self._loops.pop(queue, None)
+        with self._lock:
+            self._queues.discard(queue)
+            self._loops.pop(queue, None)
+
+    def subscriber_count(self) -> int:
+        with self._lock:
+            return len(self._queues)

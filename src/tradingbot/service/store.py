@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
+import uuid
 from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
@@ -10,6 +13,13 @@ from typing import Any
 from .supervisor import BotConfig
 
 _log = logging.getLogger(__name__)
+
+_BOT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _validate_bot_id(bot_id: str) -> None:
+    if not isinstance(bot_id, str) or not _BOT_ID_RE.match(bot_id):
+        raise ValueError(f"invalid bot id: {bot_id!r}")
 
 
 class BotStore:
@@ -50,15 +60,19 @@ class BotStore:
             record = asdict(cfg)
             record.pop("creds", None)
             records.append(record)
-        self._bots_file.write_text(json.dumps(records, indent=2))
+        tmp = self._data_dir / f"bots-{uuid.uuid4()}.json.tmp"
+        tmp.write_text(json.dumps(records, indent=2), encoding="utf-8")
+        os.replace(str(tmp), str(self._bots_file))
 
     def append_trade(self, bot_id: str, order_event: dict[str, Any]) -> None:
+        _validate_bot_id(bot_id)
         self._trades_dir.mkdir(parents=True, exist_ok=True)
         path = self._trades_dir / f"{bot_id}.jsonl"
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(order_event, separators=(",", ":")) + "\n")
 
     def read_trades(self, bot_id: str) -> list[dict[str, Any]]:
+        _validate_bot_id(bot_id)
         path = self._trades_dir / f"{bot_id}.jsonl"
         if not path.exists():
             return []

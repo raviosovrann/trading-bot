@@ -23,6 +23,13 @@ _TOKEN = "test-token"
 _TOKEN_HASH = hashlib.sha256(_TOKEN.encode()).hexdigest()
 
 
+def _wait_for_subscribers(bus: EventBus, minimum: int = 1, timeout: float = 2.0) -> None:
+    deadline = time.time() + timeout
+    while bus.subscriber_count() < minimum and time.time() < deadline:
+        time.sleep(0.01)
+    assert bus.subscriber_count() >= minimum, "subscriber not registered"
+
+
 class _FakeHub:
     def __init__(self) -> None:
         self.handlers: dict[tuple[str, str], list] = {}
@@ -203,6 +210,20 @@ class TestBotLifecycle:
         response = client.get("/bots/no-such-bot", headers=_auth())
         assert response.status_code == 404
 
+    def test_start_unknown_bot_returns_404(self, client: TestClient) -> None:
+        response = client.post("/bots/no-such-bot/start", headers=_auth())
+        assert response.status_code == 404
+
+    def test_start_bot_returns_400_when_venue_build_fails(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _raise(*a: object, **k: object) -> None:
+            raise ValueError("bad creds")
+
+        monkeypatch.setattr("tradingbot.service.supervisor.build_venue", _raise)
+        bot = self._create(client)
+        response = client.post(f"/bots/{bot['id']}/start", headers=_auth())
+        assert response.status_code == 400
+        assert "bad creds" in response.json()["detail"]
+
 
 class TestWebSocket:
     def test_ws_receives_published_order_event(self, client: TestClient) -> None:
@@ -211,8 +232,7 @@ class TestWebSocket:
         supervisor = app.state.supervisor
         # Authenticate the WS with the same bearer token via query param.
         with client.websocket_connect(f"/ws?token={_TOKEN}") as ws:
-            # Give the server task a moment to finish accept/subscribe.
-            time.sleep(0.1)
+            _wait_for_subscribers(supervisor.event_bus)
             supervisor.event_bus.publish(
                 OrderEvent(bot_id="b1", action="buy", status="filled", ok=True, order_id="1")
             )
