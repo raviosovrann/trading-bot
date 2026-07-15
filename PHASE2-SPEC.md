@@ -27,6 +27,8 @@ React SPA ──REST + WebSocket──▶ FastAPI service (single process, one V
                                  ├─ BotSupervisor — one async task per running bot
                                  │     └─ each task = the existing StreamRuntime
                                  ├─ VenueRegistry — ccxt (Coinbase spot, long) │ tradovate (futures, long/short)
+                                 ├─ MarketDataHub (per venue) — dedupes candle/MTF fetches across bots; WS subscriptions; TTL cache
+                                 ├─ RateLimiter (per venue account) — token bucket sized to the exchange limit; all REST funnels through it
                                  ├─ StrategyRegistry — plugin discovery, launch-by-name
                                  ├─ RiskGuard — per-bot + global notional cap (wraps the venue)
                                  ├─ EventBus (in-memory) → WS broadcast of decisions/orders/state
@@ -115,6 +117,30 @@ strategies/
 - `build_strategy(name, ctx)` constructs it from a common `StrategyContext`, so
   the service can launch any strategy uniformly; strategy‑specific tuning rides in
   `ctx.params`.
+
+## API rate limits & shared data (scaling to many bots)
+
+Rate limits are **per account/IP, not per bot**, so many bots each holding their
+own exchange client would collectively exceed the limit and get throttled (429s).
+Two shared, per‑venue components prevent this and keep request volume proportional
+to **unique markets, not bot count**:
+
+- **MarketDataHub (per venue):** the single owner of market data for that venue.
+  Bots subscribe by `(symbol, timeframe)`; identical subscriptions share one
+  underlying stream/fetch. Live bars come from **one WebSocket subscription per
+  symbol** (pushed, zero REST cost). Warmup history and MTF (1H/4H per symbol) are
+  fetched once and served from a TTL cache to every bot that needs them. So 5 bots
+  on `DOGE/5m` cause one data stream, not five.
+- **RateLimiter (per venue account):** a token bucket sized to the exchange's
+  documented limit. Every REST call (warmup, MTF, orders) funnels through it, so
+  the account **physically cannot exceed** the limit regardless of bot count;
+  bursts queue instead of failing.
+
+Bots therefore stop creating their own clients — they draw candles from the
+MarketDataHub and place orders through the shared rate‑limited venue client. This
+also fixes the Phase‑1 scan behaviour where rapid independent fetches returned
+empty under throttling. Applies identically to Coinbase, Tradovate, and any future
+broker.
 
 ## Cross-cutting
 
