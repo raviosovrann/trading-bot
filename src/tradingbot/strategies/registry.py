@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from .base import Strategy, StrategyContext
 
@@ -10,31 +10,40 @@ _factories: dict[str, _Factory] = {}
 
 
 def strategy(name: str) -> Callable[[Any], Any]:
-	"""Register a strategy class or factory under ``name``."""
-	if not name.strip():
-		raise ValueError("strategy name must not be empty")
+    """Register a strategy class or factory under ``name``."""
+    normalized_name = name.strip()
+    if not normalized_name:
+        raise ValueError("strategy name must not be empty")
 
-	def decorator(candidate: Any) -> Any:
-		if name in _factories:
-			raise ValueError(f"strategy {name!r} is already registered")
+    def decorator(candidate: Any) -> Any:
+        if not callable(candidate) and not callable(getattr(candidate, "create", None)):
+            raise TypeError("strategy candidate must be callable or expose callable create(ctx)")
+        if normalized_name in _factories:
+            raise ValueError(f"strategy {normalized_name!r} is already registered")
 
-		def factory(ctx: StrategyContext) -> Strategy:
-			return candidate(ctx)
+        def factory(ctx: StrategyContext) -> Strategy:
+            create = getattr(candidate, "create", None)
+            if callable(create):
+                return cast(Strategy, create(ctx))
+            return cast(Strategy, candidate(ctx))
 
-		_factories[name] = factory
-		return candidate
+        _factories[normalized_name] = factory
+        return candidate
 
-	return decorator
+    return decorator
 
 
 def build_strategy(name: str, ctx: StrategyContext) -> Strategy:
-	try:
-		factory = _factories[name]
-	except KeyError as exc:
-		raise ValueError(f"Unknown strategy: {name}") from exc
-	return factory(ctx)
+    normalized_name = name.strip()
+    if not normalized_name:
+        raise ValueError("strategy name must not be empty")
+    try:
+        factory = _factories[normalized_name]
+    except KeyError as exc:
+        raise ValueError(f"Unknown strategy: {normalized_name}") from exc
+    return factory(ctx)
 
 
 def available_strategies() -> list[str]:
-	return sorted(_factories)
+    return sorted(_factories)
 

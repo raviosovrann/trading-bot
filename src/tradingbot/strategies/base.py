@@ -9,14 +9,14 @@ from ..models import Candle, Signal
 
 @dataclass(frozen=True)
 class StrategyContext:
-	symbol: str
-	timeframe: str
-	quantity: float
-	data_feed: Any
-	params: dict[str, Any]
+    symbol: str
+    timeframe: str
+    quantity: float
+    data_feed: Any
+    params: dict[str, Any]
 
 
 @runtime_checkable
 class Strategy(Protocol):
-	def on_bar(self, candles: Sequence[Candle]) -> Signal | None: ...
+    def on_bar(self, candles: Sequence[Candle]) -> Signal | None: ...
 
