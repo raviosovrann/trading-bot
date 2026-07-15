@@ -1,5 +1,6 @@
 from tradingbot.models import Action, OrderResult, OrderType, PositionSide, Side, Signal
 from tradingbot.router import SignalRouter
+from tradingbot.service.risk import GlobalExposure
 
 
 class StubVenue:
@@ -64,4 +65,28 @@ def test_router_maps_close_signal_to_close_position():
 
     assert result.ok is True
     assert venue.closed_symbols == ["BTC/USD"]
+    assert venue.placed_orders == []
+
+
+def test_router_with_risk_guard_blocks_orders_over_cap() -> None:
+    venue = StubVenue()
+    router = SignalRouter.with_risk_guard(
+        venue,
+        per_bot_cap=99.0,
+        global_cap=100.0,
+        global_state=GlobalExposure(),
+        price_source=lambda: 100.0,
+    )
+    signal = Signal(
+        strategy="sma",
+        action=Action.buy,
+        symbol="BTC/USD",
+        order_type=OrderType.market,
+        quantity=1.0,
+        position_side=PositionSide.long,
+    )
+
+    result = router.route(signal)
+
+    assert result.status == "risk_blocked"
     assert venue.placed_orders == []
