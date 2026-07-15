@@ -38,20 +38,20 @@ class RiskGuard:
     def place_order(self, order: Order) -> OrderResult:
         if order.reduce_only:
             result = self._place(order)
-            if result.ok:
-                self._decrease_exposure(order)
+            if result.ok and self._has_positive_fill(result.filled_qty):
+                self._decrease_exposure(order, result.filled_qty)
             return result
 
         price = self._get_price()
-        if price is None:
-            return self._blocked(0.0)
+        if price is None or not self._valid_order_size(order):
+            return self._blocked(0.0, error="price or order size unavailable")
 
         notional = order.qty * price * self._multiplier
         if (
             notional > self._per_bot_cap
             or self._global_state.used + notional > self._global_cap
         ):
-            return self._blocked(notional)
+            return self._blocked(notional, error="notional cap exceeded")
 
         result = self._place(order)
         if result.ok:
@@ -80,12 +80,25 @@ class RiskGuard:
                 error=str(exc),
             )
 
-    def _decrease_exposure(self, order: Order) -> None:
+    def _decrease_exposure(self, order: Order, filled_qty: float) -> None:
         price = self._get_price()
-        if price is None:
+        if price is None or not self._valid_order_size(order, qty=filled_qty):
             return
-        notional = order.qty * price * self._multiplier
+        notional = filled_qty * price * self._multiplier
         self._global_state.used = max(0.0, self._global_state.used - notional)
+
+    def _valid_order_size(self, order: Order, *, qty: float | None = None) -> bool:
+        size = order.qty if qty is None else qty
+        return (
+            math.isfinite(size)
+            and size > 0
+            and math.isfinite(self._multiplier)
+            and self._multiplier > 0
+        )
+
+    @staticmethod
+    def _has_positive_fill(filled_qty: float) -> bool:
+        return math.isfinite(filled_qty) and filled_qty > 0
 
     def _get_price(self) -> float | None:
         try:
@@ -97,12 +110,12 @@ class RiskGuard:
         return price
 
     @staticmethod
-    def _blocked(notional: float) -> OrderResult:
+    def _blocked(notional: float, *, error: str) -> OrderResult:
         return OrderResult(
             ok=False,
             order_id=None,
             status="risk_blocked",
             filled_qty=0.0,
             raw={"notional": notional},
-            error="notional cap exceeded",
+            error=error,
         )

@@ -5,11 +5,12 @@ from tradingbot.service.risk import GlobalExposure, RiskGuard
 
 
 class _FakeVenue:
-    def __init__(self) -> None:
+    def __init__(self, *, filled_qty: float | None = None) -> None:
         self.orders: list[Order] = []
         self.close_calls: list[str] = []
         self.position_calls: list[str] = []
         self.health_calls = 0
+        self.filled_qty = filled_qty
 
     def place_order(self, order: Order) -> OrderResult:
         self.orders.append(order)
@@ -17,7 +18,7 @@ class _FakeVenue:
             ok=True,
             order_id="order-1",
             status="filled",
-            filled_qty=order.qty,
+            filled_qty=order.qty if self.filled_qty is None else self.filled_qty,
             raw={},
         )
 
@@ -130,6 +131,57 @@ def test_reduce_only_always_delegates_and_decreases_exposure() -> None:
     assert exposure.used == 50.0
 
 
+def test_reduction_uses_confirmed_filled_quantity() -> None:
+    venue = _FakeVenue(filled_qty=0.1)
+    exposure = GlobalExposure(used=100.0)
+    guard = RiskGuard(
+        venue,
+        per_bot_cap=1.0,
+        global_cap=1.0,
+        global_state=exposure,
+        price_source=lambda: 100.0,
+        multiplier=2.0,
+    )
+
+    result = guard.place_order(_order(qty=0.25, reduce_only=True))
+
+    assert result.ok is True
+    assert exposure.used == 80.0
+
+
+def test_unfilled_reduction_does_not_decrease_exposure() -> None:
+    venue = _FakeVenue(filled_qty=0.0)
+    exposure = GlobalExposure(used=100.0)
+    guard = RiskGuard(
+        venue,
+        per_bot_cap=1.0,
+        global_cap=1.0,
+        global_state=exposure,
+        price_source=lambda: 100.0,
+    )
+
+    result = guard.place_order(_order(reduce_only=True))
+
+    assert result.ok is True
+    assert exposure.used == 100.0
+
+
+def test_reduce_only_bypasses_missing_price() -> None:
+    venue = _FakeVenue()
+    guard = RiskGuard(
+        venue,
+        per_bot_cap=0.0,
+        global_cap=0.0,
+        global_state=GlobalExposure(),
+        price_source=lambda: None,
+    )
+
+    result = guard.place_order(_order(reduce_only=True))
+
+    assert result.ok is True
+    assert len(venue.orders) == 1
+
+
 def test_missing_price_fails_safe() -> None:
     venue = _FakeVenue()
     result = RiskGuard(
@@ -142,8 +194,24 @@ def test_missing_price_fails_safe() -> None:
 
     assert result.ok is False
     assert result.status == "risk_blocked"
-    assert result.error == "notional cap exceeded"
+    assert result.error == "price or order size unavailable"
     assert result.raw == {"notional": 0.0}
+    assert venue.orders == []
+
+
+def test_invalid_order_size_fails_safe() -> None:
+    venue = _FakeVenue()
+    result = RiskGuard(
+        venue,
+        per_bot_cap=1_000.0,
+        global_cap=1_000.0,
+        global_state=GlobalExposure(),
+        price_source=lambda: 100.0,
+        multiplier=float("nan"),
+    ).place_order(_order(qty=float("nan")))
+
+    assert result.status == "risk_blocked"
+    assert result.error == "price or order size unavailable"
     assert venue.orders == []
 
 
