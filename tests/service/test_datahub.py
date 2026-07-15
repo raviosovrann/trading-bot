@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Tests for the market data hub."""
+
+from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable

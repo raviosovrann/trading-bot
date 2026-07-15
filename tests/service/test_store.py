@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Tests for the bot store persistence layer."""
+
+from __future__ import annotations
 
 import json
 from pathlib import Path

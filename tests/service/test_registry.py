@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Tests for venue and strategy registry builders."""
+
+from __future__ import annotations
 
 import pytest
 

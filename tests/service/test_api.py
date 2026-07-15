@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Tests for the REST API and WebSocket endpoints."""
+
+from __future__ import annotations
 
 import asyncio
 import hashlib

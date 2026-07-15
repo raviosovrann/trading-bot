@@ -27,7 +27,8 @@ def _validate_bot_id(bot_id: str) -> None:
         bot_id: Identifier to validate.
 
     Raises:
-        ValueError: If the identifier is not a non-empty alphanumeric string.
+        ValueError: If the identifier is empty or contains characters other than
+            letters, digits, underscores, or hyphens.
     """
     if not isinstance(bot_id, str) or not _BOT_ID_RE.match(bot_id):
         raise ValueError(f"invalid bot id: {bot_id!r}")

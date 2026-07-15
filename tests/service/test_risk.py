@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Tests for the risk guard and global exposure."""
+
+from __future__ import annotations
 
 from tradingbot.models import Order, OrderResult, OrderType, Position, PositionSide, Side
 from tradingbot.service.risk import GlobalExposure, RiskGuard

@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Tests for the strategy registry and strategy building."""
+
+from __future__ import annotations
 
 from collections.abc import Sequence
 

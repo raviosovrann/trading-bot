@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Tests for the bot supervisor and event bus."""
+
+from __future__ import annotations
 
 import asyncio
 

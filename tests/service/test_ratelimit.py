@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Tests for the async rate limiter."""
+
+from __future__ import annotations
 
 import pytest
 

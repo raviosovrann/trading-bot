@@ -77,13 +77,15 @@ Create `data/secrets.json` with venue credentials (server-side only):
 }
 ```
 
-Start the service:
+Start the service (uses the default file-based store under `data/`):
 
 ```bash
-PYTHONPATH=src uvicorn tradingbot.service.api:create_app --host 0.0.0.0 --port 8000
+PYTHONPATH=src uvicorn tradingbot.service.main:create_service_app --factory --host 0.0.0.0 --port 8000
 ```
 
-Or use the provided `run-service.sh` helper once it exists.
+Before starting bots you must configure a real `hub_factory` for your venue
+(by setting `TRADINGBOT_HUB_FACTORY` or replacing the placeholder in
+`tradingbot/service/main.py`).
 
 ---
 
