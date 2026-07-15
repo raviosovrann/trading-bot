@@ -14,6 +14,7 @@ def test_defaults():
     assert cfg.symbol == "BTC/USD"
     assert cfg.timeframe == "5m"
     assert cfg.order_qty == 0.001
+    assert cfg.strategy == "example"
     assert cfg.api_key == "" and cfg.api_secret == "" and cfg.api_password == ""
     assert cfg.stream is False
     assert cfg.live is False
@@ -28,6 +29,10 @@ def test_reads_exchange_settings():
     assert cfg.exchange == "kraken"
     assert cfg.api_key == "k" and cfg.api_secret == "s" and cfg.api_password == "p"
     assert cfg.symbol == "DOGE/USD" and cfg.timeframe == "1m" and cfg.order_qty == 0.01
+
+
+def test_reads_strategy_name():
+    assert load_config({"STRATEGY": "  custom  "}).strategy == "custom"
 
 
 def test_exchange_lowercased():

@@ -18,6 +18,7 @@ class Config:
     order_qty: float
     stream: bool = False
     live: bool = False
+    strategy: str = "example"
 
     def __repr__(self) -> str:
         def mask(v: str) -> str:
@@ -28,7 +29,8 @@ class Config:
             f"api_secret={mask(self.api_secret)!r}, "
             f"api_password={mask(self.api_password)!r}, "
             f"symbol={self.symbol!r}, timeframe={self.timeframe!r}, "
-            f"order_qty={self.order_qty!r}, stream={self.stream!r}, live={self.live!r})"
+            f"order_qty={self.order_qty!r}, strategy={self.strategy!r}, "
+            f"stream={self.stream!r}, live={self.live!r})"
         )
 
 
@@ -60,6 +62,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         symbol=(env.get("SYMBOL") or "BTC/USD").strip(),
         timeframe=(env.get("TIMEFRAME") or "5m").strip(),
         order_qty=order_qty,
+        strategy=(env.get("STRATEGY") or "example").strip() or "example",
         stream=_as_bool(env.get("STREAM", ""), default=False),
         live=_as_bool(env.get("LIVE", ""), default=False),
     )

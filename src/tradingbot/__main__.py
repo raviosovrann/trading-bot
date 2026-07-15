@@ -3,12 +3,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 
-from .amvr import AdaptiveMomentumRibbonStrategy
 from .config import Config, load_config, require_credentials
 from .datafeed import CcxtCandleFeed
 from .router import SignalRouter
 from .runtime import BotRuntime, StreamRuntime
 from .stream import CcxtStreamFeed
+from .strategies import StrategyContext, build_strategy
 from .venues.ccxt import CcxtVenue
 
 # Enough base bars to warm up the slowest ribbon (HMA 100 + velocity/accel).
@@ -53,10 +53,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         cfg.api_secret,
         cfg.api_password or None,
     )
-    strategy = AdaptiveMomentumRibbonStrategy(
-        symbol=cfg.symbol,
-        mtf_feed=mtf_feed,
-        quantity=cfg.order_qty,
+    strategy = build_strategy(
+        cfg.strategy,
+        StrategyContext(
+            symbol=cfg.symbol,
+            timeframe=cfg.timeframe,
+            quantity=cfg.order_qty,
+            data_feed=mtf_feed,
+            params={},
+        ),
     )
     router = SignalRouter(venue)
 

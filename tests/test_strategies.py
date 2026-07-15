@@ -36,6 +36,16 @@ class _FactoryStrategy:
         return None
 
 
+def test_package_import_discovers_example_strategy() -> None:
+    import tradingbot.strategies as strategies
+
+    assert "example" in strategies.available_strategies()
+
+    built = strategies.build_strategy("example", _context())
+    assert isinstance(built, Strategy)
+    assert built.on_bar([]) is None
+
+
 def test_registered_strategy_is_available_and_buildable() -> None:
     name = "test-dummy"
     strategy(name)(_DummyStrategy)
