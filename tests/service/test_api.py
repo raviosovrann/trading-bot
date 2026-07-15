@@ -225,11 +225,10 @@ class TestWebSocket:
         supervisor = app.state.supervisor
         # Authenticate the WS with the same bearer token via query param.
         with client.websocket_connect(f"/ws?token={_TOKEN}") as ws:
-            # Wait for the server-side handler to finish subscribing.
             deadline = time.time() + 2.0
             while supervisor.event_bus.subscriber_count() == 0 and time.time() < deadline:
                 time.sleep(0.01)
-            assert supervisor.event_bus.subscriber_count() > 0, "WebSocket handler did not subscribe"
+            assert supervisor.event_bus.subscriber_count() > 0
             supervisor.event_bus.publish(
                 OrderEvent(bot_id="b1", action="buy", status="filled", ok=True, order_id="1")
             )
