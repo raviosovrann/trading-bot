@@ -181,7 +181,18 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
         if bot is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="bot not found")
         bot.config.creds = _load_credentials(store, bot.config.venue, bot.config.market_type)
-        await supervisor.start(bot_id)
+        try:
+            await supervisor.start(bot_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(exc),
+            ) from exc
         return _to_view(bot)
 
     @app.post("/bots/{bot_id}/stop")

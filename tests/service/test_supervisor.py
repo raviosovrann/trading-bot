@@ -98,6 +98,27 @@ async def test_event_bus_fans_out_and_unsubscribes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_event_bus_concurrent_subscribe_and_publish() -> None:
+    bus = EventBus()
+    received: list[OrderEvent] = []
+
+    async def subscriber() -> None:
+        queue = bus.subscribe()
+        try:
+            received.append(await asyncio.wait_for(queue.get(), timeout=1.0))
+        finally:
+            bus.unsubscribe(queue)
+
+    event = OrderEvent(bot_id="bot", action="buy", status="filled", ok=True, order_id="1")
+    sub_task = asyncio.create_task(subscriber())
+    # Ensure the subscriber has started waiting before publishing.
+    await asyncio.sleep(0.05)
+    bus.publish(event)
+    await sub_task
+    assert received == [event]
+
+
+@pytest.mark.asyncio
 async def test_supervisor_start_stop_and_order_event(monkeypatch) -> None:
     hub = _FakeHub()
     bus = EventBus()
