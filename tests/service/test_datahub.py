@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 import pytest
 
@@ -38,7 +39,8 @@ class _FakeStream:
     def __init__(self) -> None:
         self.run_calls: list[tuple[str, ...]] = []
         self.stop_calls = 0
-        self._handler = None
+        self._handler: Callable[[Candle], None] | None = None
+        self._handlers: dict[str, Callable[[Candle], None]] = {}
         self._stopped = asyncio.Event()
 
     def warmup_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
@@ -48,8 +50,11 @@ class _FakeStream:
     def run(self, *symbols: str) -> None:
         del symbols
 
-    def on_bar(self, handler) -> None:
+    def on_bar(self, handler: Callable[[Candle], None]) -> None:
         self._handler = handler
+
+    def on_bar_for(self, symbol: str, handler: Callable[[Candle], None]) -> None:
+        self._handlers[symbol] = handler
 
     async def run_async(self, *symbols: str) -> None:
         self.run_calls.append(symbols)
@@ -59,9 +64,10 @@ class _FakeStream:
         self.stop_calls += 1
         self._stopped.set()
 
-    def emit(self, candle: Candle) -> None:
-        assert self._handler is not None
-        self._handler(candle)
+    def emit(self, symbol: str, candle: Candle) -> None:
+        handler = self._handlers.get(symbol, self._handler)
+        assert handler is not None
+        handler(candle)
 
 
 @pytest.mark.asyncio
@@ -98,7 +104,7 @@ async def test_identical_subscribers_share_stream_and_fan_out_candles() -> None:
     await asyncio.sleep(0)
 
     assert stream.run_calls == [("BTC/USD",)]
-    stream.emit(_c(2))
+    stream.emit("BTC/USD", _c(2))
     assert first == [_c(2)]
     assert second == [_c(2)]
     assert hub.latest_price("BTC/USD", "1m") == 1.0
@@ -107,3 +113,29 @@ async def test_identical_subscribers_share_stream_and_fan_out_candles() -> None:
     assert stream.stop_calls == 0
     hub.unsubscribe("BTC/USD", "1m", second.append)
     assert stream.stop_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_different_subscriptions_keep_stream_routing_isolated() -> None:
+    stream = _FakeStream()
+    hub = MarketDataHub(
+        stream_feed=stream,
+        candle_feed=_FakeCandleFeed(),
+        limiter=RateLimiter(1000, 1000),
+    )
+    btc: list[Candle] = []
+    eth: list[Candle] = []
+
+    hub.subscribe("BTC/USD", "1m", btc.append)
+    hub.subscribe("ETH/USD", "1m", eth.append)
+    await asyncio.sleep(0)
+
+    assert set(stream.run_calls) == {("BTC/USD",), ("ETH/USD",)}
+    stream.emit("BTC/USD", _c(2))
+    stream.emit("ETH/USD", _c(3))
+
+    assert btc == [_c(2)]
+    assert eth == [_c(3)]
+
+    hub.unsubscribe("BTC/USD", "1m", btc.append)
+    hub.unsubscribe("ETH/USD", "1m", eth.append)

@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any, cast
+from typing import cast
 
 from ..datafeed import CandleFeed
 from ..models import Candle
@@ -40,8 +40,8 @@ class MarketDataHub:
         self._handlers: dict[_Key, list[_Handler]] = {}
         self._stream_tasks: dict[_Key, asyncio.Task[None]] = {}
         self._warmup_cache: dict[_Key, tuple[float, list[Candle]]] = {}
+        self._warmup_locks: dict[_Key, asyncio.Lock] = {}
         self._latest_prices: dict[_Key, float] = {}
-        self._warmup_lock = asyncio.Lock()
 
     def subscribe(self, symbol: str, timeframe: str, handler: _Handler) -> None:
         key = (symbol, timeframe)
@@ -52,15 +52,16 @@ class MarketDataHub:
         if len(handlers) > 1:
             return
 
-        self._stream_feed.on_bar(
-            lambda candle, subscription_key=key: self._on_bar(subscription_key, candle),
-        )
-        runner = getattr(self._stream_feed, "run_async", None)
-        if not callable(runner):
-            raise RuntimeError("MarketDataHub requires a stream feed with run_async")
-        self._stream_tasks[key] = asyncio.create_task(
-            self._run_stream(key, cast(_StreamRunner, runner)),
-        )
+        handler = lambda candle, subscription_key=key: self._on_bar(subscription_key, candle)
+        keyed_register = getattr(self._stream_feed, "on_bar_for", None)
+        if callable(keyed_register):
+            keyed_register(symbol, handler)
+        elif len(self._handlers) == 1:
+            self._stream_feed.on_bar(handler)
+        else:
+            self._handlers.pop(key)
+            raise RuntimeError("MarketDataHub requires keyed stream handlers for multiple symbols")
+        self._stream_tasks[key] = asyncio.create_task(self._run_stream(key))
 
     def unsubscribe(self, symbol: str, timeframe: str, handler: _Handler) -> None:
         key = (symbol, timeframe)
@@ -79,15 +80,25 @@ class MarketDataHub:
         if not self._handlers:
             self._stream_feed.stop()
 
-    async def _run_stream(self, key: _Key, runner: _StreamRunner) -> None:
+    async def _run_stream(self, key: _Key) -> None:
         try:
-            await runner(key[0])
+            runner = getattr(self._stream_feed, "run_async", None)
+            if callable(runner):
+                await cast(_StreamRunner, runner)(key[0])
+            else:
+                legacy_runner = getattr(self._stream_feed, "run", None)
+                if not callable(legacy_runner):
+                    raise RuntimeError("MarketDataHub requires stream feed run_async() or run()")
+                await asyncio.to_thread(legacy_runner, key[0])
         except asyncio.CancelledError:
             raise
         except Exception:
             _log.exception("market data stream stopped for %s %s", *key)
         finally:
-            current = asyncio.current_task()
+            try:
+                current = asyncio.current_task()
+            except RuntimeError:  # pragma: no cover - event loop is closing
+                return
             if self._stream_tasks.get(key) is current:
                 self._stream_tasks.pop(key, None)
 
@@ -101,7 +112,8 @@ class MarketDataHub:
 
     async def warmup(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
         key = (symbol, timeframe)
-        async with self._warmup_lock:
+        lock = self._warmup_locks.setdefault(key, asyncio.Lock())
+        async with lock:
             now = self._clock()
             cached = self._warmup_cache.get(key)
             if cached is not None and now - cached[0] < self._mtf_cache_seconds:

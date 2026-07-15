@@ -31,8 +31,8 @@ class RateLimiter:
 
     async def acquire(self) -> None:
         """Wait until one token is available, then consume it."""
-        async with self._lock:
-            while True:
+        while True:
+            async with self._lock:
                 now = self._clock()
                 elapsed = max(0.0, now - self._updated_at)
                 self._tokens = min(
@@ -46,4 +46,6 @@ class RateLimiter:
                     return
 
                 wait_seconds = (1.0 - self._tokens) / self._rate_per_sec
-                await self._sleep(wait_seconds)
+                # Release the state lock while waiting so another waiter can
+                # observe refilled tokens and make progress independently.
+            await self._sleep(wait_seconds)
