@@ -17,6 +17,9 @@ _VenueBuilder = Callable[[_Credentials, bool], ExecutionVenue]
 
 
 def _build_coinbase(creds: _Credentials, live: bool) -> ExecutionVenue:
+    missing = [key for key in ("api_key", "api_secret") if not creds.get(key)]
+    if missing:
+        raise ValueError(f"Missing Coinbase credential(s): {', '.join(missing)}")
     return CcxtVenue.from_exchange(
         str(creds.get("exchange") or "coinbase"),
         str(creds["api_key"]),
@@ -27,7 +30,11 @@ def _build_coinbase(creds: _Credentials, live: bool) -> ExecutionVenue:
 
 
 def _build_tradovate(creds: _Credentials, live: bool) -> ExecutionVenue:
-    return TradovateVenue.from_credentials(**creds, live=live)  # type: ignore[arg-type]
+    request = {key: value for key, value in creds.items() if key != "live"}
+    try:
+        return TradovateVenue.from_credentials(**request, live=live)  # type: ignore[arg-type]
+    except TypeError as exc:
+        raise ValueError(f"Invalid Tradovate credentials: {exc}") from exc
 
 
 _VENUE_BUILDERS: dict[tuple[str, str], _VenueBuilder] = {
@@ -53,7 +60,7 @@ def build_venue(
 def available_venues() -> list[dict[str, str]]:
     return [
         {"venue": venue, "market_type": market_type}
-        for venue, market_type in _VENUE_BUILDERS
+        for venue, market_type in sorted(_VENUE_BUILDERS)
     ]
 
 
