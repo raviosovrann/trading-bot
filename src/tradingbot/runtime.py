@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import signal
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 
 from .datafeed import CandleFeed
 from .models import Candle, OrderResult
@@ -21,11 +23,29 @@ class CandleProcessor:
     ``process_candle`` decision core. It knows nothing about how candles arrive.
     """
 
-    def __init__(self, *, strategy: Strategy, router: SignalRouter, max_buffer: int = 500) -> None:
+    def __init__(
+        self,
+        *,
+        strategy: Strategy,
+        router: SignalRouter,
+        max_buffer: int = 500,
+        on_event: Callable[[str], None] | None = None,
+        event_symbol: str | None = None,
+    ) -> None:
         self._strategy = strategy
         self._router = router
         self._max_buffer = max_buffer
+        self._on_event = on_event
+        self._event_symbol = event_symbol
         self._candles: list[Candle] = []
+
+    def _emit(self, event: dict[str, object]) -> None:
+        if self._on_event is None:
+            return
+        try:
+            self._on_event(json.dumps(event, separators=(",", ":")))
+        except Exception:  # observer failures must not stop order processing
+            _log.exception("candle processor observer failed")
 
     @property
     def candles(self) -> tuple[Candle, ...]:
@@ -55,6 +75,12 @@ class CandleProcessor:
 
         signal = self._strategy.on_bar(self._candles)
         if signal is None:
+            self._emit({
+                "type": "decision",
+                "symbol": self._event_symbol,
+                "ts": self._candles[-1].timestamp,
+                "text": "no signal",
+            })
             return None
 
         result = self._router.route(signal)
@@ -69,6 +95,15 @@ class CandleProcessor:
             label, signal.action.value, result.status, result.order_id,
             f" error={result.error}" if result.error else "",
         )
+        self._emit({
+            "type": "order",
+            "action": signal.action.value,
+            "status": result.status,
+            "ok": result.ok,
+            "order_id": result.order_id,
+            "symbol": signal.symbol,
+            "ts": self._candles[-1].timestamp,
+        })
         return result
 
     def process_candle(self, candle: Candle) -> OrderResult | None:
@@ -93,7 +128,12 @@ class BotRuntime:
         self._feed = feed
         self._symbol = symbol
         self._timeframe = timeframe
-        self._proc = CandleProcessor(strategy=strategy, router=router, max_buffer=max_buffer)
+        self._proc = CandleProcessor(
+            strategy=strategy,
+            router=router,
+            max_buffer=max_buffer,
+            event_symbol=symbol,
+        )
 
         if warmup_bars > 0:
             self._proc.seed(feed.warmup_candles(symbol, timeframe, warmup_bars))
@@ -141,6 +181,7 @@ class StreamRuntime:
         base_backoff: float = 1.0,
         max_backoff: float = 60.0,
         gapfill_bars: int = 50,
+        on_event: Callable[[str], None] | None = None,
     ) -> None:
         self._feed = feed
         self._symbol = symbol
@@ -149,7 +190,13 @@ class StreamRuntime:
         self._base_backoff = base_backoff
         self._max_backoff = max_backoff
         self._gapfill_bars = gapfill_bars
-        self._proc = CandleProcessor(strategy=strategy, router=router, max_buffer=max_buffer)
+        self._proc = CandleProcessor(
+            strategy=strategy,
+            router=router,
+            max_buffer=max_buffer,
+            on_event=on_event,
+            event_symbol=symbol,
+        )
 
         if warmup_bars > 0:
             self._proc.seed(feed.warmup_candles(symbol, timeframe, warmup_bars))
@@ -183,6 +230,41 @@ class StreamRuntime:
             base_backoff=self._base_backoff,
             max_backoff=self._max_backoff,
         )
+
+    async def start_async(
+        self,
+        *,
+        install_signals: bool = False,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        """Start async streaming with reconnect and gap-fill supervision."""
+        if install_signals:
+            self._install_signal_handlers()
+        _log.info(
+            "%s: warmed up %d bars — evaluating now, then streaming async candles",
+            self._symbol, len(self._proc.candles),
+        )
+        self._proc.evaluate()
+        backoff = self._base_backoff
+        while not self._stopped:
+            try:
+                await self._feed.run_async(self._symbol)
+                healthy = True
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                healthy = False
+                _log.exception("%s: async stream disconnected", self._symbol)
+            if self._stopped:
+                break
+            if healthy:
+                backoff = self._base_backoff
+            await sleep(backoff)
+            if self._stopped:
+                break
+            await asyncio.to_thread(self._gap_fill)
+            if not healthy:
+                backoff = min(backoff * 2, self._max_backoff)
 
     def _gap_fill(self) -> None:
         """REST-fill bars missed during an outage; process_candle dedups overlap."""
