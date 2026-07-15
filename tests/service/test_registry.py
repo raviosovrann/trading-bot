@@ -53,7 +53,7 @@ def test_coinbase_spot_builds_ccxt_venue(monkeypatch) -> None:
     assert result is sentinel
     assert calls == {
         "args": ("coinbase", "key", "secret", "pass"),
-        "kwargs": {"live": True},
+        "kwargs": {"live": True, "market_type": "spot"},
     }
 
 
@@ -118,7 +118,7 @@ def test_tradovate_live_credential_is_overridden_by_argument(monkeypatch) -> Non
 
 @pytest.mark.parametrize(
     ("venue", "market_type"),
-    [("coinbase", "futures"), ("tradovate", "spot"), ("unknown", "spot")],
+    [("coinbase", "options"), ("tradovate", "spot"), ("unknown", "spot")],
 )
 def test_unknown_venue_mapping_raises(venue: str, market_type: str) -> None:
     """Verify that unsupported venue/market type mappings raise a ValueError."""
@@ -129,6 +129,7 @@ def test_unknown_venue_mapping_raises(venue: str, market_type: str) -> None:
 def test_available_venues_lists_supported_mappings() -> None:
     """Verify that available_venues lists the supported venue mappings."""
     assert available_venues() == [
+        {"venue": "coinbase", "market_type": "futures"},
         {"venue": "coinbase", "market_type": "spot"},
         {"venue": "tradovate", "market_type": "futures"},
     ]
@@ -155,3 +156,30 @@ def test_strategy_registry_passes_through_plugin_registry() -> None:
     """Verify that the strategy registry passes through to the plugin registry."""
     assert "example" in available_strategies()
     assert build_strategy("example", _context()).on_bar([]) is None
+
+
+def test_coinbase_futures_builds_ccxt_venue_with_futures_market_type(monkeypatch) -> None:
+    """Verify coinbase futures maps to a ccxt venue built with market_type=futures."""
+    sentinel = object()
+    calls: dict = {}
+
+    def fake_from_exchange(cls, *args, **kwargs):
+        calls["kwargs"] = kwargs
+        return sentinel
+
+    monkeypatch.setattr(CcxtVenue, "from_exchange", classmethod(fake_from_exchange))
+    result = build_venue(
+        "coinbase", "futures",
+        creds={"api_key": "k", "api_secret": "s"}, live=True,
+    )
+    assert result is sentinel
+    assert calls["kwargs"]["market_type"] == "futures"
+    assert calls["kwargs"]["live"] is True
+
+
+def test_available_venues_includes_coinbase_futures() -> None:
+    """Verify coinbase futures is advertised as a supported mapping."""
+    pairs = {(v["venue"], v["market_type"]) for v in available_venues()}
+    assert ("coinbase", "spot") in pairs
+    assert ("coinbase", "futures") in pairs
+    assert ("tradovate", "futures") in pairs

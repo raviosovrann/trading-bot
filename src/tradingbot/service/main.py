@@ -15,21 +15,17 @@ from typing import Any
 
 from .api import create_app
 from .events import EventBus
+from .hub_factory import HubFactory
 from .risk import GlobalExposure
 from .store import BotStore
-from .supervisor import BotConfig, BotSupervisor
-
-
-def _default_hub_factory(_cfg: BotConfig) -> Any:
-    """Placeholder hub factory; real deployments should configure one per venue."""
-    raise NotImplementedError(
-        "No hub_factory configured. Set TRADINGBOT_HUB_FACTORY or replace "
-        "tradingbot.service.main._default_hub_factory before starting bots."
-    )
+from .supervisor import BotSupervisor
 
 
 def create_service_app() -> Any:
     """Create the FastAPI app with default file-based persistence.
+
+    Bots draw market data from a shared ``HubFactory`` (one hub per venue, so
+    the account rate limit is respected regardless of bot count).
 
     Returns:
         Configured FastAPI application.
@@ -37,7 +33,7 @@ def create_service_app() -> Any:
     data_dir = Path(os.environ.get("TRADINGBOT_DATA_DIR", "data"))
     store = BotStore(data_dir)
     supervisor = BotSupervisor(
-        hub_factory=_default_hub_factory,
+        hub_factory=HubFactory(store),
         event_bus=EventBus(),
         global_exposure=GlobalExposure(),
     )

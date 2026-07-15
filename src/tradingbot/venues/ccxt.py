@@ -33,14 +33,18 @@ class CcxtVenue:
         password: str | None = None,
         *,
         live: bool = False,
+        market_type: str = "spot",
     ) -> "CcxtVenue":
         if ccxt is None:
             raise RuntimeError("ccxt is not installed")
         klass = getattr(ccxt, exchange_id)
-        config = {"apiKey": api_key, "secret": api_secret, "enableRateLimit": True}
+        config: dict = {"apiKey": api_key, "secret": api_secret, "enableRateLimit": True}
         if password:
             config["password"] = password
-        return cls(klass(config), live=live)
+        if market_type == "futures":
+            # Select the exchange's derivatives markets (perps/futures).
+            config["options"] = {"defaultType": "swap"}
+        return cls(klass(config), live=live, market_type=market_type)
 
     def place_order(self, order: Order) -> OrderResult:
         # LIVE GUARD: when not live, never touch the exchange.
@@ -84,8 +88,26 @@ class CcxtVenue:
             )
 
     def get_position(self, symbol: str) -> Position | None:
-        # SPOT ONLY for now. Futures via fetch_positions() is a future drop-in
-        # keyed on self._market_type.
+        if self._market_type == "futures":
+            # Derivatives: read the signed position via fetch_positions (long/short).
+            try:
+                positions = self._ex.fetch_positions([symbol])
+            except Exception:
+                return None
+            for p in positions:
+                if p.get("symbol") != symbol:
+                    continue
+                contracts = abs(float(p.get("contracts") or 0.0))
+                if contracts < 1e-9:
+                    return None
+                side = PositionSide.long if str(p.get("side", "")).lower() == "long" else PositionSide.short
+                return Position(
+                    symbol=symbol, side=side, size=contracts,
+                    entry_price=float(p.get("entryPrice") or 0.0),
+                )
+            return None
+
+        # Spot: derive the position from the base-asset balance (long/flat only).
         base = symbol.split("/")[0].upper()
         try:
             bal = self._ex.fetch_balance()

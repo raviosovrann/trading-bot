@@ -1,0 +1,76 @@
+"""Tests for the shared-per-venue HubFactory."""
+
+from __future__ import annotations
+
+import pytest
+
+from tradingbot.service.hub_factory import HubFactory, _default_ccxt_feed_builder
+from tradingbot.service.supervisor import BotConfig
+
+
+class _FakeStream:
+    def on_bar(self, handler): ...
+    def on_bar_for(self, symbol, handler): ...
+    async def run_async(self, *symbols): ...
+    def stop(self): ...
+
+
+class _FakeCandle:
+    def warmup_candles(self, symbol, timeframe, limit): return []
+    def latest_closed_candle(self, symbol, timeframe): return None
+
+
+class _FakeStore:
+    def __init__(self, secrets):
+        self._secrets = secrets
+    def load_secrets(self):
+        return self._secrets
+
+
+def _cfg(bot_id: str, *, venue="coinbase", market_type="spot", timeframe="1h") -> BotConfig:
+    return BotConfig(
+        id=bot_id, venue=venue, market_type=market_type, strategy="example",
+        symbol="BTC/USD", timeframe=timeframe, quantity=0.1, live=False,
+        per_bot_cap=1000.0, global_cap=5000.0, params={},
+    )
+
+
+def _factory(calls):
+    store = _FakeStore({"coinbase": {"spot": {"api_key": "k", "api_secret": "s"}}})
+
+    def feed_builder(venue, market_type, timeframe, creds):
+        calls.append((venue, market_type, timeframe, dict(creds)))
+        return _FakeStream(), _FakeCandle()
+
+    return HubFactory(store, feed_builder=feed_builder)
+
+
+def test_same_venue_timeframe_shares_one_hub():
+    calls: list = []
+    factory = _factory(calls)
+    hub1 = factory(_cfg("a"))
+    hub2 = factory(_cfg("b"))  # same venue/market_type/timeframe
+    assert hub1 is hub2
+    assert len(calls) == 1  # feeds built once, shared across both bots
+
+
+def test_different_timeframe_gets_its_own_hub():
+    calls: list = []
+    factory = _factory(calls)
+    hub1 = factory(_cfg("a", timeframe="1h"))
+    hub2 = factory(_cfg("b", timeframe="5m"))
+    assert hub1 is not hub2
+    assert len(calls) == 2
+    assert {c[2] for c in calls} == {"1h", "5m"}
+
+
+def test_feed_builder_receives_stored_creds():
+    calls: list = []
+    factory = _factory(calls)
+    factory(_cfg("a"))
+    assert calls[0][3] == {"api_key": "k", "api_secret": "s"}
+
+
+def test_default_builder_rejects_tradovate_market_data():
+    with pytest.raises(NotImplementedError):
+        _default_ccxt_feed_builder("tradovate", "futures", "1h", {})
