@@ -156,6 +156,26 @@ class BotStore:
         """
         return self._load_json(self._users_file)
 
+    def save_users(self, data: dict[str, Any]) -> None:
+        """Atomically persist user/token records to ``users.json``.
+
+        Args:
+            data: Users mapping (e.g. ``{"users": [...]}``) to write.
+        """
+        self._save_json(self._users_file, data)
+
+    def _save_json(self, path: Path, data: dict[str, Any]) -> None:
+        """Atomically write ``data`` as JSON to ``path``.
+
+        Args:
+            path: Destination file.
+            data: JSON-serializable mapping to persist.
+        """
+        self._data_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self._data_dir / f"{path.stem}-{uuid.uuid4()}.json.tmp"
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        os.replace(str(tmp), str(path))
+
     def _load_json(self, path: Path) -> dict[str, Any]:
         """Load a JSON object from ``path``.
 

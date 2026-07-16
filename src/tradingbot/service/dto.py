@@ -7,6 +7,19 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+class LoginRequest(BaseModel):
+    """Operator login payload."""
+
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    """Bearer token issued on successful login."""
+
+    token: str
+
+
 class CreateBotRequest(BaseModel):
     """Payload to create a new bot. No secrets are accepted here."""
 
