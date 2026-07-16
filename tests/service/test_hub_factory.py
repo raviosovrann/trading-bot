@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tradingbot.service.hub_factory import HubFactory, _default_ccxt_feed_builder
+from tradingbot.service.hub_factory import HubFactory, _default_feed_builder
 from tradingbot.service.supervisor import BotConfig
 
 
@@ -71,6 +71,16 @@ def test_feed_builder_receives_stored_creds():
     assert calls[0][3] == {"api_key": "k", "api_secret": "s"}
 
 
-def test_default_builder_rejects_tradovate_market_data():
-    with pytest.raises(NotImplementedError):
-        _default_ccxt_feed_builder("tradovate", "futures", "1h", {})
+def test_default_builder_requires_md_token_for_tradovate():
+    # Without an md_access_token the factory can't build Tradovate feeds.
+    with pytest.raises(ValueError):
+        _default_feed_builder("tradovate", "futures", "1h", {})
+
+
+@pytest.mark.parametrize("key", ["md_access_token", "mdAccessToken"])
+def test_default_builder_accepts_either_md_token_key(key):
+    # Accept both the normalized secrets key and Tradovate's raw auth field.
+    stream_feed, candle_feed = _default_feed_builder("tradovate", "futures", "1h", {key: "tok"})
+    # Both feeds share a single MD client (one socket per token, not two).
+    assert candle_feed is stream_feed.warmup_feed
+    assert candle_feed._client is stream_feed._client
