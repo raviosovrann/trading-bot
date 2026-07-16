@@ -14,6 +14,7 @@ from typing import Any
 
 from ..datafeed import CcxtCandleFeed
 from ..stream import CcxtStreamFeed
+from ..tradovate_feed import TradovateCandleFeed, TradovateStreamFeed
 from .datahub import MarketDataHub
 from .ratelimit import RateLimiter
 from .supervisor import BotConfig
@@ -22,14 +23,21 @@ from .supervisor import BotConfig
 FeedBuilder = Callable[[str, str, str, dict], tuple[Any, Any]]
 
 
-def _default_ccxt_feed_builder(venue: str, market_type: str, timeframe: str, creds: dict) -> tuple[Any, Any]:
-    """Build ccxt streaming + candle feeds for a venue. Tradovate market data is
-    not yet implemented (its execution venue exists; the feed is a follow-up)."""
+def _default_feed_builder(venue: str, market_type: str, timeframe: str, creds: dict) -> tuple[Any, Any]:
+    """Build streaming + candle feeds for a venue from stored credentials."""
     if venue == "tradovate":
-        raise NotImplementedError(
-            "Tradovate market data feed is not implemented yet — see the GAP-3 issue. "
-            "Tradovate has a market-data WebSocket (wss://md.tradovateapi.com) to wire here."
-        )
+        # Market data uses the mdAccessToken; the WebSocket client
+        # (_TradovateMdClient) must be completed/verified on the Tradovate demo.
+        md_token = str(creds.get("md_access_token") or "")
+        if not md_token:
+            raise ValueError(
+                "Tradovate market data needs creds['md_access_token'] (from the "
+                "Tradovate auth response). See tradingbot.tradovate_feed."
+            )
+        stream_feed = TradovateStreamFeed.from_credentials(md_token, timeframe=timeframe)
+        candle_feed = TradovateCandleFeed.from_credentials(md_token)
+        return stream_feed, candle_feed
+
     exchange_id = str(creds.get("exchange") or venue)
     api_key = str(creds.get("api_key", ""))
     api_secret = str(creds.get("api_secret", ""))
@@ -58,7 +66,7 @@ class HubFactory:
         self._store = store
         self._rate_per_sec = rate_per_sec
         self._burst = burst
-        self._feed_builder = feed_builder or _default_ccxt_feed_builder
+        self._feed_builder = feed_builder or _default_feed_builder
         self._mtf_cache_seconds = mtf_cache_seconds
         self._hubs: dict[tuple[str, str, str], MarketDataHub] = {}
         self._limiters: dict[tuple[str, str], RateLimiter] = {}
