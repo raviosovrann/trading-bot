@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -186,6 +187,78 @@ async def test_supervisor_persists_order_events(monkeypatch) -> None:
     assert bot_id == "one"
     assert record["action"] == "buy"
     assert record["bot_id"] == "one"
+
+
+class _PosVenue:
+    def __init__(self, pos: Position | None) -> None:
+        self._pos = pos
+
+    def get_position(self, symbol: str) -> Position | None:
+        del symbol
+        return self._pos
+
+
+class _PriceHub:
+    def __init__(self, price: float | None) -> None:
+        self._price = price
+
+    def latest_price(self, symbol: str, timeframe: str) -> float | None:
+        del symbol, timeframe
+        return self._price
+
+
+def _order_json() -> str:
+    return json.dumps({
+        "type": "order", "action": "buy", "status": "submitted",
+        "ok": True, "order_id": "o1", "symbol": "BTC/USD", "ts": 1,
+    })
+
+
+def test_order_event_refreshes_position_and_marks_long_pnl() -> None:
+    """On an order event the supervisor reads the venue position and marks PnL."""
+    supervisor = BotSupervisor(
+        hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(), global_exposure=GlobalExposure()
+    )
+    bot = supervisor.create(_config("one"))
+    bot.venue = _PosVenue(Position(symbol="BTC/USD", side=PositionSide.long, size=2.0, entry_price=100.0))
+    bot.hub = _PriceHub(110.0)
+    bot.multiplier = 1.0
+
+    supervisor._handle_event(bot, _order_json())
+
+    assert bot.position is not None and bot.position.side is PositionSide.long
+    assert bot.pnl == 20.0  # (110 - 100) * 2 * 1
+
+
+def test_short_position_marks_inverse_pnl() -> None:
+    """A short position profits when price falls below entry."""
+    supervisor = BotSupervisor(
+        hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(), global_exposure=GlobalExposure()
+    )
+    bot = supervisor.create(_config("one"))
+    bot.venue = _PosVenue(Position(symbol="BTC/USD", side=PositionSide.short, size=2.0, entry_price=100.0))
+    bot.hub = _PriceHub(90.0)
+    bot.multiplier = 1.0
+
+    supervisor._handle_event(bot, _order_json())
+
+    assert bot.pnl == 20.0  # (100 - 90) * 2 * 1
+
+
+def test_flat_position_zeroes_pnl() -> None:
+    """When the venue reports no position, PnL resets to zero."""
+    supervisor = BotSupervisor(
+        hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(), global_exposure=GlobalExposure()
+    )
+    bot = supervisor.create(_config("one"))
+    bot.pnl = 5.0
+    bot.venue = _PosVenue(None)
+    bot.hub = _PriceHub(100.0)
+
+    supervisor._handle_event(bot, _order_json())
+
+    assert bot.position is None
+    assert bot.pnl == 0.0
 
 
 @pytest.mark.asyncio

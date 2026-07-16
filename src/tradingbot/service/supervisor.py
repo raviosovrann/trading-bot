@@ -8,7 +8,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, cast
 
-from ..models import Candle, Position
+from ..models import Candle, Position, PositionSide
 from ..router import SignalRouter
 from ..runtime import StreamRuntime
 from ..strategies import StrategyContext
@@ -88,6 +88,15 @@ class BotInstance:
 
     pnl: float = 0.0
     """Running profit-and-loss estimate."""
+
+    venue: Any | None = None
+    """Execution venue, retained after start for position polling."""
+
+    hub: Any | None = None
+    """Market-data hub, retained after start for mark-to-market pricing."""
+
+    multiplier: float = 1.0
+    """Contract multiplier used when marking PnL (1.0 for spot)."""
 
 
 class _HubFeed:
@@ -239,6 +248,9 @@ class BotSupervisor:
                 if callable(multiplier_factory)
                 else 1.0
             )
+            bot.venue = venue
+            bot.hub = hub
+            bot.multiplier = multiplier
             router = SignalRouter.with_risk_guard(
                 venue,
                 per_bot_cap=bot.config.per_bot_cap,
@@ -391,12 +403,52 @@ class BotSupervisor:
             )
             self._event_bus.publish(order_event)
             self._persist_trade(bot, payload, order_event)
+            # A fill may have changed the position; refresh it, then mark PnL.
+            self._refresh_position(bot)
+            self._refresh_pnl(bot)
             return
         text = str(payload.get("text", raw))
         bot.last_decision = text
+        # Mark PnL to the latest price on every decision (price moves between fills).
+        self._refresh_pnl(bot)
         self._event_bus.publish(DecisionEvent(
             bot_id=bot.config.id,
             symbol=bot.config.symbol,
             ts=int(payload.get("ts", 0)),
             text=text,
         ))
+
+    def _refresh_position(self, bot: BotInstance) -> None:
+        """Update ``bot.position`` from the venue, tolerating venue errors.
+
+        Args:
+            bot: Bot whose position to refresh.
+        """
+        if bot.venue is None:
+            return
+        try:
+            bot.position = bot.venue.get_position(bot.config.symbol)
+        except Exception:  # pragma: no cover - defensive; venue errors shouldn't kill the bot
+            _log.exception("failed to read position for bot %s", bot.config.id)
+
+    def _refresh_pnl(self, bot: BotInstance) -> None:
+        """Mark ``bot.pnl`` to market from the hub's latest price.
+
+        Unrealized PnL is ``sign * (price - entry) * size * multiplier`` where
+        ``sign`` is +1 long / -1 short. A flat position resets PnL to zero; a
+        missing price leaves the last value untouched.
+
+        Args:
+            bot: Bot whose PnL to recompute.
+        """
+        pos = bot.position
+        if pos is None or pos.side is PositionSide.flat:
+            bot.pnl = 0.0
+            return
+        if bot.hub is None:
+            return
+        price = bot.hub.latest_price(bot.config.symbol, bot.config.timeframe)
+        if price is None:
+            return
+        sign = 1.0 if pos.side is PositionSide.long else -1.0
+        bot.pnl = sign * (float(price) - pos.entry_price) * pos.size * bot.multiplier
