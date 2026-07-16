@@ -107,13 +107,12 @@ def _store(tmp_path: Path) -> BotStore:
             }]
         })
     )
-    (data_dir / "secrets.json").write_text(
-        json.dumps({
-            "coinbase": {"spot": {"api_key": "secret-key", "api_secret": "secret-secret"}},
-        })
-    )
     (data_dir / "trades").mkdir()
-    return BotStore(data_dir)
+    store = BotStore(data_dir)
+    # Secrets are encrypted at rest; write them via the store so the on-disk
+    # file is a Fernet token, not clear text.
+    store.save_secrets("coinbase", "spot", {"api_key": "secret-key", "api_secret": "secret-secret"})
+    return store
 
 
 def _supervisor(monkeypatch: pytest.MonkeyPatch) -> BotSupervisor:
@@ -182,6 +181,30 @@ class TestLogin:
         )
         client.post("/login", json={"username": "nobody", "password": "x"})
         assert seen and seen[0].startswith("pbkdf2_sha256$")
+
+
+class TestSecrets:
+    def test_put_secrets_persists_and_returns_no_body(self, client: TestClient) -> None:
+        """Storing secrets returns 204, persists them, and echoes nothing back."""
+        response = client.put(
+            "/venues/kraken/spot/secrets",
+            json={"api_key": "new-key", "api_secret": "new-secret"},
+            headers=_auth(),
+        )
+        assert response.status_code == 204
+        assert response.content == b""
+        stored = client.app.state.store.load_secrets()["kraken"]["spot"]  # type: ignore[attr-defined]
+        assert stored == {"api_key": "new-key", "api_secret": "new-secret"}
+
+    def test_put_secrets_requires_auth(self, client: TestClient) -> None:
+        """Storing secrets without a token is rejected."""
+        response = client.put("/venues/kraken/spot/secrets", json={"api_key": "k"})
+        assert response.status_code == 401
+
+    def test_put_empty_secrets_is_rejected(self, client: TestClient) -> None:
+        """An empty credential payload is a 400, not a stored empty record."""
+        response = client.put("/venues/kraken/spot/secrets", json={}, headers=_auth())
+        assert response.status_code == 400
 
 
 class TestListMeta:

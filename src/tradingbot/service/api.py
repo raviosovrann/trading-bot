@@ -11,7 +11,7 @@ import uuid
 from dataclasses import asdict
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.websockets import WebSocket, WebSocketDisconnect
 
@@ -219,6 +219,38 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
         user["token_hash"] = _hash_token(token)
         store.save_users(data)
         return LoginResponse(token=token)
+
+    @app.put(
+        "/venues/{venue}/{market_type}/secrets",
+        status_code=status.HTTP_204_NO_CONTENT,
+        response_class=Response,
+        response_model=None,
+    )
+    async def put_secrets(
+        venue: str,
+        market_type: str,
+        creds: dict[str, str],
+        _: str = Depends(require_auth),
+    ) -> None:
+        """Store venue credentials for a ``(venue, market_type)`` pair.
+
+        The credentials are persisted server-side only and are never echoed back
+        or logged. ``start_bot`` later loads them from the store.
+
+        Args:
+            venue: Venue identifier, e.g. ``coinbase``.
+            market_type: Market type identifier, e.g. ``spot`` or ``futures``.
+            creds: Credential mapping (shape depends on the venue).
+
+        Raises:
+            HTTPException: 400 when no credentials are supplied.
+        """
+        if not creds:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="no credentials supplied",
+            )
+        store.save_secrets(venue, market_type, creds)
 
     @app.get("/venues")
     async def list_venues(_: str = Depends(require_auth)) -> list[dict[str, str]]:
