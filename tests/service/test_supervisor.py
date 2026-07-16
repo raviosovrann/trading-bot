@@ -153,6 +153,41 @@ async def test_supervisor_start_stop_and_order_event(monkeypatch) -> None:
     assert supervisor.get("one").status == "stopped"  # type: ignore[union-attr]
 
 
+class _RecordingStore:
+    def __init__(self) -> None:
+        self.trades: list[tuple[str, dict]] = []
+
+    def append_trade(self, bot_id: str, order_event: dict) -> None:
+        self.trades.append((bot_id, order_event))
+
+
+@pytest.mark.asyncio
+async def test_supervisor_persists_order_events(monkeypatch) -> None:
+    """Order events are appended to the store, not only published to the bus."""
+    bus = EventBus()
+    store = _RecordingStore()
+    monkeypatch.setattr("tradingbot.service.supervisor.build_venue", lambda *a, **k: _FakeVenue())
+    monkeypatch.setattr("tradingbot.service.supervisor.build_strategy", lambda *a, **k: _SignalStrategy())
+    supervisor = BotSupervisor(
+        hub_factory=lambda cfg: _FakeHub(),
+        event_bus=bus,
+        global_exposure=GlobalExposure(),
+        store=store,
+    )
+    supervisor.create(_config("one"))
+    queue = bus.subscribe()
+
+    await supervisor.start("one")
+    await asyncio.wait_for(queue.get(), timeout=1.0)  # wait until the order fired
+    await supervisor.stop("one")
+
+    assert store.trades, "expected the order event to be persisted"
+    bot_id, record = store.trades[0]
+    assert bot_id == "one"
+    assert record["action"] == "buy"
+    assert record["bot_id"] == "one"
+
+
 @pytest.mark.asyncio
 async def test_two_bots_run_concurrently(monkeypatch) -> None:
     """Verify that two bots can start and run concurrently."""

@@ -37,5 +37,6 @@ def create_service_app() -> Any:
         hub_factory=HubFactory(store),
         event_bus=EventBus(),
         global_exposure=GlobalExposure(),
+        store=store,
     )
     return create_app(store=store, supervisor=supervisor)

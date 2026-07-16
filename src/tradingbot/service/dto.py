@@ -44,6 +44,41 @@ class PatchBotRequest(BaseModel):
     params: dict[str, Any] | None = None
 
 
+class TradeView(BaseModel):
+    """A persisted order event exposed by the trades endpoint."""
+
+    bot_id: str
+    action: str
+    status: str
+    ok: bool = False
+    order_id: str | None = None
+    symbol: str | None = None
+    ts: int | None = None
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> "TradeView":
+        """Build a view from a stored trade record, tolerating partial/legacy rows.
+
+        Args:
+            record: Raw trade dict read from the store.
+
+        Returns:
+            A ``TradeView`` with missing fields filled by sensible defaults.
+        """
+        order_id = record.get("order_id")
+        symbol = record.get("symbol")
+        ts = record.get("ts")
+        return cls(
+            bot_id=str(record.get("bot_id", "")),
+            action=str(record.get("action", "")),
+            status=str(record.get("status", "")),
+            ok=bool(record.get("ok", False)),
+            order_id=str(order_id) if order_id is not None else None,
+            symbol=str(symbol) if symbol is not None else None,
+            ts=int(ts) if ts is not None else None,
+        )
+
+
 class BotView(BaseModel):
     """Bot state exposed by the API. Credentials are never included."""
 

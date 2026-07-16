@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, cast
 
@@ -15,6 +16,8 @@ from ..stream import StreamingFeed
 from .events import DecisionEvent, EventBus, OrderEvent
 from .registry import build_strategy, build_venue
 from .risk import GlobalExposure
+
+_log = logging.getLogger(__name__)
 
 _WARMUP_BARS = 220
 """Default number of warm-up bars requested when starting a bot."""
@@ -167,6 +170,7 @@ class BotSupervisor:
         hub_factory: Callable[[BotConfig], Any],
         event_bus: EventBus,
         global_exposure: GlobalExposure,
+        store: Any | None = None,
     ) -> None:
         """Initialize the supervisor.
 
@@ -174,10 +178,13 @@ class BotSupervisor:
             hub_factory: Callable that creates a market-data hub for a config.
             event_bus: In-memory event bus used to broadcast bot events.
             global_exposure: Shared exposure tracker used by risk guards.
+            store: Optional persistence layer; when set, order events are
+                appended to its trade log in addition to being published.
         """
         self._hub_factory = hub_factory
         self._event_bus = event_bus
         self._global_exposure = global_exposure
+        self._store = store
         self._bots: dict[str, BotInstance] = {}
 
     @property
@@ -335,6 +342,33 @@ class BotSupervisor:
         else:
             bot.status = "stopped"
 
+    def _persist_trade(self, bot: BotInstance, payload: dict[str, Any], event: OrderEvent) -> None:
+        """Append an order event to the store's trade log, if a store is set.
+
+        Persistence failures are logged and swallowed so a disk error never
+        crashes a running bot.
+
+        Args:
+            bot: Bot that produced the order.
+            payload: Raw runtime order payload (carries symbol/ts).
+            event: Structured order event published to the bus.
+        """
+        if self._store is None:
+            return
+        record = {
+            "bot_id": bot.config.id,
+            "action": event.action,
+            "status": event.status,
+            "ok": event.ok,
+            "order_id": event.order_id,
+            "symbol": str(payload.get("symbol", bot.config.symbol)),
+            "ts": int(payload.get("ts", 0)),
+        }
+        try:
+            self._store.append_trade(bot.config.id, record)
+        except Exception:  # pragma: no cover - defensive; disk errors shouldn't kill the bot
+            _log.exception("failed to persist trade for bot %s", bot.config.id)
+
     def _handle_event(self, bot: BotInstance, raw: str) -> None:
         """Parse a runtime event and publish it to the event bus.
 
@@ -348,13 +382,15 @@ class BotSupervisor:
             bot.last_decision = raw
             return
         if payload.get("type") == "order":
-            self._event_bus.publish(OrderEvent(
+            order_event = OrderEvent(
                 bot_id=bot.config.id,
                 action=str(payload.get("action", "")),
                 status=str(payload.get("status", "")),
                 ok=bool(payload.get("ok", False)),
                 order_id=payload.get("order_id"),
-            ))
+            )
+            self._event_bus.publish(order_event)
+            self._persist_trade(bot, payload, order_event)
             return
         text = str(payload.get("text", raw))
         bot.last_decision = text
