@@ -32,3 +32,9 @@ def test_verify_rejects_malformed_encoding() -> None:
     """Garbage or empty encodings verify as False rather than raising."""
     assert verify_password("whatever", "") is False
     assert verify_password("whatever", "not$a$valid$hash") is False
+
+
+def test_verify_rejects_nonpositive_iterations() -> None:
+    """Zero/negative iteration counts fail closed instead of raising ValueError."""
+    assert verify_password("whatever", "pbkdf2_sha256$0$aa$bb") is False
+    assert verify_password("whatever", "pbkdf2_sha256$-5$aa$bb") is False

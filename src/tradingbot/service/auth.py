@@ -15,6 +15,9 @@ import secrets
 _ALGO = "pbkdf2_sha256"
 _ITERATIONS = 240_000
 _SALT_BYTES = 16
+# Guard against corrupt records: a non-positive count makes pbkdf2_hmac raise,
+# and an absurdly large one would hang the request. Both fail closed instead.
+_MAX_ITERATIONS = 100_000_000
 
 
 def hash_password(password: str, *, iterations: int = _ITERATIONS) -> str:
@@ -56,6 +59,8 @@ def verify_password(password: str, encoded: str) -> bool:
         salt = bytes.fromhex(salt_hex)
         expected = bytes.fromhex(expected_hex)
     except ValueError:
+        return False
+    if not 1 <= iterations <= _MAX_ITERATIONS:
         return False
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
     return hmac.compare_digest(digest, expected)

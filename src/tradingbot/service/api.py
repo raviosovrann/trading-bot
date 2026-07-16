@@ -16,7 +16,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.websockets import WebSocket, WebSocketDisconnect
 
 from ..models import Position
-from .auth import verify_password
+from .auth import hash_password, verify_password
 from .dto import BotView, CreateBotRequest, LoginRequest, LoginResponse, PatchBotRequest
 from .events import DecisionEvent, OrderEvent
 from .registry import available_strategies, available_venues
@@ -25,6 +25,10 @@ from .supervisor import BotConfig, BotInstance, BotSupervisor
 
 _log = logging.getLogger(__name__)
 _security = HTTPBearer(auto_error=False)
+
+# A valid PBKDF2 encoding verified against when the username is unknown, so login
+# always performs the same hashing work and does not leak which usernames exist.
+_DUMMY_PASSWORD_HASH = hash_password("")
 
 
 def _hash_token(token: str) -> str:
@@ -204,7 +208,7 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
             (u for u in users if isinstance(u, dict) and u.get("username") == request.username),
             None,
         )
-        stored_hash = str(user.get("password_hash", "")) if user is not None else ""
+        stored_hash = str(user.get("password_hash", "")) if user is not None else _DUMMY_PASSWORD_HASH
         if not verify_password(request.password, stored_hash) or user is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

@@ -168,6 +168,21 @@ class TestLogin:
         response = client.post("/login", json={"username": "nobody", "password": _PASSWORD})
         assert response.status_code == 401
 
+    def test_unknown_user_still_runs_real_pbkdf2(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unknown username verifies against a real PBKDF2 hash, not the empty
+        short-circuit, so login timing does not leak which usernames exist."""
+        import tradingbot.service.api as api_mod
+
+        seen: list[str] = []
+        original = api_mod.verify_password
+        monkeypatch.setattr(
+            api_mod, "verify_password", lambda p, h: seen.append(h) or original(p, h)
+        )
+        client.post("/login", json={"username": "nobody", "password": "x"})
+        assert seen and seen[0].startswith("pbkdf2_sha256$")
+
 
 class TestListMeta:
     def test_venues_and_strategies_are_non_empty(self, client: TestClient) -> None:
