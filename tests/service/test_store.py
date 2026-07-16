@@ -83,12 +83,21 @@ def test_trade_path_validation_rejects_bad_bot_ids(tmp_path: Path, bot_id: str) 
 
 def test_load_secrets_and_users(tmp_path: Path) -> None:
     """Verify that secrets and users are loaded from their respective files."""
-    (tmp_path / "secrets.json").write_text(json.dumps({"coinbase": {"spot": {"api_key": "x"}}}), encoding="utf-8")
     (tmp_path / "users.json").write_text(json.dumps({"users": [{"username": "u", "token_hash": "h"}]}), encoding="utf-8")
     store = BotStore(tmp_path)
+    store.save_secrets("coinbase", "spot", {"api_key": "x"})
 
     assert store.load_secrets()["coinbase"]["spot"]["api_key"] == "x"
     assert store.load_users()["users"][0]["username"] == "u"
+
+
+def test_secrets_are_encrypted_on_disk(tmp_path: Path) -> None:
+    """The secrets file must not contain credential values in clear text."""
+    store = BotStore(tmp_path)
+    store.save_secrets("coinbase", "spot", {"api_key": "plaintext-should-not-appear"})
+    raw = (tmp_path / "secrets.json").read_text(encoding="utf-8")
+    assert "plaintext-should-not-appear" not in raw
+    assert "api_key" not in raw
 
 
 def test_save_users_round_trips(tmp_path: Path) -> None:

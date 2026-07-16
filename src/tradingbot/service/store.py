@@ -12,6 +12,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from .crypto import decrypt, encrypt
 from .supervisor import BotConfig
 
 _log = logging.getLogger(__name__)
@@ -141,31 +142,50 @@ class BotStore:
         return trades
 
     def load_secrets(self) -> dict[str, Any]:
-        """Load venue credentials from ``secrets.json``.
+        """Load and decrypt venue credentials from ``secrets.json``.
+
+        The file holds a single encrypted token (see :mod:`.crypto`). A missing
+        or empty file yields an empty dict; a token that cannot be decrypted
+        (bad JSON, wrong/absent ``TRADINGBOT_SECRETS_KEY``) is logged and treated
+        as empty so a misconfiguration fails closed rather than crashing.
 
         Returns:
-            Parsed secrets dictionary, or an empty dictionary when missing or invalid.
+            Parsed secrets dictionary, or an empty dictionary when missing/invalid.
         """
-        return self._load_json(self._secrets_file)
+        if not self._secrets_file.exists():
+            return {}
+        token = self._secrets_file.read_text(encoding="utf-8").strip()
+        if not token:
+            return {}
+        try:
+            data = json.loads(decrypt(token))
+        except Exception as exc:  # noqa: BLE001 - fail closed on any decrypt/parse error
+            _log.warning("could not decrypt %s: %s", self._secrets_file, exc)
+            return {}
+        return data if isinstance(data, dict) else {}
 
     def save_secrets(self, venue: str, market_type: str, creds: dict[str, Any]) -> None:
-        """Persist venue credentials under ``[venue][market_type]``.
+        """Encrypt and persist venue credentials under ``[venue][market_type]``.
 
         Merges into the existing secrets so unrelated venue/market pairs are kept.
-        Secret values are written to disk only and never logged.
+        Identifiers are normalized (``strip().lower()``) to match how the hub and
+        service look secrets up. The whole blob is encrypted at rest via
+        :mod:`.crypto`; secret values are never logged.
 
         Args:
             venue: Venue identifier, e.g. ``coinbase``.
             market_type: Market type identifier, e.g. ``spot`` or ``futures``.
             creds: Credential mapping to store for the pair.
         """
+        venue = venue.strip().lower()
+        market_type = market_type.strip().lower()
         secrets = self.load_secrets()
         venue_secrets = secrets.get(venue)
         if not isinstance(venue_secrets, dict):
             venue_secrets = {}
         venue_secrets[market_type] = creds
         secrets[venue] = venue_secrets
-        self._save_json(self._secrets_file, secrets)
+        self._save_text(self._secrets_file, encrypt(json.dumps(secrets)))
 
     def load_users(self) -> dict[str, Any]:
         """Load user/token records from ``users.json``.
@@ -190,9 +210,18 @@ class BotStore:
             path: Destination file.
             data: JSON-serializable mapping to persist.
         """
+        self._save_text(path, json.dumps(data, indent=2))
+
+    def _save_text(self, path: Path, text: str) -> None:
+        """Atomically write ``text`` to ``path``.
+
+        Args:
+            path: Destination file.
+            text: Content to persist.
+        """
         self._data_dir.mkdir(parents=True, exist_ok=True)
-        tmp = self._data_dir / f"{path.stem}-{uuid.uuid4()}.json.tmp"
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp = self._data_dir / f"{path.stem}-{uuid.uuid4()}.tmp"
+        tmp.write_text(text, encoding="utf-8")
         os.replace(str(tmp), str(path))
 
     def _load_json(self, path: Path) -> dict[str, Any]:

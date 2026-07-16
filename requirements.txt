@@ -7,3 +7,4 @@ httpx>=0.27,<0.29
 fastapi>=0.115,<0.116
 uvicorn[standard]>=0.30,<0.35
 websockets>=12,<14
+cryptography>=42,<50

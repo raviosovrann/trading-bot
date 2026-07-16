@@ -107,13 +107,12 @@ def _store(tmp_path: Path) -> BotStore:
             }]
         })
     )
-    (data_dir / "secrets.json").write_text(
-        json.dumps({
-            "coinbase": {"spot": {"api_key": "secret-key", "api_secret": "secret-secret"}},
-        })
-    )
     (data_dir / "trades").mkdir()
-    return BotStore(data_dir)
+    store = BotStore(data_dir)
+    # Secrets are encrypted at rest; write them via the store so the on-disk
+    # file is a Fernet token, not clear text.
+    store.save_secrets("coinbase", "spot", {"api_key": "secret-key", "api_secret": "secret-secret"})
+    return store
 
 
 def _supervisor(monkeypatch: pytest.MonkeyPatch) -> BotSupervisor:
