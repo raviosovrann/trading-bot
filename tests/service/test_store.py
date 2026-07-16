@@ -91,6 +91,21 @@ def test_load_secrets_and_users(tmp_path: Path) -> None:
     assert store.load_users()["users"][0]["username"] == "u"
 
 
+def test_save_users_round_trips(tmp_path: Path) -> None:
+    """Users saved via save_users are read back by load_users."""
+    store = BotStore(tmp_path)
+    data = {"users": [{"username": "alice", "token_hash": "h", "password_hash": "p"}]}
+    store.save_users(data)
+    assert store.load_users() == data
+
+
+def test_save_users_is_atomic(tmp_path: Path) -> None:
+    """save_users leaves no temp files behind after writing."""
+    store = BotStore(tmp_path)
+    store.save_users({"users": []})
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 def test_load_configs_handles_missing_empty_and_invalid_files(tmp_path: Path) -> None:
     """Verify load_configs tolerates missing, empty and malformed files."""
     store = BotStore(tmp_path)

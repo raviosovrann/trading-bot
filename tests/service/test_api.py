@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from tradingbot.models import Action, Candle, Order, OrderResult, OrderType, Position, PositionSide, Signal
 from tradingbot.service.api import create_app
+from tradingbot.service.auth import hash_password
 from tradingbot.service.events import DecisionEvent, EventBus, OrderEvent
 from tradingbot.service.risk import GlobalExposure
 from tradingbot.service.store import BotStore
@@ -23,6 +24,8 @@ from tradingbot.service.supervisor import BotConfig, BotSupervisor
 
 _TOKEN = "test-token"
 _TOKEN_HASH = hashlib.sha256(_TOKEN.encode()).hexdigest()
+_USERNAME = "test"
+_PASSWORD = "s3cret-pass"
 
 
 def _wait_for_subscribers(bus: EventBus, minimum: int = 1, timeout: float = 2.0) -> None:
@@ -96,7 +99,13 @@ def _store(tmp_path: Path) -> BotStore:
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     (data_dir / "users.json").write_text(
-        json.dumps({"users": [{"username": "test", "token_hash": _TOKEN_HASH}]})
+        json.dumps({
+            "users": [{
+                "username": _USERNAME,
+                "token_hash": _TOKEN_HASH,
+                "password_hash": hash_password(_PASSWORD),
+            }]
+        })
     )
     (data_dir / "secrets.json").write_text(
         json.dumps({
@@ -135,6 +144,44 @@ class TestAuth:
         """Verify that unauthenticated requests return 401."""
         response = client.get("/bots")
         assert response.status_code == 401
+
+
+class TestLogin:
+    def test_valid_credentials_return_a_working_token(self, client: TestClient) -> None:
+        """Login with correct credentials returns a token that authenticates."""
+        response = client.post("/login", json={"username": _USERNAME, "password": _PASSWORD})
+        assert response.status_code == 200
+        token = response.json()["token"]
+        assert token
+        # The freshly minted token authenticates a protected request.
+        authed = client.get("/bots", headers={"Authorization": f"Bearer {token}"})
+        assert authed.status_code == 200
+
+    def test_wrong_password_is_rejected(self, client: TestClient) -> None:
+        """Login with a bad password returns 401 and no token."""
+        response = client.post("/login", json={"username": _USERNAME, "password": "wrong"})
+        assert response.status_code == 401
+        assert "token" not in response.json()
+
+    def test_unknown_user_is_rejected(self, client: TestClient) -> None:
+        """Login with an unknown username returns 401."""
+        response = client.post("/login", json={"username": "nobody", "password": _PASSWORD})
+        assert response.status_code == 401
+
+    def test_unknown_user_still_runs_real_pbkdf2(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unknown username verifies against a real PBKDF2 hash, not the empty
+        short-circuit, so login timing does not leak which usernames exist."""
+        import tradingbot.service.api as api_mod
+
+        seen: list[str] = []
+        original = api_mod.verify_password
+        monkeypatch.setattr(
+            api_mod, "verify_password", lambda p, h: seen.append(h) or original(p, h)
+        )
+        client.post("/login", json={"username": "nobody", "password": "x"})
+        assert seen and seen[0].startswith("pbkdf2_sha256$")
 
 
 class TestListMeta:

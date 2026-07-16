@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import hmac
 import logging
+import secrets
 import uuid
 from dataclasses import asdict
 from typing import Any
@@ -15,7 +16,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.websockets import WebSocket, WebSocketDisconnect
 
 from ..models import Position
-from .dto import BotView, CreateBotRequest, PatchBotRequest
+from .auth import hash_password, verify_password
+from .dto import BotView, CreateBotRequest, LoginRequest, LoginResponse, PatchBotRequest
 from .events import DecisionEvent, OrderEvent
 from .registry import available_strategies, available_venues
 from .store import BotStore
@@ -23,6 +25,10 @@ from .supervisor import BotConfig, BotInstance, BotSupervisor
 
 _log = logging.getLogger(__name__)
 _security = HTTPBearer(auto_error=False)
+
+# A valid PBKDF2 encoding verified against when the username is unknown, so login
+# always performs the same hashing work and does not leak which usernames exist.
+_DUMMY_PASSWORD_HASH = hash_password("")
 
 
 def _hash_token(token: str) -> str:
@@ -177,6 +183,42 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
     app = FastAPI(title="Trading Console")
     app.state.store = store
     app.state.supervisor = supervisor
+
+    @app.post("/login")
+    async def login(request: LoginRequest) -> LoginResponse:
+        """Authenticate an operator and mint a fresh bearer token.
+
+        On success a new random token is issued and the user's stored token
+        hash is rotated to match, so only the SHA-256 hash is ever persisted and
+        the previous token is invalidated. Unknown users still run a password
+        verification against a dummy hash to avoid leaking which usernames exist.
+
+        Args:
+            request: Username and password payload.
+
+        Returns:
+            The newly minted bearer token.
+
+        Raises:
+            HTTPException: 401 when the username or password is invalid.
+        """
+        data = store.load_users()
+        users = data.get("users", []) if isinstance(data, dict) else []
+        user = next(
+            (u for u in users if isinstance(u, dict) and u.get("username") == request.username),
+            None,
+        )
+        stored_hash = str(user.get("password_hash", "")) if user is not None else _DUMMY_PASSWORD_HASH
+        if not verify_password(request.password, stored_hash) or user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        token = secrets.token_urlsafe(32)
+        user["token_hash"] = _hash_token(token)
+        store.save_users(data)
+        return LoginResponse(token=token)
 
     @app.get("/venues")
     async def list_venues(_: str = Depends(require_auth)) -> list[dict[str, str]]:
