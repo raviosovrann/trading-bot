@@ -75,3 +75,12 @@ def test_default_builder_requires_md_token_for_tradovate():
     # Without an md_access_token the factory can't build Tradovate feeds.
     with pytest.raises(ValueError):
         _default_feed_builder("tradovate", "futures", "1h", {})
+
+
+@pytest.mark.parametrize("key", ["md_access_token", "mdAccessToken"])
+def test_default_builder_accepts_either_md_token_key(key):
+    # Accept both the normalized secrets key and Tradovate's raw auth field.
+    stream_feed, candle_feed = _default_feed_builder("tradovate", "futures", "1h", {key: "tok"})
+    # Both feeds share a single MD client (one socket per token, not two).
+    assert candle_feed is stream_feed.warmup_feed
+    assert candle_feed._client is stream_feed._client

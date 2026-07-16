@@ -14,7 +14,7 @@ from typing import Any
 
 from ..datafeed import CcxtCandleFeed
 from ..stream import CcxtStreamFeed
-from ..tradovate_feed import TradovateCandleFeed, TradovateStreamFeed
+from ..tradovate_feed import TradovateStreamFeed
 from .datahub import MarketDataHub
 from .ratelimit import RateLimiter
 from .supervisor import BotConfig
@@ -28,14 +28,19 @@ def _default_feed_builder(venue: str, market_type: str, timeframe: str, creds: d
     if venue == "tradovate":
         # Market data uses the mdAccessToken; the WebSocket client
         # (_TradovateMdClient) must be completed/verified on the Tradovate demo.
-        md_token = str(creds.get("md_access_token") or "")
+        # Accept both the normalized secrets key and Tradovate's raw auth field.
+        md_token = str(creds.get("md_access_token") or creds.get("mdAccessToken") or "")
         if not md_token:
             raise ValueError(
-                "Tradovate market data needs creds['md_access_token'] (from the "
-                "Tradovate auth response). See tradingbot.tradovate_feed."
+                "Tradovate market data needs creds['md_access_token'] (or "
+                "'mdAccessToken', from the Tradovate auth response). "
+                "See tradingbot.tradovate_feed."
             )
+        # Share one MD client between the stream and candle feeds: the stream's
+        # warmup feed is a TradovateCandleFeed wrapping the same client, so we
+        # reuse it as the hub's candle feed rather than opening a second socket.
         stream_feed = TradovateStreamFeed.from_credentials(md_token, timeframe=timeframe)
-        candle_feed = TradovateCandleFeed.from_credentials(md_token)
+        candle_feed = stream_feed.warmup_feed
         return stream_feed, candle_feed
 
     exchange_id = str(creds.get("exchange") or venue)

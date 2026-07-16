@@ -87,6 +87,11 @@ class TradovateStreamFeed:
         client = _TradovateMdClient(md_access_token)
         return cls(client=client, warmup_feed=TradovateCandleFeed(client), timeframe=timeframe)
 
+    @property
+    def warmup_feed(self) -> Any:
+        """The candle feed sharing this stream's MD client (for hub wiring)."""
+        return self._warmup_feed
+
     def warmup_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
         if self._warmup_feed is None:
             raise RuntimeError("TradovateStreamFeed has no warmup feed configured")
