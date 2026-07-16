@@ -106,6 +106,24 @@ def test_save_users_is_atomic(tmp_path: Path) -> None:
     assert not list(tmp_path.glob("*.tmp"))
 
 
+def test_save_secrets_stores_creds_for_venue_market(tmp_path: Path) -> None:
+    """save_secrets persists creds under [venue][market_type] for later load."""
+    store = BotStore(tmp_path)
+    store.save_secrets("coinbase", "spot", {"api_key": "k", "api_secret": "s"})
+    assert store.load_secrets()["coinbase"]["spot"] == {"api_key": "k", "api_secret": "s"}
+
+
+def test_save_secrets_merges_without_clobbering_other_entries(tmp_path: Path) -> None:
+    """Saving one venue/market pair leaves other stored secrets intact."""
+    store = BotStore(tmp_path)
+    store.save_secrets("coinbase", "spot", {"api_key": "k1"})
+    store.save_secrets("tradovate", "futures", {"name": "u"})
+    store.save_secrets("coinbase", "spot", {"api_key": "k2"})  # overwrite same pair
+    secrets = store.load_secrets()
+    assert secrets["coinbase"]["spot"] == {"api_key": "k2"}
+    assert secrets["tradovate"]["futures"] == {"name": "u"}
+
+
 def test_load_configs_handles_missing_empty_and_invalid_files(tmp_path: Path) -> None:
     """Verify load_configs tolerates missing, empty and malformed files."""
     store = BotStore(tmp_path)

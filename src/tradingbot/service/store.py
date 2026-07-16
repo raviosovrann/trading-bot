@@ -148,6 +148,25 @@ class BotStore:
         """
         return self._load_json(self._secrets_file)
 
+    def save_secrets(self, venue: str, market_type: str, creds: dict[str, Any]) -> None:
+        """Persist venue credentials under ``[venue][market_type]``.
+
+        Merges into the existing secrets so unrelated venue/market pairs are kept.
+        Secret values are written to disk only and never logged.
+
+        Args:
+            venue: Venue identifier, e.g. ``coinbase``.
+            market_type: Market type identifier, e.g. ``spot`` or ``futures``.
+            creds: Credential mapping to store for the pair.
+        """
+        secrets = self.load_secrets()
+        venue_secrets = secrets.get(venue)
+        if not isinstance(venue_secrets, dict):
+            venue_secrets = {}
+        venue_secrets[market_type] = creds
+        secrets[venue] = venue_secrets
+        self._save_json(self._secrets_file, secrets)
+
     def load_users(self) -> dict[str, Any]:
         """Load user/token records from ``users.json``.
 
