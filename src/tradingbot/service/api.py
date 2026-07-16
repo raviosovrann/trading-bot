@@ -17,7 +17,7 @@ from fastapi.websockets import WebSocket, WebSocketDisconnect
 
 from ..models import Position
 from .auth import hash_password, verify_password
-from .dto import BotView, CreateBotRequest, LoginRequest, LoginResponse, PatchBotRequest
+from .dto import BotView, CreateBotRequest, LoginRequest, LoginResponse, PatchBotRequest, TradeView
 from .events import DecisionEvent, OrderEvent
 from .registry import available_strategies, available_venues
 from .store import BotStore
@@ -403,8 +403,8 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
         return _to_view(bot)
 
     @app.get("/bots/{bot_id}/trades")
-    async def list_trades(bot_id: str, _: str = Depends(require_auth)) -> list[dict[str, Any]]:
-        """List persisted trade events for ``bot_id``.
+    async def list_trades(bot_id: str, _: str = Depends(require_auth)) -> list[TradeView]:
+        """List persisted trade events for ``bot_id`` as typed views.
 
         Args:
             bot_id: UUID of the bot.
@@ -417,7 +417,7 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
         """
         if supervisor.get(bot_id) is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="bot not found")
-        return store.read_trades(bot_id)
+        return [TradeView.from_record(record) for record in store.read_trades(bot_id)]
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:

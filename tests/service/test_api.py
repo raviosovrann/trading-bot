@@ -339,14 +339,31 @@ class TestTrades:
         assert response.status_code == 404
 
     def test_get_trades_for_bot(self, client: TestClient) -> None:
-        """Verify that trades for a bot can be retrieved."""
+        """Verify that trades for a bot are returned as typed TradeView records."""
         bot = TestBotLifecycle()._create(client)
         bot_id = bot["id"]
         store = cast(FastAPI, client.app).state.store
-        store.append_trade(bot_id, {"action": "buy", "status": "filled"})
+        store.append_trade(bot_id, {
+            "bot_id": bot_id, "action": "buy", "status": "submitted",
+            "ok": True, "order_id": "o1", "symbol": "BTC/USD", "ts": 42,
+        })
         response = client.get(f"/bots/{bot_id}/trades", headers=_auth())
         assert response.status_code == 200
-        assert response.json() == [{"action": "buy", "status": "filled"}]
+        assert response.json() == [{
+            "bot_id": bot_id, "action": "buy", "status": "submitted",
+            "ok": True, "order_id": "o1", "symbol": "BTC/USD", "ts": 42,
+        }]
+
+    def test_get_trades_tolerates_partial_records(self, client: TestClient) -> None:
+        """A legacy/partial trade record is coerced, not 500'd."""
+        bot = TestBotLifecycle()._create(client)
+        bot_id = bot["id"]
+        store = cast(FastAPI, client.app).state.store
+        store.append_trade(bot_id, {"action": "sell", "status": "filled"})
+        response = client.get(f"/bots/{bot_id}/trades", headers=_auth())
+        assert response.status_code == 200
+        row = response.json()[0]
+        assert row["action"] == "sell" and row["ok"] is False and row["order_id"] is None
 
 
 class TestAuthErrors:

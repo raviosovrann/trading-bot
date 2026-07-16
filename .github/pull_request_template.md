@@ -20,5 +20,4 @@ Closes #
 ## Checklist
 
 - [ ] Tests pass locally and in CI
-- [ ] Copilot review addressed
 - [ ] Documentation updated (if applicable)
