@@ -9,7 +9,12 @@ const config: UserConfig & { test?: Record<string, unknown> } = {
   plugins: [react()],
   server: {
     proxy: {
-      '/api': { target: 'http://localhost:8000', changeOrigin: true },
+      // TODO(B5): drop the rewrite once the service mounts its routes under /api.
+      '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
+      },
       '/ws': { target: 'ws://localhost:8000', ws: true },
     },
   },
