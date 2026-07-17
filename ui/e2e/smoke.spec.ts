@@ -30,7 +30,9 @@ test('operator can log in and create a dry-run bot', async ({ page }) => {
   await page.getByRole('button', { name: 'Create bot' }).click()
 
   // Landed on the new bot's detail page.
-  await expect(page.getByRole('heading', { name: new RegExp(unique.replace('/', '\\/')) })).toBeVisible()
+  await expect(
+    page.getByRole('heading', { name: new RegExp(unique.replace('/', '\\/')) }),
+  ).toBeVisible()
 
   // And it shows on the dashboard.
   await page.getByRole('link', { name: 'Dashboard' }).click()

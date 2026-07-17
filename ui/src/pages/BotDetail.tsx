@@ -40,12 +40,21 @@ export function BotDetail() {
     setPnlSamples((old) => (old[old.length - 1] === pnl ? old : [...old, pnl].slice(-120)))
   }, [pnl])
 
-  if (isLoading) return <main className="page"><p className="muted">Loading…</p></main>
+  if (isLoading)
+    return (
+      <main className="page">
+        <p className="muted">Loading…</p>
+      </main>
+    )
   if (error || !bot) {
     return (
       <main className="page">
-        <p role="alert" className="error">Failed to load bot: {String(error ?? 'not found')}</p>
-        <Link to="/" className="button-link">Back to dashboard</Link>
+        <p role="alert" className="error">
+          Failed to load bot: {String(error ?? 'not found')}
+        </p>
+        <Link to="/" className="button-link">
+          Back to dashboard
+        </Link>
       </main>
     )
   }
@@ -76,7 +85,9 @@ export function BotDetail() {
           {bot.symbol} <LiveBadge live={bot.live} />
         </h1>
         <nav className="button-row">
-          <Link to="/" className="button-link">Dashboard</Link>
+          <Link to="/" className="button-link">
+            Dashboard
+          </Link>
           {bot.status === 'running' ? (
             <button
               onClick={() =>
@@ -104,11 +115,18 @@ export function BotDetail() {
         <div className="card">
           <h2>Configuration</h2>
           <dl className="config-list">
-            <dt>Venue</dt><dd>{bot.venue} ({bot.market_type})</dd>
-            <dt>Strategy</dt><dd>{bot.strategy}</dd>
-            <dt>Timeframe</dt><dd>{bot.timeframe}</dd>
-            <dt>Quantity</dt><dd>{bot.quantity}</dd>
-            <dt>Status</dt><dd>{bot.status}</dd>
+            <dt>Venue</dt>
+            <dd>
+              {bot.venue} ({bot.market_type})
+            </dd>
+            <dt>Strategy</dt>
+            <dd>{bot.strategy}</dd>
+            <dt>Timeframe</dt>
+            <dd>{bot.timeframe}</dd>
+            <dt>Quantity</dt>
+            <dd>{bot.quantity}</dd>
+            <dt>Status</dt>
+            <dd>{bot.status}</dd>
             <dt>Position</dt>
             <dd>
               {bot.position && bot.position.side !== 'flat'
@@ -140,7 +158,9 @@ export function BotDetail() {
               value={capInput}
               onChange={(e) => setCapInput(e.target.value)}
             />
-            <button type="submit" disabled={capInput === ''}>Save cap</button>
+            <button type="submit" disabled={capInput === ''}>
+              Save cap
+            </button>
           </form>
         </div>
 
@@ -158,7 +178,12 @@ export function BotDetail() {
           <table className="bot-table">
             <thead>
               <tr>
-                <th>Time</th><th>Action</th><th>Status</th><th>OK</th><th>Order id</th><th>Symbol</th>
+                <th>Time</th>
+                <th>Action</th>
+                <th>Status</th>
+                <th>OK</th>
+                <th>Order id</th>
+                <th>Symbol</th>
               </tr>
             </thead>
             <tbody>
