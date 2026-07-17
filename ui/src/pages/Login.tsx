@@ -48,7 +48,11 @@ export function Login() {
           onChange={(e) => setPassword(e.target.value)}
           required
         />
-        {error && <p role="alert" className="error">{error}</p>}
+        {error && (
+          <p role="alert" className="error">
+            {error}
+          </p>
+        )}
         <button type="submit" disabled={busy}>
           {busy ? 'Signing in…' : 'Sign in'}
         </button>

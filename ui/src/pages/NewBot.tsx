@@ -54,7 +54,7 @@ export function NewBot() {
   const [confirmLive, setConfirmLive] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const venues = venuesQuery.data ?? []
+  const venues = useMemo(() => venuesQuery.data ?? [], [venuesQuery.data])
   const venueNames = useMemo(() => [...new Set(venues.map((v) => v.venue))], [venues])
   const marketsForVenue = useMemo(
     () => venues.filter((v) => v.venue === venue).map((v) => v.market_type),
@@ -122,7 +122,9 @@ export function NewBot() {
     <main className="page">
       <header className="topbar">
         <h1>New bot — step {step} of 4</h1>
-        <Link to="/" className="button-link">Cancel</Link>
+        <Link to="/" className="button-link">
+          Cancel
+        </Link>
       </header>
 
       <div className="card wizard">
@@ -132,13 +134,17 @@ export function NewBot() {
             <label htmlFor="venue">Venue</label>
             <select id="venue" value={venue} onChange={(e) => onVenueChange(e.target.value)}>
               {venueNames.map((v) => (
-                <option key={v} value={v}>{v}</option>
+                <option key={v} value={v}>
+                  {v}
+                </option>
               ))}
             </select>
             <label htmlFor="market">Market type</label>
             <select id="market" value={marketType} onChange={(e) => setMarketType(e.target.value)}>
               {marketsForVenue.map((m) => (
-                <option key={m} value={m}>{m}</option>
+                <option key={m} value={m}>
+                  {m}
+                </option>
               ))}
             </select>
           </>
@@ -150,7 +156,9 @@ export function NewBot() {
             <label htmlFor="strategy">Strategy</label>
             <select id="strategy" value={strategy} onChange={(e) => setStrategy(e.target.value)}>
               {(strategiesQuery.data ?? []).map((s) => (
-                <option key={s} value={s}>{s}</option>
+                <option key={s} value={s}>
+                  {s}
+                </option>
               ))}
             </select>
           </>
@@ -160,18 +168,44 @@ export function NewBot() {
           <>
             <h2>Parameters</h2>
             <label htmlFor="symbol">Symbol</label>
-            <input id="symbol" value={symbol} onChange={(e) => setSymbol(e.target.value)} required />
+            <input
+              id="symbol"
+              value={symbol}
+              onChange={(e) => setSymbol(e.target.value)}
+              required
+            />
             <label htmlFor="timeframe">Timeframe</label>
-            <input id="timeframe" value={timeframe} onChange={(e) => setTimeframe(e.target.value)} />
+            <input
+              id="timeframe"
+              value={timeframe}
+              onChange={(e) => setTimeframe(e.target.value)}
+            />
             <label htmlFor="quantity">Quantity</label>
-            <input id="quantity" inputMode="decimal" value={quantity} onChange={(e) => setQuantity(e.target.value)} />
+            <input
+              id="quantity"
+              inputMode="decimal"
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+            />
             <label htmlFor="perBotCap">Per-bot cap ($ notional)</label>
-            <input id="perBotCap" inputMode="decimal" value={perBotCap} onChange={(e) => setPerBotCap(e.target.value)} />
+            <input
+              id="perBotCap"
+              inputMode="decimal"
+              value={perBotCap}
+              onChange={(e) => setPerBotCap(e.target.value)}
+            />
             <label htmlFor="globalCap">Global cap ($ notional)</label>
-            <input id="globalCap" inputMode="decimal" value={globalCap} onChange={(e) => setGlobalCap(e.target.value)} />
+            <input
+              id="globalCap"
+              inputMode="decimal"
+              value={globalCap}
+              onChange={(e) => setGlobalCap(e.target.value)}
+            />
 
             <h2>{venue} credentials</h2>
-            <p className="muted">Stored server-side, encrypted at rest — sent once, never shown again.</p>
+            <p className="muted">
+              Stored server-side, encrypted at rest — sent once, never shown again.
+            </p>
             {credFields.map((f) => (
               <div key={f.name}>
                 <label htmlFor={`cred-${f.name}`}>
@@ -194,19 +228,39 @@ export function NewBot() {
           <>
             <h2>Review</h2>
             <dl className="config-list">
-              <dt>Venue</dt><dd>{venue} ({marketType})</dd>
-              <dt>Strategy</dt><dd>{strategy}</dd>
-              <dt>Symbol</dt><dd>{symbol}</dd>
-              <dt>Timeframe</dt><dd>{timeframe}</dd>
-              <dt>Quantity</dt><dd>{quantity}</dd>
-              <dt>Per-bot cap</dt><dd>{perBotCap}</dd>
-              <dt>Mode</dt><dd><LiveBadge live={live} /></dd>
+              <dt>Venue</dt>
+              <dd>
+                {venue} ({marketType})
+              </dd>
+              <dt>Strategy</dt>
+              <dd>{strategy}</dd>
+              <dt>Symbol</dt>
+              <dd>{symbol}</dd>
+              <dt>Timeframe</dt>
+              <dd>{timeframe}</dd>
+              <dt>Quantity</dt>
+              <dd>{quantity}</dd>
+              <dt>Per-bot cap</dt>
+              <dd>{perBotCap}</dd>
+              <dt>Mode</dt>
+              <dd>
+                <LiveBadge live={live} />
+              </dd>
             </dl>
             <div className="control-row">
-              <input id="live" type="checkbox" checked={live} onChange={(e) => onLiveToggle(e.target.checked)} />
+              <input
+                id="live"
+                type="checkbox"
+                checked={live}
+                onChange={(e) => onLiveToggle(e.target.checked)}
+              />
               <label htmlFor="live">Enable LIVE trading (default is dry-run)</label>
             </div>
-            {error && <p role="alert" className="error">{error}</p>}
+            {error && (
+              <p role="alert" className="error">
+                {error}
+              </p>
+            )}
           </>
         )}
 

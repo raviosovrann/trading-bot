@@ -47,7 +47,11 @@ export function Dashboard() {
       </header>
 
       {isLoading && <p className="muted">Loading bots…</p>}
-      {error && <p role="alert" className="error">Failed to load bots: {String(error)}</p>}
+      {error && (
+        <p role="alert" className="error">
+          Failed to load bots: {String(error)}
+        </p>
+      )}
       {bots && (
         <BotTable
           bots={bots}

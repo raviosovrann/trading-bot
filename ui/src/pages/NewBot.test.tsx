@@ -64,8 +64,14 @@ describe('NewBot wizard', () => {
     // Step 4: review + create
     await userEvent.click(screen.getByRole('button', { name: /create/i }))
 
-    expect(client.putSecrets).toHaveBeenCalledWith('coinbase', 'spot', expect.objectContaining({ api_key: 'k', api_secret: 's' }))
-    expect(client.createBot).toHaveBeenCalledWith(expect.objectContaining({ live: false, symbol: 'BTC/USD', venue: 'coinbase' }))
+    expect(client.putSecrets).toHaveBeenCalledWith(
+      'coinbase',
+      'spot',
+      expect.objectContaining({ api_key: 'k', api_secret: 's' }),
+    )
+    expect(client.createBot).toHaveBeenCalledWith(
+      expect.objectContaining({ live: false, symbol: 'BTC/USD', venue: 'coinbase' }),
+    )
     expect(await screen.findByText('bot detail page')).toBeInTheDocument()
   })
 
