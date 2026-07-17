@@ -261,3 +261,19 @@ section.card {
   vertical-align: middle;
   margin-left: 0.5rem;
 }
+
+.wizard {
+  width: min(520px, 95vw);
+}
+
+.wizard select {
+  width: 100%;
+}
+
+.wizard input {
+  width: 100%;
+}
+
+.wizard .button-row {
+  justify-content: space-between;
+}
