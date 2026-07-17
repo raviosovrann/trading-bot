@@ -9,12 +9,7 @@ const config: UserConfig & { test?: Record<string, unknown> } = {
   plugins: [react()],
   server: {
     proxy: {
-      // TODO(B5): drop the rewrite once the service mounts its routes under /api.
-      '/api': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
-      },
+      '/api': { target: 'http://localhost:8000', changeOrigin: true },
       '/ws': { target: 'ws://localhost:8000', ws: true },
     },
   },
@@ -23,6 +18,8 @@ const config: UserConfig & { test?: Record<string, unknown> } = {
     environment: 'jsdom',
     setupFiles: ['./src/setupTests.ts'],
     css: false,
+    // Vitest owns unit tests under src/; Playwright owns e2e/.
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
   },
 }
 

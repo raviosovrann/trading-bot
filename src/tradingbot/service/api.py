@@ -11,8 +11,12 @@ import uuid
 from dataclasses import asdict
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocket, WebSocketDisconnect
 
 from ..models import Position
@@ -170,12 +174,17 @@ def _load_credentials(store: BotStore, venue: str, market_type: str) -> dict[str
     return creds if isinstance(creds, dict) else {}
 
 
-def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
+def create_app(
+    *, store: BotStore, supervisor: BotSupervisor, spa_dir: Path | None = None
+) -> FastAPI:
     """Create and configure the FastAPI trading console app.
 
     Args:
         store: Persistence layer attached to app state.
         supervisor: Bot supervisor attached to app state.
+        spa_dir: Optional directory of a built SPA to serve at ``/``. When given
+            and it contains ``index.html``, the SPA is served with client-side
+            routing fallback; otherwise only the API is served.
 
     Returns:
         Configured ``FastAPI`` application.
@@ -184,7 +193,11 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
     app.state.store = store
     app.state.supervisor = supervisor
 
-    @app.post("/login")
+    # REST routes live under /api so the SPA can be mounted at / without shadowing
+    # them. The WebSocket stays at /ws (top-level, simpler to proxy).
+    api_router = APIRouter(prefix="/api")
+
+    @api_router.post("/login")
     async def login(request: LoginRequest) -> LoginResponse:
         """Authenticate an operator and mint a fresh bearer token.
 
@@ -220,7 +233,7 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
         store.save_users(data)
         return LoginResponse(token=token)
 
-    @app.put(
+    @api_router.put(
         "/venues/{venue}/{market_type}/secrets",
         status_code=status.HTTP_204_NO_CONTENT,
         response_class=Response,
@@ -252,17 +265,17 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
             )
         store.save_secrets(venue, market_type, creds)
 
-    @app.get("/venues")
+    @api_router.get("/venues")
     async def list_venues(_: str = Depends(require_auth)) -> list[dict[str, str]]:
         """List supported venue/market-type mappings."""
         return available_venues()
 
-    @app.get("/strategies")
+    @api_router.get("/strategies")
     async def list_strategies(_: str = Depends(require_auth)) -> list[str]:
         """List registered strategy names."""
         return available_strategies()
 
-    @app.post("/bots", status_code=status.HTTP_201_CREATED)
+    @api_router.post("/bots", status_code=status.HTTP_201_CREATED)
     async def create_bot(
         request: CreateBotRequest,
         _: str = Depends(require_auth),
@@ -299,12 +312,12 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="bot not found")
         return _to_view(bot)
 
-    @app.get("/bots")
+    @api_router.get("/bots")
     async def list_bots(_: str = Depends(require_auth)) -> list[BotView]:
         """List all created bots."""
         return [_to_view(bot) for bot in supervisor.list()]
 
-    @app.get("/bots/{bot_id}")
+    @api_router.get("/bots/{bot_id}")
     async def get_bot(bot_id: str, _: str = Depends(require_auth)) -> BotView:
         """Return the bot identified by ``bot_id``.
 
@@ -322,7 +335,7 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="bot not found")
         return _to_view(bot)
 
-    @app.patch("/bots/{bot_id}")
+    @api_router.patch("/bots/{bot_id}")
     async def patch_bot(
         bot_id: str,
         request: PatchBotRequest,
@@ -354,7 +367,7 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
         store.save_config(bot.config)
         return _to_view(bot)
 
-    @app.post("/bots/{bot_id}/start")
+    @api_router.post("/bots/{bot_id}/start")
     async def start_bot(bot_id: str, _: str = Depends(require_auth)) -> BotView:
         """Start the bot identified by ``bot_id``.
 
@@ -383,7 +396,7 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
             ) from exc
         return _to_view(bot)
 
-    @app.post("/bots/{bot_id}/stop")
+    @api_router.post("/bots/{bot_id}/stop")
     async def stop_bot(bot_id: str, _: str = Depends(require_auth)) -> BotView:
         """Stop the bot identified by ``bot_id``.
 
@@ -402,7 +415,7 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
         await supervisor.stop(bot_id)
         return _to_view(bot)
 
-    @app.get("/bots/{bot_id}/trades")
+    @api_router.get("/bots/{bot_id}/trades")
     async def list_trades(bot_id: str, _: str = Depends(require_auth)) -> list[TradeView]:
         """List persisted trade events for ``bot_id`` as typed views.
 
@@ -466,4 +479,34 @@ def create_app(*, store: BotStore, supervisor: BotSupervisor) -> FastAPI:
         finally:
             supervisor.event_bus.unsubscribe(queue)
 
+    app.include_router(api_router)
+    if spa_dir is not None:
+        _mount_spa(app, spa_dir)
     return app
+
+
+def _mount_spa(app: FastAPI, dist: Path) -> None:
+    """Serve the built SPA from ``dist`` when it contains ``index.html``.
+
+    Static assets are served from ``/assets``; every other non-API path falls
+    back to ``index.html`` so client-side routing (deep links, refresh) works.
+    When the bundle hasn't been built, this is a no-op so the API still runs.
+
+    Args:
+        app: The FastAPI application to attach the SPA routes to.
+        dist: Directory containing the built SPA (``index.html`` + ``assets/``).
+    """
+    index = dist / "index.html"
+    if not index.is_file():
+        return
+    assets = dist / "assets"
+    if assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(assets)), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def spa(full_path: str) -> FileResponse:
+        """Return a static file if it exists, else the SPA entry point."""
+        candidate = dist / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(index))
