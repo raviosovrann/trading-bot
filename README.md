@@ -45,53 +45,74 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Create `data/users.json` with at least one hashed bearer token:
+Generate a secrets-encryption key (venue credentials are encrypted at rest):
 
-```json
-{
-  "users": [
-    {"username": "operator", "token_hash": "sha256-of-your-token"}
-  ]
-}
+```bash
+PYTHONPATH=src python -c "from tradingbot.service.crypto import generate_key; print(generate_key())"
+export TRADINGBOT_SECRETS_KEY=<the key>   # required whenever the service runs
 ```
 
-Create `data/secrets.json` with venue credentials (server-side only):
+Create `data/users.json` with at least one operator. `password_hash` is used by
+the UI login (which mints and rotates the bearer token); `token_hash` is the
+SHA-256 of a pre-issued token for direct API use:
 
-```json
-{
-  "coinbase": {
-    "spot": {
-      "api_key": "...",
-      "api_secret": "...",
-      "api_password": "..."
-    }
-  },
-  "tradovate": {
-    "futures": {
-      "username": "...",
-      "password": "...",
-      "client_id": "...",
-      "client_secret": "..."
-    }
-  }
-}
+```bash
+PYTHONPATH=src python - <<'EOF'
+import hashlib, json
+from tradingbot.service.auth import hash_password
+
+print(json.dumps({"users": [{
+    "username": "operator",
+    "password_hash": hash_password("choose-a-password"),
+    "token_hash": hashlib.sha256(b"choose-a-token").hexdigest(),
+}]}, indent=2))
+EOF
+# save the output as data/users.json
 ```
 
 Start the service (uses the default file-based store under `data/`):
 
 ```bash
-PYTHONPATH=src uvicorn tradingbot.service.main:create_service_app --factory --host 0.0.0.0 --port 8000
+PYTHONPATH=src TRADINGBOT_SECRETS_KEY=<the key> \
+  uvicorn tradingbot.service.main:create_service_app --factory --host 0.0.0.0 --port 8000
 ```
 
-Before starting bots you must configure a real `hub_factory` for your venue
-(by setting `TRADINGBOT_HUB_FACTORY` or replacing the placeholder in
-`tradingbot/service/main.py`).
+Store venue credentials through the API (they are written encrypted under
+`data/secrets.json`; never hand-edit that file):
+
+```bash
+curl -X PUT localhost:8000/venues/coinbase/spot/secrets \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"api_key": "...", "api_secret": "...", "api_password": "..."}'
+```
+
+## Web UI
+
+The React SPA lives in `ui/` and talks to the service on `:8000` (the dev
+server proxies `/api` and `/ws` there).
+
+```bash
+cd ui
+npm install        # first time only
+npm run dev        # http://localhost:5173, log in with your data/users.json password
+```
+
+Useful scripts: `npm test` (Vitest), `npm run typecheck`, `npm run lint`,
+`npm run build` (production bundle in `ui/dist`, served by the FastAPI
+service once 2B task B5 lands).
 
 ---
 
 ## API
 
-All endpoints require `Authorization: Bearer <token>`.
+All endpoints except `POST /login` require `Authorization: Bearer <token>`.
+
+### Auth & secrets
+
+- `POST /login` — `{username, password}` → `{token}`; mints a fresh bearer
+  token and rotates the stored hash (previous token is invalidated).
+- `PUT /venues/{venue}/{market_type}/secrets` — store venue credentials
+  (encrypted at rest; never echoed back).
 
 ### Meta
 
