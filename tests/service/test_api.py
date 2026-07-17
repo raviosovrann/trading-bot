@@ -138,33 +138,63 @@ def _auth() -> dict[str, str]:
     return {"Authorization": f"Bearer {_TOKEN}"}
 
 
+class TestSpaServing:
+    def _client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+        dist = tmp_path / "dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text("<!doctype html><title>SPA</title>", encoding="utf-8")
+        (dist / "assets" / "app.js").write_text("console.log('hi')", encoding="utf-8")
+        app = create_app(store=_store(tmp_path), supervisor=_supervisor(monkeypatch), spa_dir=dist)
+        return TestClient(app)
+
+    def test_root_serves_index(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The SPA index is served at / when a dist is provided."""
+        client = self._client(tmp_path, monkeypatch)
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "SPA" in response.text
+
+    def test_deep_link_falls_back_to_index(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A client-side route falls back to index.html (SPA routing)."""
+        client = self._client(tmp_path, monkeypatch)
+        response = client.get("/bots/some-id")
+        assert response.status_code == 200
+        assert "SPA" in response.text
+
+    def test_api_not_shadowed_by_spa(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """API routes still resolve when the SPA catch-all is mounted."""
+        client = self._client(tmp_path, monkeypatch)
+        assert client.get("/api/bots").status_code == 401  # auth still enforced, not index.html
+        assert client.get("/api/venues", headers=_auth()).status_code == 200
+
+
 class TestAuth:
     def test_unauthenticated_request_returns_401(self, client: TestClient) -> None:
         """Verify that unauthenticated requests return 401."""
-        response = client.get("/bots")
+        response = client.get("/api/bots")
         assert response.status_code == 401
 
 
 class TestLogin:
     def test_valid_credentials_return_a_working_token(self, client: TestClient) -> None:
         """Login with correct credentials returns a token that authenticates."""
-        response = client.post("/login", json={"username": _USERNAME, "password": _PASSWORD})
+        response = client.post("/api/login", json={"username": _USERNAME, "password": _PASSWORD})
         assert response.status_code == 200
         token = response.json()["token"]
         assert token
         # The freshly minted token authenticates a protected request.
-        authed = client.get("/bots", headers={"Authorization": f"Bearer {token}"})
+        authed = client.get("/api/bots", headers={"Authorization": f"Bearer {token}"})
         assert authed.status_code == 200
 
     def test_wrong_password_is_rejected(self, client: TestClient) -> None:
         """Login with a bad password returns 401 and no token."""
-        response = client.post("/login", json={"username": _USERNAME, "password": "wrong"})
+        response = client.post("/api/login", json={"username": _USERNAME, "password": "wrong"})
         assert response.status_code == 401
         assert "token" not in response.json()
 
     def test_unknown_user_is_rejected(self, client: TestClient) -> None:
         """Login with an unknown username returns 401."""
-        response = client.post("/login", json={"username": "nobody", "password": _PASSWORD})
+        response = client.post("/api/login", json={"username": "nobody", "password": _PASSWORD})
         assert response.status_code == 401
 
     def test_unknown_user_still_runs_real_pbkdf2(
@@ -179,7 +209,7 @@ class TestLogin:
         monkeypatch.setattr(
             api_mod, "verify_password", lambda p, h: seen.append(h) or original(p, h)
         )
-        client.post("/login", json={"username": "nobody", "password": "x"})
+        client.post("/api/login", json={"username": "nobody", "password": "x"})
         assert seen and seen[0].startswith("pbkdf2_sha256$")
 
 
@@ -187,7 +217,7 @@ class TestSecrets:
     def test_put_secrets_persists_and_returns_no_body(self, client: TestClient) -> None:
         """Storing secrets returns 204, persists them, and echoes nothing back."""
         response = client.put(
-            "/venues/kraken/spot/secrets",
+            "/api/venues/kraken/spot/secrets",
             json={"api_key": "new-key", "api_secret": "new-secret"},
             headers=_auth(),
         )
@@ -198,20 +228,20 @@ class TestSecrets:
 
     def test_put_secrets_requires_auth(self, client: TestClient) -> None:
         """Storing secrets without a token is rejected."""
-        response = client.put("/venues/kraken/spot/secrets", json={"api_key": "k"})
+        response = client.put("/api/venues/kraken/spot/secrets", json={"api_key": "k"})
         assert response.status_code == 401
 
     def test_put_empty_secrets_is_rejected(self, client: TestClient) -> None:
         """An empty credential payload is a 400, not a stored empty record."""
-        response = client.put("/venues/kraken/spot/secrets", json={}, headers=_auth())
+        response = client.put("/api/venues/kraken/spot/secrets", json={}, headers=_auth())
         assert response.status_code == 400
 
 
 class TestListMeta:
     def test_venues_and_strategies_are_non_empty(self, client: TestClient) -> None:
         """Verify that venues and strategies endpoints return non-empty lists."""
-        venues = client.get("/venues", headers=_auth()).json()
-        strategies = client.get("/strategies", headers=_auth()).json()
+        venues = client.get("/api/venues", headers=_auth()).json()
+        strategies = client.get("/api/strategies", headers=_auth()).json()
         assert any(v["venue"] == "coinbase" and v["market_type"] == "spot" for v in venues)
         assert "example" in strategies
 
@@ -230,7 +260,7 @@ class TestBotLifecycle:
             "params": {},
         }
         payload.update(overrides)
-        response = client.post("/bots", json=payload, headers=_auth())
+        response = client.post("/api/bots", json=payload, headers=_auth())
         assert response.status_code == 201
         return response.json()
 
@@ -244,15 +274,15 @@ class TestBotLifecycle:
         """Verify that starting a bot sets its status to running and stopping sets it to stopped."""
         bot = self._create(client)
         bot_id = bot["id"]
-        response = client.post(f"/bots/{bot_id}/start", headers=_auth())
+        response = client.post(f"/api/bots/{bot_id}/start", headers=_auth())
         assert response.status_code == 200
         assert response.json()["status"] == "running"
 
-        response = client.get(f"/bots/{bot_id}", headers=_auth())
+        response = client.get(f"/api/bots/{bot_id}", headers=_auth())
         assert response.status_code == 200
         assert response.json()["status"] == "running"
 
-        response = client.post(f"/bots/{bot_id}/stop", headers=_auth())
+        response = client.post(f"/api/bots/{bot_id}/stop", headers=_auth())
         assert response.status_code == 200
         assert response.json()["status"] == "stopped"
 
@@ -260,18 +290,18 @@ class TestBotLifecycle:
         """Verify that patching a bot flips the live flag."""
         bot = self._create(client)
         bot_id = bot["id"]
-        response = client.patch(f"/bots/{bot_id}", json={"live": True}, headers=_auth())
+        response = client.patch(f"/api/bots/{bot_id}", json={"live": True}, headers=_auth())
         assert response.status_code == 200
         assert response.json()["live"] is True
 
-        response = client.get(f"/bots/{bot_id}", headers=_auth())
+        response = client.get(f"/api/bots/{bot_id}", headers=_auth())
         assert response.json()["live"] is True
 
     def test_bot_response_hides_secrets(self, client: TestClient) -> None:
         """Verify that bot responses do not expose credential fields."""
         bot = self._create(client)
         bot_id = bot["id"]
-        response = client.get(f"/bots/{bot_id}", headers=_auth())
+        response = client.get(f"/api/bots/{bot_id}", headers=_auth())
         body = response.text
         assert "secret-key" not in body
         assert "secret-secret" not in body
@@ -281,18 +311,18 @@ class TestBotLifecycle:
     def test_list_bots_after_create(self, client: TestClient) -> None:
         """Verify that the created bot appears in the list."""
         bot = self._create(client)
-        response = client.get("/bots", headers=_auth())
+        response = client.get("/api/bots", headers=_auth())
         assert response.status_code == 200
         assert any(b["id"] == bot["id"] for b in response.json())
 
     def test_get_unknown_bot_returns_404(self, client: TestClient) -> None:
         """Verify that fetching an unknown bot returns 404."""
-        response = client.get("/bots/no-such-bot", headers=_auth())
+        response = client.get("/api/bots/no-such-bot", headers=_auth())
         assert response.status_code == 404
 
     def test_start_unknown_bot_returns_404(self, client: TestClient) -> None:
         """Verify that starting an unknown bot returns 404."""
-        response = client.post("/bots/no-such-bot/start", headers=_auth())
+        response = client.post("/api/bots/no-such-bot/start", headers=_auth())
         assert response.status_code == 404
 
     def test_start_bot_returns_400_when_venue_build_fails(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -302,7 +332,7 @@ class TestBotLifecycle:
 
         monkeypatch.setattr("tradingbot.service.supervisor.build_venue", _raise)
         bot = self._create(client)
-        response = client.post(f"/bots/{bot['id']}/start", headers=_auth())
+        response = client.post(f"/api/bots/{bot['id']}/start", headers=_auth())
         assert response.status_code == 400
         assert "bad creds" in response.json()["detail"]
 
@@ -335,7 +365,7 @@ class TestWebSocket:
 class TestTrades:
     def test_get_trades_for_unknown_bot_returns_404(self, client: TestClient) -> None:
         """Verify that fetching trades for an unknown bot returns 404."""
-        response = client.get("/bots/no-such-bot/trades", headers=_auth())
+        response = client.get("/api/bots/no-such-bot/trades", headers=_auth())
         assert response.status_code == 404
 
     def test_get_trades_for_bot(self, client: TestClient) -> None:
@@ -347,7 +377,7 @@ class TestTrades:
             "bot_id": bot_id, "action": "buy", "status": "submitted",
             "ok": True, "order_id": "o1", "symbol": "BTC/USD", "ts": 42,
         })
-        response = client.get(f"/bots/{bot_id}/trades", headers=_auth())
+        response = client.get(f"/api/bots/{bot_id}/trades", headers=_auth())
         assert response.status_code == 200
         assert response.json() == [{
             "bot_id": bot_id, "action": "buy", "status": "submitted",
@@ -360,7 +390,7 @@ class TestTrades:
         bot_id = bot["id"]
         store = cast(FastAPI, client.app).state.store
         store.append_trade(bot_id, {"action": "sell", "status": "filled"})
-        response = client.get(f"/bots/{bot_id}/trades", headers=_auth())
+        response = client.get(f"/api/bots/{bot_id}/trades", headers=_auth())
         assert response.status_code == 200
         row = response.json()[0]
         assert row["action"] == "sell" and row["ok"] is False and row["order_id"] is None
@@ -369,19 +399,19 @@ class TestTrades:
 class TestAuthErrors:
     def test_non_bearer_scheme_returns_401(self, client: TestClient) -> None:
         """Verify that a non-Bearer authorization scheme is rejected."""
-        response = client.get("/bots", headers={"Authorization": "Basic abc"})
+        response = client.get("/api/bots", headers={"Authorization": "Basic abc"})
         assert response.status_code == 401
 
     def test_invalid_token_returns_401(self, client: TestClient) -> None:
         """Verify that an invalid bearer token is rejected."""
-        response = client.get("/bots", headers={"Authorization": "Bearer wrong-token"})
+        response = client.get("/api/bots", headers={"Authorization": "Bearer wrong-token"})
         assert response.status_code == 401
 
     def test_non_list_users_file_returns_401(self, client: TestClient) -> None:
         """Verify that a malformed users file falls back to no valid users."""
         store = cast(FastAPI, client.app).state.store
         store._users_file.write_text(json.dumps({"users": "not-a-list"}), encoding="utf-8")
-        response = client.get("/bots", headers=_auth())
+        response = client.get("/api/bots", headers=_auth())
         assert response.status_code == 401
 
 
@@ -390,20 +420,20 @@ class TestPatchBot:
         """Verify that omitted patch fields leave the bot unchanged."""
         bot = TestBotLifecycle()._create(client, live=False)
         bot_id = bot["id"]
-        response = client.patch(f"/bots/{bot_id}", json={}, headers=_auth())
+        response = client.patch(f"/api/bots/{bot_id}", json={}, headers=_auth())
         assert response.status_code == 200
         assert response.json()["live"] is False
 
     def test_patch_unknown_bot_returns_404(self, client: TestClient) -> None:
         """Verify that patching an unknown bot returns 404."""
-        response = client.patch("/bots/no-such-bot", json={"live": True}, headers=_auth())
+        response = client.patch("/api/bots/no-such-bot", json={"live": True}, headers=_auth())
         assert response.status_code == 404
 
 
 class TestStopBot:
     def test_stop_unknown_bot_returns_404(self, client: TestClient) -> None:
         """Verify that stopping an unknown bot returns 404."""
-        response = client.post("/bots/no-such-bot/stop", headers=_auth())
+        response = client.post("/api/bots/no-such-bot/stop", headers=_auth())
         assert response.status_code == 404
 
 

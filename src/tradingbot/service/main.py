@@ -39,4 +39,8 @@ def create_service_app() -> Any:
         global_exposure=GlobalExposure(),
         store=store,
     )
-    return create_app(store=store, supervisor=supervisor)
+    # Serve the built SPA from ui/dist (repo root) when present; TRADINGBOT_UI_DIST
+    # overrides the location.
+    default_dist = Path(__file__).resolve().parents[3] / "ui" / "dist"
+    spa_dir = Path(os.environ.get("TRADINGBOT_UI_DIST", str(default_dist)))
+    return create_app(store=store, supervisor=supervisor, spa_dir=spa_dir)
