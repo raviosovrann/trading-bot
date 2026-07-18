@@ -78,6 +78,11 @@ class BotStore:
         self._secure_directory(self._data_dir)
         self._harden_existing_paths()
 
+    @property
+    def data_dir(self) -> Path:
+        """Directory holding this store's records."""
+        return self._data_dir
+
     def save_config(self, cfg: BotConfig) -> None:
         """Persist ``cfg`` to the bot config file.
 

@@ -435,6 +435,33 @@ class TestCsrf:
         assert response.status_code == 204
 
 
+class TestProbes:
+    def test_healthz_is_unauthenticated_and_ok(self, client: TestClient) -> None:
+        """Liveness is reachable without credentials."""
+        response = client.get("/healthz")
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+
+    def test_readyz_reports_ready_when_dependencies_are_healthy(
+        self, client: TestClient
+    ) -> None:
+        """Readiness is 200 with per-dependency detail when the store is usable."""
+        response = client.get("/readyz")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ready"] is True
+        assert set(body["checks"]) == {"storage", "secrets_key"}
+
+    def test_readyz_is_503_when_secrets_key_is_missing(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unusable dependency makes readiness fail closed with 503."""
+        monkeypatch.delenv("TRADINGBOT_SECRETS_KEY", raising=False)
+        response = client.get("/readyz")
+        assert response.status_code == 503
+        assert response.json()["ready"] is False
+
+
 class TestAuditTrail:
     def _admin_client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         """A client whose operator has the admin role (to read the audit log)."""

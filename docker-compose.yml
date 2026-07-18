@@ -1,0 +1,53 @@
+# Reference single-host deployment. The file store is not multi-host: run one
+# replica on a persistent volume (see README) behind a TLS-terminating proxy.
+services:
+  trading-console:
+    build: .
+    # Bind to loopback only: the TLS-terminating reverse proxy is the sole
+    # public entry point (see docs/deployment.md).
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      TRADINGBOT_ENV: production
+      # Required. Generate once and store in your secret manager, not here:
+      #   python -c "from tradingbot.service.crypto import generate_key; print(generate_key())"
+      TRADINGBOT_SECRETS_KEY: ${TRADINGBOT_SECRETS_KEY:?set TRADINGBOT_SECRETS_KEY}
+      # Operator origin(s) allowed to open the WebSocket.
+      TRADINGBOT_ALLOWED_ORIGINS: ${TRADINGBOT_ALLOWED_ORIGINS:?set TRADINGBOT_ALLOWED_ORIGINS}
+      TRADINGBOT_COOKIE_SECURE: "true"
+    volumes:
+      # Only the data directory is writable and it persists across upgrades.
+      - trading-data:/data
+    # Application filesystem is immutable at runtime; /tmp is a small tmpfs.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=2).status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  trading-data:

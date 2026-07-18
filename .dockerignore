@@ -1,0 +1,14 @@
+.git
+.venv
+data
+node_modules
+ui/node_modules
+ui/dist
+ui/test-results
+**/__pycache__
+.pytest_cache
+.coverage
+coverage.xml
+.env
+docs
+tests
