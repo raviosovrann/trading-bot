@@ -18,7 +18,11 @@ function readCookie(name: string): string | null {
 // directly. Authentication is the HttpOnly session cookie sent automatically
 // with `credentials: same-origin`; state-changing requests echo the readable
 // `tb_csrf` cookie back in the X-CSRF-Token header (double-submit CSRF).
-export function makeClient() {
+//
+// `onUnauthorized` centralizes 401 handling: a single hook (clear auth, close
+// the socket, clear caches, redirect to login) fires wherever a session lapses,
+// so no component has to handle a rotated/expired session on its own.
+export function makeClient(onUnauthorized?: () => void) {
   async function req<T>(path: string, init?: RequestInit): Promise<T> {
     const method = (init?.method ?? 'GET').toUpperCase()
     const headers: Record<string, string> = {
@@ -30,7 +34,12 @@ export function makeClient() {
       if (csrf) headers['X-CSRF-Token'] = csrf
     }
     const res = await fetch(`/api${path}`, { ...init, credentials: 'same-origin', headers })
-    if (res.status === 401) throw new UnauthorizedError()
+    if (res.status === 401) {
+      // The session-restore probe expects 401 for a logged-out visitor, so
+      // suppress the global handler for that one call.
+      if (path !== '/session') onUnauthorized?.()
+      throw new UnauthorizedError()
+    }
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`)
     return res.status === 204 ? (undefined as T) : ((await res.json()) as T)
   }

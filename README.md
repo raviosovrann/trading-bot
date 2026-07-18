@@ -132,6 +132,21 @@ must echo the `tb_csrf` cookie in an `X-CSRF-Token` header. Scripts may still us
 a long-lived `Authorization: Bearer <token>` API token (from `users.json`'s
 `token_hash`), which is exempt from CSRF.
 
+Auth policy (internal-deployment defaults, all environment-tunable):
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `TRADINGBOT_SESSION_IDLE_TTL` | `1800` | Idle timeout (s) before a session expires. |
+| `TRADINGBOT_SESSION_ABSOLUTE_TTL` | `43200` | Absolute session lifetime (s). |
+| `TRADINGBOT_LOGIN_MAX_FAILURES` | `5` | Failed logins (per username **and** per IP) before lockout. |
+| `TRADINGBOT_LOGIN_LOCKOUT_SECONDS` | `300` | Lockout window (s); further attempts return `429`. |
+| `TRADINGBOT_ALLOWED_ORIGINS` | *(same-origin)* | Comma-separated WebSocket origin allowlist. |
+| `TRADINGBOT_COOKIE_SECURE` | *(auto)* | Force the cookie `Secure` flag; auto-derives from the request scheme. |
+
+On a rotated or expired session, any `401` (or a `1008` WebSocket auth-close)
+centrally clears the SPA's auth state, closes the socket, drops cached data, and
+redirects to `/login`; the socket does not reconnect until re-authentication.
+
 ### Meta
 
 - `GET /venues` — list supported venue/market-type mappings.
