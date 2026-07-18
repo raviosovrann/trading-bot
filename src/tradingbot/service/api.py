@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocket, WebSocketDisconnect
 
 from ..models import Position
+from .audit import AuditLog
 from .auth import hash_password, verify_password
 from .dto import BotView, CreateBotRequest, LoginRequest, PatchBotRequest, SessionInfo, TradeView
 from .events import DecisionEvent, OrderEvent
@@ -217,6 +218,55 @@ async def require_auth_csrf(
     return principal
 
 
+async def require_admin(principal: Principal = Depends(require_auth)) -> Principal:
+    """Authenticate and require the ``admin`` role (read-only; no CSRF).
+
+    Args:
+        principal: The authenticated principal.
+
+    Returns:
+        The principal when it holds the ``admin`` role.
+
+    Raises:
+        HTTPException: 403 when the principal is not an admin.
+    """
+    if not principal.has_role("admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
+    return principal
+
+
+def _audit(
+    request: Request,
+    principal: Principal | None,
+    action: str,
+    target: str,
+    outcome: str,
+    *,
+    before: Any = None,
+    after: Any = None,
+) -> None:
+    """Write one audit record for the current request.
+
+    Args:
+        request: The request (carries the correlation id and the audit log).
+        principal: The acting principal, or ``None`` for pre-auth events.
+        action: Dotted action name.
+        target: Affected resource identifier.
+        outcome: ``"success"``, ``"failure"``, or ``"denied"``.
+        before: Optional prior state (redacted before storage).
+        after: Optional new state (redacted before storage).
+    """
+    request.app.state.audit.record(
+        actor=principal,
+        action=action,
+        target=target,
+        request_id=getattr(request.state, "request_id", ""),
+        outcome=outcome,
+        before=before,
+        after=after,
+    )
+
+
 def _allowed_origins() -> set[str]:
     """Return the configured WebSocket origin allowlist from the environment."""
     raw = os.environ.get("TRADINGBOT_ALLOWED_ORIGINS", "")
@@ -373,6 +423,16 @@ def create_app(
     app.state.supervisor = supervisor
     app.state.sessions = SessionStore(store)
     app.state.login_guard = LoginGuard()
+    app.state.audit = AuditLog(store)
+
+    @app.middleware("http")
+    async def _request_id(request: Request, call_next: Any) -> Any:
+        """Attach a correlation id to each request and echo it back."""
+        request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
 
     # REST routes live under /api so the SPA can be mounted at / without shadowing
     # them. The WebSocket stays at /ws (top-level, simpler to proxy).
@@ -403,10 +463,12 @@ def create_app(
                 the username or client IP is temporarily locked out.
         """
         client_ip = request.client.host if request.client else "unknown"
+        target = f"user:{body.username}"
         guard = app.state.login_guard
         try:
             guard.check(f"user:{body.username}", f"ip:{client_ip}")
         except LoginLocked as exc:
+            _audit(request, None, "login", target, "denied", after={"reason": "locked_out"})
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Too many failed attempts; try again later",
@@ -420,6 +482,7 @@ def create_app(
         password_ok = verify_password(body.password, stored_hash)
         if not password_ok or user is None or user.get("disabled"):
             guard.record_failure(f"user:{body.username}", f"ip:{client_ip}")
+            _audit(request, None, "login", target, "failure")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid username or password",
@@ -429,6 +492,7 @@ def create_app(
         user_id = _ensure_user_id(store, user)
         raw_id, csrf_token = app.state.sessions.create(user_id)
         _set_session_cookies(response, request, raw_id, csrf_token)
+        _audit(request, _principal_of(user, kind="user"), "login", target, "success")
         return SessionInfo(username=str(user.get("username", "")), roles=list(_roles_of(user)))
 
     @api_router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
@@ -450,10 +514,34 @@ def create_app(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Missing or invalid CSRF token",
             )
+        principal = _resolve_cookie_principal(request, store, app.state.sessions)
         app.state.sessions.revoke(request.cookies.get(SESSION_COOKIE))
         _clear_session_cookies(response)
+        _audit(request, principal, "logout", "session", "success")
         response.status_code = status.HTTP_204_NO_CONTENT
         return response
+
+    @api_router.get("/audit")
+    async def get_audit(
+        request: Request,
+        limit: int = 50,
+        before: int | None = None,
+        _: Principal = Depends(require_admin),
+    ) -> dict[str, Any]:
+        """Return a page of audit records, newest first (admin only).
+
+        Args:
+            request: The incoming request.
+            limit: Maximum records per page (1–500).
+            before: Cursor — return records with ``seq`` below this value.
+
+        Returns:
+            ``{"events": [...], "next_cursor": <seq|null>, "chain_ok": <bool>}``.
+        """
+        del request
+        limit = max(1, min(limit, 500))
+        events, next_cursor = store.read_audit(limit=limit, before_seq=before)
+        return {"events": events, "next_cursor": next_cursor, "chain_ok": store.verify_audit_chain()}
 
     @api_router.get("/session")
     async def session_info(principal: Principal = Depends(require_auth)) -> SessionInfo:
@@ -474,7 +562,8 @@ def create_app(
         venue: str,
         market_type: str,
         creds: dict[str, str],
-        _: Principal = Depends(require_auth_csrf),
+        http_request: Request,
+        principal: Principal = Depends(require_auth_csrf),
     ) -> None:
         """Store venue credentials for a ``(venue, market_type)`` pair.
 
@@ -485,6 +574,7 @@ def create_app(
             venue: Venue identifier, e.g. ``coinbase``.
             market_type: Market type identifier, e.g. ``spot`` or ``futures``.
             creds: Credential mapping (shape depends on the venue).
+            http_request: The incoming request (for audit correlation).
 
         Raises:
             HTTPException: 400 when no credentials are supplied.
@@ -495,6 +585,11 @@ def create_app(
                 detail="no credentials supplied",
             )
         store.save_secrets(venue, market_type, creds)
+        _audit(
+            http_request, principal, "credentials.update",
+            f"venue:{venue}/{market_type}", "success",
+            after={"fields": sorted(creds)},  # key names only; values never logged
+        )
 
     @api_router.get("/venues")
     async def list_venues(_: Principal = Depends(require_auth)) -> list[dict[str, str]]:
@@ -509,12 +604,14 @@ def create_app(
     @api_router.post("/bots", status_code=status.HTTP_201_CREATED)
     async def create_bot(
         request: CreateBotRequest,
-        _: Principal = Depends(require_auth_csrf),
+        http_request: Request,
+        principal: Principal = Depends(require_auth_csrf),
     ) -> BotView:
         """Create and persist a new bot from ``request``.
 
         Args:
             request: Bot creation payload.
+            http_request: The incoming request (for audit correlation).
 
         Returns:
             API view of the newly created bot.
@@ -541,6 +638,12 @@ def create_app(
         bot = supervisor.get(bot_id)
         if bot is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="bot not found")
+        _audit(
+            http_request, principal, "bot.create", f"bot:{bot_id}", "success",
+            after={"venue": cfg.venue, "market_type": cfg.market_type, "strategy": cfg.strategy,
+                   "symbol": cfg.symbol, "live": cfg.live, "per_bot_cap": cfg.per_bot_cap,
+                   "global_cap": cfg.global_cap},
+        )
         return _to_view(bot)
 
     @api_router.get("/bots")
@@ -570,13 +673,15 @@ def create_app(
     async def patch_bot(
         bot_id: str,
         request: PatchBotRequest,
-        _: Principal = Depends(require_auth_csrf),
+        http_request: Request,
+        principal: Principal = Depends(require_auth_csrf),
     ) -> BotView:
         """Update mutable fields of the bot identified by ``bot_id``.
 
         Args:
             bot_id: UUID of the bot.
             request: Fields to update.
+            http_request: The incoming request (for audit correlation).
 
         Returns:
             API view of the updated bot.
@@ -587,6 +692,11 @@ def create_app(
         bot = supervisor.get(bot_id)
         if bot is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="bot not found")
+        before = {
+            "live": bot.config.live,
+            "per_bot_cap": bot.config.per_bot_cap,
+            "global_cap": bot.config.global_cap,
+        }
         if request.live is not None:
             bot.config.live = request.live
         if request.per_bot_cap is not None:
@@ -596,10 +706,22 @@ def create_app(
         if request.params is not None:
             bot.config.params = request.params
         store.save_config(bot.config)
+        after = {
+            "live": bot.config.live,
+            "per_bot_cap": bot.config.per_bot_cap,
+            "global_cap": bot.config.global_cap,
+        }
+        # A live-mode flip is a distinct safety-critical action; caps are risk policy.
+        action = "bot.live_mode" if before["live"] != after["live"] else "bot.update"
+        _audit(http_request, principal, action, f"bot:{bot_id}", "success", before=before, after=after)
         return _to_view(bot)
 
     @api_router.post("/bots/{bot_id}/start")
-    async def start_bot(bot_id: str, _: Principal = Depends(require_auth_csrf)) -> BotView:
+    async def start_bot(
+        bot_id: str,
+        http_request: Request,
+        principal: Principal = Depends(require_auth_csrf),
+    ) -> BotView:
         """Start the bot identified by ``bot_id``.
 
         Credentials are loaded from the store and attached to the bot config
@@ -607,6 +729,7 @@ def create_app(
 
         Args:
             bot_id: UUID of the bot.
+            http_request: The incoming request (for audit correlation).
 
         Returns:
             API view of the started bot.
@@ -621,18 +744,31 @@ def create_app(
         try:
             await supervisor.start(bot_id)
         except ValueError as exc:
+            _audit(
+                http_request, principal, "bot.start", f"bot:{bot_id}", "failure",
+                after={"error": str(exc)},
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(exc),
             ) from exc
+        _audit(
+            http_request, principal, "bot.start", f"bot:{bot_id}", "success",
+            after={"live": bot.config.live},
+        )
         return _to_view(bot)
 
     @api_router.post("/bots/{bot_id}/stop")
-    async def stop_bot(bot_id: str, _: Principal = Depends(require_auth_csrf)) -> BotView:
+    async def stop_bot(
+        bot_id: str,
+        http_request: Request,
+        principal: Principal = Depends(require_auth_csrf),
+    ) -> BotView:
         """Stop the bot identified by ``bot_id``.
 
         Args:
             bot_id: UUID of the bot.
+            http_request: The incoming request (for audit correlation).
 
         Returns:
             API view of the stopped bot.
@@ -644,6 +780,7 @@ def create_app(
         if bot is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="bot not found")
         await supervisor.stop(bot_id)
+        _audit(http_request, principal, "bot.stop", f"bot:{bot_id}", "success")
         return _to_view(bot)
 
     @api_router.get("/bots/{bot_id}/trades")

@@ -124,6 +124,8 @@ cookie or an `Authorization: Bearer <token>` API token.
 - `POST /logout` — revoke the current session and clear its cookies.
 - `GET /session` — `{username, roles}` for the authenticated session (used by
   the SPA to restore state); 401 when no session is live.
+- `GET /audit` — **admin only**; paginated (`?limit=&before=<seq>`) audit trail
+  of sensitive actions with a `chain_ok` tamper-check flag.
 - `PUT /venues/{venue}/{market_type}/secrets` — store venue credentials
   (encrypted at rest; never echoed back).
 
@@ -146,6 +148,13 @@ Auth policy (internal-deployment defaults, all environment-tunable):
 On a rotated or expired session, any `401` (or a `1008` WebSocket auth-close)
 centrally clears the SPA's auth state, closes the socket, drops cached data, and
 redirects to `/login`; the socket does not reconnect until re-authentication.
+
+Sensitive actions (login success/failure, logout, credential changes, bot
+create/start/stop/patch, live-mode toggles, risk-cap changes) are written to an
+append-only, hash-chained `data/audit.jsonl` (`0600`). Records are attributed to
+a principal, carry a request-correlation id, and are redacted so secrets,
+passwords, session ids, and tokens never appear. Read them via admin-only
+`GET /api/audit`; retain/rotate the file with your normal backup policy.
 
 ### Meta
 
