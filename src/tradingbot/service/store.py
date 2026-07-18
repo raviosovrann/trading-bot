@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -73,6 +74,7 @@ class BotStore:
         self._secrets_file = self._data_dir / "secrets.json"
         self._users_file = self._data_dir / "users.json"
         self._sessions_file = self._data_dir / "sessions.json"
+        self._audit_file = self._data_dir / "audit.jsonl"
         self._secure_directory(self._data_dir)
         self._harden_existing_paths()
 
@@ -366,6 +368,93 @@ class BotStore:
                 self._save_json_unlocked(self._sessions_file, {"sessions": kept})
             return removed
 
+    def append_audit(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Append one hash-chained audit record and return it.
+
+        The chain (``seq`` + ``prev_hash`` + ``hash``) is computed under the
+        store transaction so concurrent writers cannot fork or reorder it. Each
+        record's ``hash`` covers the previous hash and the canonical record, so
+        any edit or deletion breaks verification downstream.
+
+        Args:
+            payload: Already-redacted event fields (actor, action, target, ...).
+
+        Returns:
+            The full stored record including ``seq``, ``prev_hash`` and ``hash``.
+        """
+        with self._transaction():
+            last = self._last_audit_record()
+            seq = int(last["seq"]) + 1 if last else 1
+            prev_hash = str(last["hash"]) if last else ""
+            record: dict[str, Any] = {"seq": seq, "prev_hash": prev_hash, **dict(payload)}
+            canonical = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            record["hash"] = hashlib.sha256((prev_hash + canonical).encode("utf-8")).hexdigest()
+            line = json.dumps(record, separators=(",", ":")) + "\n"
+            fd = os.open(self._audit_file, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as f:
+                f.write(line)
+                f.flush()
+                os.fsync(f.fileno())
+            self._fsync_directory(self._data_dir)
+            return record
+
+    def _load_audit_records(self) -> list[dict[str, Any]]:
+        """Return all audit records in order, skipping any unparseable lines."""
+        if not self._audit_file.exists():
+            return []
+        records: list[dict[str, Any]] = []
+        with self._audit_file.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError as exc:
+                    _log.warning("invalid audit line in %s: %s", self._audit_file, exc)
+        return records
+
+    def _last_audit_record(self) -> dict[str, Any] | None:
+        """Return the most recent audit record, or ``None`` when the log is empty."""
+        records = self._load_audit_records()
+        return records[-1] if records else None
+
+    def read_audit(
+        self, *, limit: int = 50, before_seq: int | None = None
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        """Return a page of audit records, newest first.
+
+        Args:
+            limit: Maximum records to return.
+            before_seq: Return only records with ``seq`` below this cursor
+                (exclusive), for paging backward through history.
+
+        Returns:
+            A ``(records, next_cursor)`` pair; ``next_cursor`` is the ``seq`` to
+            pass as ``before_seq`` for the next page, or ``None`` when exhausted.
+        """
+        records = self._load_audit_records()
+        records.sort(key=lambda r: int(r.get("seq", 0)), reverse=True)
+        if before_seq is not None:
+            records = [r for r in records if int(r.get("seq", 0)) < before_seq]
+        page = records[: max(0, limit)]
+        next_cursor = int(page[-1]["seq"]) if len(page) == limit and page else None
+        return page, next_cursor
+
+    def verify_audit_chain(self) -> bool:
+        """Return whether the on-disk audit chain is intact (tamper check)."""
+        prev_hash = ""
+        for record in self._load_audit_records():
+            stored_hash = record.get("hash")
+            body = {k: v for k, v in record.items() if k != "hash"}
+            canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
+            expected = hashlib.sha256((prev_hash + canonical).encode("utf-8")).hexdigest()
+            if stored_hash != expected or record.get("prev_hash") != prev_hash:
+                return False
+            prev_hash = str(stored_hash)
+        return True
+
     def _save_json_unlocked(self, path: Path, data: dict[str, Any]) -> None:
         """Atomically write ``data`` as JSON to ``path``.
 
@@ -447,7 +536,13 @@ class BotStore:
 
     def _harden_existing_paths(self) -> None:
         """Restrict permissions on records created by older releases."""
-        for path in (self._bots_file, self._secrets_file, self._users_file, self._sessions_file):
+        for path in (
+            self._bots_file,
+            self._secrets_file,
+            self._users_file,
+            self._sessions_file,
+            self._audit_file,
+        ):
             if path.is_file():
                 path.chmod(0o600)
         if self._trades_dir.is_dir():

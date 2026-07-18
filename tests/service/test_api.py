@@ -414,6 +414,71 @@ class TestCsrf:
         assert response.status_code == 204
 
 
+class TestAuditTrail:
+    def _admin_client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+        """A client whose operator has the admin role (to read the audit log)."""
+        store = _store(tmp_path)
+        store.update_user(_USERNAME, updates={"roles": ["admin"]})
+        app = create_app(store=store, supervisor=_supervisor(monkeypatch))
+        return TestClient(app)
+
+    def test_login_and_mutations_are_audited(self, client: TestClient) -> None:
+        """A login and a secrets write both land in the audit log, attributed."""
+        _login(client)
+        client.put(
+            "/api/venues/kraken/spot/secrets",
+            json={"api_key": "k", "api_secret": "s"},
+            headers=_csrf(client),
+        )
+        events, _ = client.app.state.store.read_audit()  # type: ignore[attr-defined]
+        actions = {e["action"] for e in events}
+        assert {"login", "credentials.update"} <= actions
+        cred_event = next(e for e in events if e["action"] == "credentials.update")
+        assert cred_event["actor_name"] == _USERNAME
+        assert cred_event["outcome"] == "success"
+
+    def test_audit_never_stores_secret_values(self, client: TestClient) -> None:
+        """Credential values never reach the audit log — only key names."""
+        _login(client)
+        client.put(
+            "/api/venues/kraken/spot/secrets",
+            json={"api_key": "super-secret-key"},
+            headers=_csrf(client),
+        )
+        raw = (Path(client.app.state.store._data_dir) / "audit.jsonl").read_text()  # type: ignore[attr-defined]
+        assert "super-secret-key" not in raw
+
+    def test_failed_login_is_audited(self, client: TestClient) -> None:
+        """A failed login is recorded with a failure outcome and no principal."""
+        client.post("/api/login", json={"username": _USERNAME, "password": "wrong"})
+        events, _ = client.app.state.store.read_audit()  # type: ignore[attr-defined]
+        failure = next(e for e in events if e["outcome"] == "failure")
+        assert failure["action"] == "login"
+        assert failure["actor_name"] == "anonymous"
+
+    def test_audit_endpoint_requires_admin(self, client: TestClient) -> None:
+        """A plain operator cannot read the audit log."""
+        _login(client)
+        assert client.get("/api/audit").status_code == 403
+
+    def test_admin_can_read_audit_with_chain_ok(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An admin reads the paginated log and sees an intact chain."""
+        client = self._admin_client(tmp_path, monkeypatch)
+        client.post("/api/login", json={"username": _USERNAME, "password": _PASSWORD})
+        response = client.get("/api/audit")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["chain_ok"] is True
+        assert any(e["action"] == "login" for e in body["events"])
+
+    def test_response_carries_request_id(self, client: TestClient) -> None:
+        """The request-id middleware echoes a correlation id on every response."""
+        response = client.get("/api/session")
+        assert response.headers.get("X-Request-ID")
+
+
 class TestSecrets:
     def test_put_secrets_persists_and_returns_no_body(self, client: TestClient) -> None:
         """Storing secrets returns 204, persists them, and echoes nothing back."""
