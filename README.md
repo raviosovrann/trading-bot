@@ -8,7 +8,15 @@ an in-memory event bus that feeds both logs and a live WebSocket.
 Supported venues:
 
 - **Coinbase spot** (long-only) via ccxt.
-- **Tradovate crypto futures** (long + short) via the Tradovate API.
+- **Tradovate crypto futures** (long + short) via the Tradovate API — the
+  execution venue is implemented, but the **market-data client is not yet
+  complete** (raises `NotImplementedError`, tracked in #96), so Tradovate bots
+  cannot receive candles today. Coinbase spot is the working path.
+
+> **New here? Read the [Operator & Developer Runbook](docs/runbook.md).** It is
+> the single reference for setup, login/session behaviour, running bots, log and
+> file locations, environment variables, and current limitations.
+> Deployment: [docs/deployment.md](docs/deployment.md) · CI: [docs/ci.md](docs/ci.md)
 
 Everything starts in **dry-run** mode (`LIVE=0`). The service never sends real
 orders until an operator explicitly toggles a bot to `live`.
@@ -228,12 +236,22 @@ It is automatically discovered and launchable by name from the API.
 
 ```bash
 source .venv/bin/activate
-pip install -r requirements.txt
-pytest -v
+pip install -r requirements.txt -c constraints.txt
+pytest -v                                                    # tests
+pytest --cov=tradingbot --cov-branch --cov-fail-under=85     # coverage + CI floor
+pyright --pythonpath .venv/bin/python src/tradingbot tests   # types
 ```
 
-CI runs the full matrix (Python 3.11/3.12/3.13), `pyright`, Bandit, and
-CodeQL on every push and PR.
+> Pass `--pythonpath` to pyright (or set `pythonPath` in `pyrightconfig.json`):
+> a bare `pyright` may resolve against a different interpreter and report
+> spurious missing imports.
+
+UI checks live in [`ui/README.md`](ui/README.md); the full command list is in the
+[runbook](docs/runbook.md#8-verified-commands).
+
+CI runs the full matrix (Python 3.11/3.12/3.13), `pyright`, the UI gates,
+Bandit, pip-audit/npm-audit, CodeQL, and a container deploy smoke on every PR
+and push to `main`. Required checks and branch protection: [docs/ci.md](docs/ci.md).
 
 ---
 

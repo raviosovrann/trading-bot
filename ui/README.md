@@ -1,32 +1,48 @@
-# React + TypeScript + Vite
+# Trading Console UI
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The React + TypeScript SPA for the Trading Console. It talks to the FastAPI
+service under `/api` and streams live bot events over `/ws`.
 
-Currently, two official plugins are available:
+**Operator and developer documentation lives in
+[`../docs/runbook.md`](../docs/runbook.md)** — setup, login/session behaviour,
+running bots, environment variables, and current limitations. Start there.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Quick start
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install     # first time only
+npm run dev     # http://localhost:5173, proxies /api and /ws to :8000
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+The dev server expects the backend on `:8000`; see the runbook for how to start
+it. For a single-origin setup, `npm run build` emits `dist/`, which the FastAPI
+service serves at `/`.
+
+## Scripts
+
+| Command             | Purpose                                                           |
+| ------------------- | ----------------------------------------------------------------- |
+| `npm test`          | Vitest unit/component tests                                       |
+| `npm run typecheck` | `tsc -b --noEmit`                                                 |
+| `npm run lint`      | ESLint                                                            |
+| `npm run format`    | Prettier check (`format:fix` writes)                              |
+| `npm run build`     | Production bundle into `dist/`                                    |
+| `npm run e2e`       | Playwright smoke (builds the SPA, serves API + bundle on `:8000`) |
+
+`npm run e2e` drives the real backend using the repo virtualenv, so create
+`.venv` and install `requirements.txt` first.
+
+## Layout
+
+- `src/api/` — typed API client (cookie session + CSRF header) and React Query hooks.
+- `src/hooks/` — `useAuth` (session restore, central 401 handling) and
+  `useBotEvents` (single WebSocket, fans events out to subscribers).
+- `src/components/` — presentational pieces (bot table, decision log, confirm
+  dialog, live badge, PnL sparkline).
+- `src/pages/` — Login, Dashboard, BotDetail, NewBot wizard.
+- `src/types.ts` — types mirroring the backend DTOs; keep in sync with
+  `src/tradingbot/service/dto.py`.
+
+Authentication is an HttpOnly cookie session — the SPA never holds a token.
+State-changing requests echo the readable `tb_csrf` cookie in an
+`X-CSRF-Token` header; the client does this automatically.
