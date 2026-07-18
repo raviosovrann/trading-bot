@@ -54,6 +54,20 @@ describe('makeClient', () => {
     await expect(makeClient().listBots()).rejects.toBeInstanceOf(UnauthorizedError)
   })
 
+  it('invokes onUnauthorized on a 401 from a protected call', async () => {
+    mockFetch('nope', 401)
+    const onUnauthorized = vi.fn()
+    await expect(makeClient(onUnauthorized).listBots()).rejects.toBeInstanceOf(UnauthorizedError)
+    expect(onUnauthorized).toHaveBeenCalledOnce()
+  })
+
+  it('does not invoke onUnauthorized for the session-probe 401', async () => {
+    mockFetch('nope', 401)
+    const onUnauthorized = vi.fn()
+    await expect(makeClient(onUnauthorized).getSession()).rejects.toBeInstanceOf(UnauthorizedError)
+    expect(onUnauthorized).not.toHaveBeenCalled()
+  })
+
   it('throws on a non-ok response', async () => {
     mockFetch('bad request', 400)
     await expect(makeClient().listBots()).rejects.toThrow(/400/)

@@ -23,6 +23,7 @@ from ..models import Position
 from .auth import hash_password, verify_password
 from .dto import BotView, CreateBotRequest, LoginRequest, PatchBotRequest, SessionInfo, TradeView
 from .events import DecisionEvent, OrderEvent
+from .login_guard import LoginGuard, LoginLocked
 from .principal import Principal
 from .registry import available_strategies, available_venues
 from .sessions import SessionStore
@@ -371,6 +372,7 @@ def create_app(
     app.state.store = store
     app.state.supervisor = supervisor
     app.state.sessions = SessionStore(store)
+    app.state.login_guard = LoginGuard()
 
     # REST routes live under /api so the SPA can be mounted at / without shadowing
     # them. The WebSocket stays at /ws (top-level, simpler to proxy).
@@ -397,8 +399,19 @@ def create_app(
             The authenticated user's display info.
 
         Raises:
-            HTTPException: 401 when the username or password is invalid.
+            HTTPException: 401 when the username or password is invalid; 429 when
+                the username or client IP is temporarily locked out.
         """
+        client_ip = request.client.host if request.client else "unknown"
+        guard = app.state.login_guard
+        try:
+            guard.check(f"user:{body.username}", f"ip:{client_ip}")
+        except LoginLocked as exc:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many failed attempts; try again later",
+                headers={"Retry-After": str(exc.retry_after)},
+            ) from exc
         user = next(
             (u for u in _load_users(store) if u.get("username") == body.username),
             None,
@@ -406,11 +419,13 @@ def create_app(
         stored_hash = str(user.get("password_hash", "")) if user is not None else _DUMMY_PASSWORD_HASH
         password_ok = verify_password(body.password, stored_hash)
         if not password_ok or user is None or user.get("disabled"):
+            guard.record_failure(f"user:{body.username}", f"ip:{client_ip}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid username or password",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        guard.record_success(f"user:{body.username}", f"ip:{client_ip}")
         user_id = _ensure_user_id(store, user)
         raw_id, csrf_token = app.state.sessions.create(user_id)
         _set_session_cookies(response, request, raw_id, csrf_token)

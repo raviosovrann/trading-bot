@@ -1,4 +1,13 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { makeClient, UnauthorizedError, type ApiClient } from '../api/client'
 import type { SessionInfo } from '../types'
 
@@ -11,6 +20,8 @@ interface AuthValue {
   client: ApiClient
   login: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
+  /** Central handler for a lapsed session: clear auth + caches, drop to /login. */
+  onUnauthorized: () => void
 }
 
 const AuthContext = createContext<AuthValue | null>(null)
@@ -30,9 +41,20 @@ export function AuthProvider({
   children: ReactNode
   client?: ApiClient
 }) {
-  const client = useMemo(() => injected ?? makeClient(), [injected])
+  const queryClient = useQueryClient()
   const [user, setUser] = useState<SessionInfo | null>(null)
   const [status, setStatus] = useState<AuthStatus>('loading')
+
+  // A lapsed/rotated session lands here from any 401 or a WS auth-close: clear
+  // the authenticated state and any protected query caches so the app drops to
+  // the login page and refetches cleanly on the next sign-in.
+  const onUnauthorized = useCallback(() => {
+    setUser(null)
+    setStatus('anon')
+    queryClient.clear()
+  }, [queryClient])
+
+  const client = useMemo(() => injected ?? makeClient(onUnauthorized), [injected, onUnauthorized])
 
   useEffect(() => {
     let cancelled = false
@@ -72,11 +94,11 @@ export function AuthProvider({
           // An already-expired session still ends in the logged-out state.
           if (!(err instanceof UnauthorizedError)) throw err
         }
-        setUser(null)
-        setStatus('anon')
+        onUnauthorized()
       },
+      onUnauthorized,
     }),
-    [user, status, client],
+    [user, status, client, onUnauthorized],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

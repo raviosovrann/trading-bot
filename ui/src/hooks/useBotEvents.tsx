@@ -5,7 +5,7 @@ import type { WsEvent } from '../types'
 /** Minimal socket surface so tests can inject a fake. */
 export interface BotSocket {
   onmessage: ((ev: { data: string }) => void) | null
-  onclose: (() => void) | null
+  onclose: ((ev?: { code?: number }) => void) | null
   close: () => void
 }
 
@@ -15,6 +15,10 @@ type Subscribe = (handler: Handler) => () => void
 const BotEventsContext = createContext<Subscribe | null>(null)
 
 const RECONNECT_MS = 3000
+// The server closes with 1008 (policy violation) when the session cookie is
+// missing/expired. Reconnecting would just fail again, so we stop and let the
+// central auth handler drop the user to /login.
+const AUTH_CLOSE_CODE = 1008
 
 function defaultSocketFactory(): BotSocket {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
@@ -37,7 +41,7 @@ export function BotEventsProvider({
   children: ReactNode
   socketFactory?: () => BotSocket
 }) {
-  const { status } = useAuth()
+  const { status, onUnauthorized } = useAuth()
   const handlers = useRef(new Set<Handler>())
 
   useEffect(() => {
@@ -57,8 +61,13 @@ export function BotEventsProvider({
         }
         handlers.current.forEach((h) => h(parsed))
       }
-      socket.onclose = () => {
-        if (!disposed) retryTimer = setTimeout(connect, RECONNECT_MS)
+      socket.onclose = (ev) => {
+        if (disposed) return
+        if (ev?.code === AUTH_CLOSE_CODE) {
+          onUnauthorized() // session gone: stop retrying, drop to /login
+          return
+        }
+        retryTimer = setTimeout(connect, RECONNECT_MS)
       }
     }
 
@@ -68,7 +77,7 @@ export function BotEventsProvider({
       clearTimeout(retryTimer)
       socket?.close()
     }
-  }, [status, socketFactory])
+  }, [status, socketFactory, onUnauthorized])
 
   const subscribe = useMemo<Subscribe>(
     () => (handler) => {

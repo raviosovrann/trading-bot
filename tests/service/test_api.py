@@ -300,6 +300,53 @@ class TestLogin:
         assert seen and seen[0].startswith("pbkdf2_sha256$")
 
 
+class TestLoginThrottle:
+    def test_repeated_failures_lock_out_with_429(self, client: TestClient) -> None:
+        """After the failure threshold, further attempts are throttled with 429."""
+        for _ in range(5):
+            resp = client.post("/api/login", json={"username": _USERNAME, "password": "wrong"})
+            assert resp.status_code == 401
+        locked = client.post("/api/login", json={"username": _USERNAME, "password": "wrong"})
+        assert locked.status_code == 429
+        assert "retry-after" in {k.lower() for k in locked.headers}
+        # Even the correct password is refused while locked out.
+        assert client.post(
+            "/api/login", json={"username": _USERNAME, "password": _PASSWORD}
+        ).status_code == 429
+
+    def test_successful_login_resets_failure_count(self, client: TestClient) -> None:
+        """A success clears the counter so a later typo does not compound."""
+        for _ in range(4):
+            client.post("/api/login", json={"username": _USERNAME, "password": "wrong"})
+        assert client.post(
+            "/api/login", json={"username": _USERNAME, "password": _PASSWORD}
+        ).status_code == 200
+        # Counter reset: another wrong attempt is a plain 401, not a lockout.
+        assert client.post(
+            "/api/login", json={"username": _USERNAME, "password": "wrong"}
+        ).status_code == 401
+
+
+class TestNoSecretLeak:
+    def test_login_does_not_log_password_or_session(
+        self, client: TestClient, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Neither the password nor the session id/CSRF appears in logs."""
+        with caplog.at_level("DEBUG"):
+            response = client.post(
+                "/api/login", json={"username": _USERNAME, "password": _PASSWORD}
+            )
+        assert response.status_code == 200
+        set_cookie = response.headers["set-cookie"]
+        logged = "\n".join(r.getMessage() for r in caplog.records)
+        assert _PASSWORD not in logged
+        assert "tb_session" not in logged
+        # The raw session/csrf values from the Set-Cookie never reach the logs.
+        for chunk in set_cookie.replace("=", " ").split():
+            if len(chunk) > 20:  # cookie value-sized tokens
+                assert chunk not in logged
+
+
 class TestSessionLifecycle:
     def test_session_endpoint_returns_user_when_logged_in(self, client: TestClient) -> None:
         """GET /api/session restores SPA state without exposing a secret."""
