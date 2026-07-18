@@ -16,9 +16,11 @@ const BotEventsContext = createContext<Subscribe | null>(null)
 
 const RECONNECT_MS = 3000
 
-function defaultSocketFactory(token: string): BotSocket {
+function defaultSocketFactory(): BotSocket {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  const url = `${proto}://${window.location.host}/ws?token=${encodeURIComponent(token)}`
+  // Authentication is the HttpOnly session cookie the browser sends on the
+  // upgrade — no secret in the URL.
+  const url = `${proto}://${window.location.host}/ws`
   // Native WebSocket satisfies BotSocket at runtime; its handler types are
   // wider (MessageEvent), hence the cast.
   return new WebSocket(url) as unknown as BotSocket
@@ -26,26 +28,26 @@ function defaultSocketFactory(token: string): BotSocket {
 
 /**
  * Owns the single WS /ws connection and fans events out to subscribers.
- * Reconnects while a token is present; closes cleanly on logout/unmount.
+ * Reconnects while authenticated; closes cleanly on logout/unmount.
  */
 export function BotEventsProvider({
   children,
   socketFactory = defaultSocketFactory,
 }: {
   children: ReactNode
-  socketFactory?: (token: string) => BotSocket
+  socketFactory?: () => BotSocket
 }) {
-  const { token } = useAuth()
+  const { status } = useAuth()
   const handlers = useRef(new Set<Handler>())
 
   useEffect(() => {
-    if (!token) return
+    if (status !== 'authed') return
     let disposed = false
     let socket: BotSocket | null = null
     let retryTimer: ReturnType<typeof setTimeout> | undefined
 
     function connect() {
-      socket = socketFactory(token as string)
+      socket = socketFactory()
       socket.onmessage = (ev) => {
         let parsed: WsEvent
         try {
@@ -66,7 +68,7 @@ export function BotEventsProvider({
       clearTimeout(retryTimer)
       socket?.close()
     }
-  }, [token, socketFactory])
+  }, [status, socketFactory])
 
   const subscribe = useMemo<Subscribe>(
     () => (handler) => {

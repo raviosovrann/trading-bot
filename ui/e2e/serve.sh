@@ -27,7 +27,8 @@ data = {"users": [{"username": "operator", "password_hash": hash_password("e2e-p
 pathlib.Path(sys.argv[1], "users.json").write_text(json.dumps(data))
 PY
 
-# Build the SPA if it isn't already built.
-[ -f "$REPO_ROOT/ui/dist/index.html" ] || (cd "$REPO_ROOT/ui" && npm run build)
+# Always rebuild the SPA so the smoke runs against the current source, not a
+# stale bundle left over from an earlier build.
+(cd "$REPO_ROOT/ui" && npm run build)
 
 exec $PY -m uvicorn tradingbot.service.main:create_service_app --factory --host 127.0.0.1 --port 8000

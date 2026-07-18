@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
@@ -37,8 +37,8 @@ class FakeSocket implements BotSocket {
 }
 
 function setup(bots: BotView[]) {
-  sessionStorage.setItem('tradingbot_token', 'tok')
   const client = {
+    getSession: vi.fn().mockResolvedValue({ username: 'op', roles: ['operator'] }),
     listBots: vi.fn().mockResolvedValue(bots),
     startBot: vi.fn().mockResolvedValue(bots[0]),
     stopBot: vi.fn().mockResolvedValue(bots[0]),
@@ -66,8 +66,6 @@ function setup(bots: BotView[]) {
     act(() => sockets.forEach((s) => s.onmessage?.({ data: JSON.stringify(event) })))
   return { client, emit }
 }
-
-beforeEach(() => sessionStorage.clear())
 
 describe('Dashboard', () => {
   it('renders bots and updates a row on a ws decision event', async () => {

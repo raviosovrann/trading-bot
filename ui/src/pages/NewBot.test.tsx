@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -15,9 +15,9 @@ const VENUES: VenueOption[] = [
 ]
 
 function setup() {
-  sessionStorage.setItem('tradingbot_token', 'tok')
   const created = { id: 'new-1' }
   const client = {
+    getSession: vi.fn().mockResolvedValue({ username: 'op', roles: ['operator'] }),
     listVenues: vi.fn().mockResolvedValue(VENUES),
     listStrategies: vi.fn().mockResolvedValue(['example']),
     putSecrets: vi.fn().mockResolvedValue(undefined),
@@ -42,8 +42,6 @@ function setup() {
 async function next() {
   await userEvent.click(screen.getByRole('button', { name: /next/i }))
 }
-
-beforeEach(() => sessionStorage.clear())
 
 describe('NewBot wizard', () => {
   it('walks the steps and creates a dry-run bot by default', async () => {

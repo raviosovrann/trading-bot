@@ -42,7 +42,7 @@ export function Dashboard() {
           <Link to="/bots/new" className="button-link">
             New bot
           </Link>
-          <button onClick={logout}>Sign out</button>
+          <button onClick={() => void logout()}>Sign out</button>
         </nav>
       </header>
 
