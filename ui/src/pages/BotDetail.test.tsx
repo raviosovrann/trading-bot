@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -50,8 +50,8 @@ class FakeSocket implements BotSocket {
 }
 
 function setup(theBot: BotView, trades: Trade[] = []) {
-  sessionStorage.setItem('tradingbot_token', 'tok')
   const client = {
+    getSession: vi.fn().mockResolvedValue({ username: 'op', roles: ['operator'] }),
     getBot: vi.fn().mockResolvedValue(theBot),
     getTrades: vi.fn().mockResolvedValue(trades),
     patchBot: vi.fn().mockResolvedValue({ ...theBot, live: true }),
@@ -83,8 +83,6 @@ function setup(theBot: BotView, trades: Trade[] = []) {
     act(() => sockets.forEach((s) => s.onmessage?.({ data: JSON.stringify(event) })))
   return { client, emit }
 }
-
-beforeEach(() => sessionStorage.clear())
 
 describe('BotDetail', () => {
   it('enabling LIVE shows a confirm and only PATCHes after confirming', async () => {

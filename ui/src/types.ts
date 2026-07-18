@@ -61,6 +61,13 @@ export interface VenueOption {
   market_type: string
 }
 
+// Returned by POST /api/login and GET /api/session. The browser session lives
+// in an HttpOnly cookie, so no secret is carried here.
+export interface SessionInfo {
+  username: string
+  roles: string[]
+}
+
 // WebSocket /ws events: {type: "decision"|"order", bot_id, ...}
 export interface DecisionEvent {
   type: 'decision'

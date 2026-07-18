@@ -72,6 +72,7 @@ class BotStore:
         self._trades_dir = self._data_dir / "trades"
         self._secrets_file = self._data_dir / "secrets.json"
         self._users_file = self._data_dir / "users.json"
+        self._sessions_file = self._data_dir / "sessions.json"
         self._secure_directory(self._data_dir)
         self._harden_existing_paths()
 
@@ -284,6 +285,87 @@ class BotStore:
             self._save_json_unlocked(self._users_file, data)
             return True
 
+    def _load_sessions_list(self) -> list[dict[str, Any]]:
+        """Return the session records list without acquiring the mutation lock."""
+        data = self._load_json(self._sessions_file)
+        sessions = data.get("sessions", [])
+        if not isinstance(sessions, list):
+            return []
+        return [s for s in sessions if isinstance(s, dict)]
+
+    def get_session(self, id_hash: str) -> dict[str, Any] | None:
+        """Return the session record whose ``id_hash`` matches, or ``None``.
+
+        Args:
+            id_hash: SHA-256 hash of the raw session id.
+
+        Returns:
+            The stored session mapping, or ``None`` when no session matches.
+        """
+        return next(
+            (s for s in self._load_sessions_list() if s.get("id_hash") == id_hash),
+            None,
+        )
+
+    def add_session(self, record: Mapping[str, Any]) -> None:
+        """Append a new session record.
+
+        Args:
+            record: Session mapping containing at least ``id_hash`` and ``user_id``.
+        """
+        with self._transaction():
+            sessions = self._load_sessions_list()
+            sessions.append(dict(record))
+            self._save_json_unlocked(self._sessions_file, {"sessions": sessions})
+
+    def touch_session(self, id_hash: str, last_seen: float) -> bool:
+        """Update the ``last_seen`` timestamp of one session.
+
+        Args:
+            id_hash: SHA-256 hash of the raw session id.
+            last_seen: New activity timestamp to store.
+
+        Returns:
+            ``True`` when a session matched and was updated; otherwise ``False``.
+        """
+        with self._transaction():
+            sessions = self._load_sessions_list()
+            for session in sessions:
+                if session.get("id_hash") == id_hash:
+                    session["last_seen"] = last_seen
+                    self._save_json_unlocked(self._sessions_file, {"sessions": sessions})
+                    return True
+            return False
+
+    def delete_session(self, id_hash: str) -> None:
+        """Remove the session whose ``id_hash`` matches, if present.
+
+        Args:
+            id_hash: SHA-256 hash of the raw session id to revoke.
+        """
+        with self._transaction():
+            sessions = self._load_sessions_list()
+            kept = [s for s in sessions if s.get("id_hash") != id_hash]
+            if len(kept) != len(sessions):
+                self._save_json_unlocked(self._sessions_file, {"sessions": kept})
+
+    def delete_user_sessions(self, user_id: str) -> int:
+        """Remove every session belonging to ``user_id``.
+
+        Args:
+            user_id: Stable principal id whose sessions should be revoked.
+
+        Returns:
+            The number of sessions removed.
+        """
+        with self._transaction():
+            sessions = self._load_sessions_list()
+            kept = [s for s in sessions if s.get("user_id") != user_id]
+            removed = len(sessions) - len(kept)
+            if removed:
+                self._save_json_unlocked(self._sessions_file, {"sessions": kept})
+            return removed
+
     def _save_json_unlocked(self, path: Path, data: dict[str, Any]) -> None:
         """Atomically write ``data`` as JSON to ``path``.
 
@@ -365,7 +447,7 @@ class BotStore:
 
     def _harden_existing_paths(self) -> None:
         """Restrict permissions on records created by older releases."""
-        for path in (self._bots_file, self._secrets_file, self._users_file):
+        for path in (self._bots_file, self._secrets_file, self._users_file, self._sessions_file):
             if path.is_file():
                 path.chmod(0o600)
         if self._trades_dir.is_dir():

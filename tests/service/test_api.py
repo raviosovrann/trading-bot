@@ -138,6 +138,22 @@ def _auth() -> dict[str, str]:
     return {"Authorization": f"Bearer {_TOKEN}"}
 
 
+def _login(client: TestClient) -> str:
+    """Log in via password so the client's cookie jar holds a session.
+
+    Returns the CSRF token, which cookie-authenticated state-changing requests
+    must echo in the ``X-CSRF-Token`` header.
+    """
+    response = client.post("/api/login", json={"username": _USERNAME, "password": _PASSWORD})
+    assert response.status_code == 200
+    return client.cookies["tb_csrf"]
+
+
+def _csrf(client: TestClient) -> dict[str, str]:
+    """Return the CSRF header for the client's current session."""
+    return {"X-CSRF-Token": client.cookies["tb_csrf"]}
+
+
 class TestSpaServing:
     def _client(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         dist = tmp_path / "dist"
@@ -227,43 +243,46 @@ class TestAuth:
 
 
 class TestLogin:
-    def test_valid_credentials_return_a_working_token(self, client: TestClient) -> None:
-        """Login with correct credentials returns a token that authenticates."""
+    def test_valid_credentials_open_a_cookie_session(self, client: TestClient) -> None:
+        """Login sets an HttpOnly session cookie (no token) that authenticates."""
         response = client.post("/api/login", json={"username": _USERNAME, "password": _PASSWORD})
         assert response.status_code == 200
-        token = response.json()["token"]
-        assert token
-        # The freshly minted token authenticates a protected request.
-        authed = client.get("/api/bots", headers={"Authorization": f"Bearer {token}"})
-        assert authed.status_code == 200
+        # No secret is returned in the body — only the user's display info.
+        body = response.json()
+        assert body["username"] == _USERNAME and "token" not in body
+        # The session cookie is HttpOnly and now authenticates protected reads.
+        set_cookie = response.headers["set-cookie"]
+        assert "tb_session=" in set_cookie and "httponly" in set_cookie.lower()
+        assert client.get("/api/bots").status_code == 200
+
+    def test_no_auth_secret_is_readable_by_javascript(self, client: TestClient) -> None:
+        """The session cookie is HttpOnly; only the CSRF companion is readable."""
+        response = client.post(
+            "/api/login", json={"username": _USERNAME, "password": _PASSWORD}
+        )
+        cookies = response.headers.get_list("set-cookie")
+        session_cookie = next(c for c in cookies if c.startswith("tb_session="))
+        csrf_cookie = next(c for c in cookies if c.startswith("tb_csrf="))
+        assert "httponly" in session_cookie.lower()
+        assert "httponly" not in csrf_cookie.lower()
 
     def test_wrong_password_is_rejected(self, client: TestClient) -> None:
-        """Login with a bad password returns 401 and no token."""
+        """Login with a bad password returns 401 and sets no session."""
         response = client.post("/api/login", json={"username": _USERNAME, "password": "wrong"})
         assert response.status_code == 401
-        assert "token" not in response.json()
+        assert "set-cookie" not in response.headers
 
     def test_unknown_user_is_rejected(self, client: TestClient) -> None:
         """Login with an unknown username returns 401."""
         response = client.post("/api/login", json={"username": "nobody", "password": _PASSWORD})
         assert response.status_code == 401
 
-    def test_login_uses_atomic_user_update(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Token rotation does not replace a separately loaded users snapshot."""
+    def test_disabled_user_cannot_log_in(self, client: TestClient) -> None:
+        """A disabled account is rejected even with the correct password."""
         store = client.app.state.store  # type: ignore[attr-defined]
-
-        def reject_snapshot_replace(data: dict) -> None:
-            del data
-            raise AssertionError("login must update its user inside the store transaction")
-
-        monkeypatch.setattr(store, "save_users", reject_snapshot_replace)
-        response = client.post(
-            "/api/login",
-            json={"username": _USERNAME, "password": _PASSWORD},
-        )
-        assert response.status_code == 200
+        store.update_user(_USERNAME, updates={"disabled": True})
+        response = client.post("/api/login", json={"username": _USERNAME, "password": _PASSWORD})
+        assert response.status_code == 401
 
     def test_unknown_user_still_runs_real_pbkdf2(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
@@ -279,6 +298,73 @@ class TestLogin:
         )
         client.post("/api/login", json={"username": "nobody", "password": "x"})
         assert seen and seen[0].startswith("pbkdf2_sha256$")
+
+
+class TestSessionLifecycle:
+    def test_session_endpoint_returns_user_when_logged_in(self, client: TestClient) -> None:
+        """GET /api/session restores SPA state without exposing a secret."""
+        _login(client)
+        response = client.get("/api/session")
+        assert response.status_code == 200
+        assert response.json()["username"] == _USERNAME
+
+    def test_session_endpoint_401_when_logged_out(self, client: TestClient) -> None:
+        """With no session, /api/session is 401 so the SPA shows the login page."""
+        assert client.get("/api/session").status_code == 401
+
+    def test_logout_revokes_session_and_blocks_further_calls(self, client: TestClient) -> None:
+        """Logout revokes the session so subsequent REST calls are rejected."""
+        _login(client)
+        assert client.get("/api/bots").status_code == 200
+        assert client.post("/api/logout", headers=_csrf(client)).status_code == 204
+        # The cookie jar no longer resolves to a live session.
+        assert client.get("/api/session").status_code == 401
+
+    def test_logout_without_csrf_is_rejected(self, client: TestClient) -> None:
+        """Logout is a state change, so a cookie session must present CSRF."""
+        _login(client)
+        assert client.post("/api/logout").status_code == 403
+
+    def test_expired_session_is_rejected(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A session past its idle window no longer authenticates."""
+        _login(client)
+        # Advance the session store's clock beyond the absolute lifetime.
+        store_sessions = client.app.state.sessions  # type: ignore[attr-defined]
+        base = time.time()
+        monkeypatch.setattr(store_sessions, "_clock", lambda: base + 13 * 60 * 60)
+        assert client.get("/api/session").status_code == 401
+
+
+class TestCsrf:
+    def test_cookie_state_change_requires_csrf_header(self, client: TestClient) -> None:
+        """A cookie-authenticated mutation without the CSRF header is 403."""
+        _login(client)
+        response = client.put(
+            "/api/venues/kraken/spot/secrets",
+            json={"api_key": "k", "api_secret": "s"},
+        )
+        assert response.status_code == 403
+
+    def test_cookie_state_change_succeeds_with_csrf_header(self, client: TestClient) -> None:
+        """The same mutation succeeds when the CSRF token is echoed back."""
+        _login(client)
+        response = client.put(
+            "/api/venues/kraken/spot/secrets",
+            json={"api_key": "k", "api_secret": "s"},
+            headers=_csrf(client),
+        )
+        assert response.status_code == 204
+
+    def test_bearer_api_caller_is_csrf_exempt(self, client: TestClient) -> None:
+        """Direct-API bearer callers carry no ambient cookie and skip CSRF."""
+        response = client.put(
+            "/api/venues/kraken/spot/secrets",
+            json={"api_key": "k", "api_secret": "s"},
+            headers=_auth(),
+        )
+        assert response.status_code == 204
 
 
 class TestSecrets:
@@ -409,10 +495,10 @@ class TestWebSocket:
     def test_ws_receives_published_order_event(self, client: TestClient) -> None:
         """Verify that the WebSocket receives published order events."""
         app = cast(FastAPI, client.app)
-        store = app.state.store
         supervisor = app.state.supervisor
-        # Authenticate the WS with the same bearer token via query param.
-        with client.websocket_connect(f"/ws?token={_TOKEN}") as ws:
+        # Authenticate the WS via the session cookie — no token in the URL.
+        _login(client)
+        with client.websocket_connect("/ws") as ws:
             _wait_for_subscribers(supervisor.event_bus)
             supervisor.event_bus.publish(
                 OrderEvent(bot_id="b1", action="buy", status="filled", ok=True, order_id="1")
@@ -422,12 +508,27 @@ class TestWebSocket:
             assert data["bot_id"] == "b1"
             assert data["action"] == "buy"
 
-    def test_ws_without_token_is_closed(self, client: TestClient) -> None:
-        """Verify that WebSocket connections without a token are closed."""
-        with client.websocket_connect("/ws") as ws:
-            # FastAPI closes with code 1008 when authentication fails.
-            with pytest.raises(Exception):
+    def test_ws_without_session_is_closed(self, client: TestClient) -> None:
+        """A WebSocket connection without a valid session cookie is rejected."""
+        with pytest.raises(Exception):
+            with client.websocket_connect("/ws") as ws:
                 ws.receive_json()
+
+    def test_ws_rejects_disallowed_origin(self, client: TestClient) -> None:
+        """A cross-origin upgrade is rejected even with a valid session cookie."""
+        _login(client)
+        with pytest.raises(Exception):
+            with client.websocket_connect(
+                "/ws", headers={"origin": "https://evil.example"}
+            ) as ws:
+                ws.receive_json()
+
+    def test_ws_no_token_appears_in_url(self, client: TestClient) -> None:
+        """The client never needs a token in the WS URL to authenticate."""
+        _login(client)
+        with client.websocket_connect("/ws") as ws:
+            # Connection succeeds purely from the cookie; the URL carries no secret.
+            assert ws is not None
 
 
 class TestTrades:
@@ -510,7 +611,8 @@ class TestWebSocketEvents:
         """Verify that the WebSocket forwards decision events."""
         app = cast(FastAPI, client.app)
         supervisor = app.state.supervisor
-        with client.websocket_connect(f"/ws?token={_TOKEN}") as ws:
+        _login(client)
+        with client.websocket_connect("/ws") as ws:
             _wait_for_subscribers(supervisor.event_bus)
             supervisor.event_bus.publish(
                 DecisionEvent(bot_id="b1", symbol="BTC/USD", ts=1, text="no signal")
@@ -523,7 +625,8 @@ class TestWebSocketEvents:
         """Verify that the WebSocket serializes unknown events safely."""
         app = cast(FastAPI, client.app)
         supervisor = app.state.supervisor
-        with client.websocket_connect(f"/ws?token={_TOKEN}") as ws:
+        _login(client)
+        with client.websocket_connect("/ws") as ws:
             _wait_for_subscribers(supervisor.event_bus)
             supervisor.event_bus.publish("plain-string")
             data = ws.receive_json()

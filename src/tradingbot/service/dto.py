@@ -14,10 +14,15 @@ class LoginRequest(BaseModel):
     password: str
 
 
-class LoginResponse(BaseModel):
-    """Bearer token issued on successful login."""
+class SessionInfo(BaseModel):
+    """The authenticated user's display info returned by login/session.
 
-    token: str
+    No secret is included: the browser session lives in an HttpOnly cookie, so
+    the SPA only needs the username and roles to render authenticated state.
+    """
+
+    username: str
+    roles: list[str] = Field(default_factory=list)
 
 
 class CreateBotRequest(BaseModel):

@@ -1,18 +1,28 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
-import { makeClient, type ApiClient } from '../api/client'
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { makeClient, UnauthorizedError, type ApiClient } from '../api/client'
+import type { SessionInfo } from '../types'
 
-const TOKEN_KEY = 'tradingbot_token'
+/** Auth lifecycle: 'loading' while the session is being restored on first paint. */
+type AuthStatus = 'loading' | 'authed' | 'anon'
 
 interface AuthValue {
-  token: string | null
+  user: SessionInfo | null
+  status: AuthStatus
   client: ApiClient
   login: (username: string, password: string) => Promise<void>
-  logout: () => void
+  logout: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthValue | null>(null)
 
-/** Provides auth state and a token-injecting API client to the tree. */
+/**
+ * Provides auth state and the API client to the tree.
+ *
+ * The browser session lives in an HttpOnly cookie the SPA cannot read, so on
+ * mount we ask the server (`GET /api/session`) whether a session is live and
+ * restore the authenticated UI state from the response — no secret is stored in
+ * the browser.
+ */
 export function AuthProvider({
   children,
   client: injected,
@@ -20,28 +30,53 @@ export function AuthProvider({
   children: ReactNode
   client?: ApiClient
 }) {
-  const [token, setToken] = useState<string | null>(() => sessionStorage.getItem(TOKEN_KEY))
-  // A stable client that always reads the freshest token from sessionStorage.
-  const client = useMemo(
-    () => injected ?? makeClient(() => sessionStorage.getItem(TOKEN_KEY)),
-    [injected],
-  )
+  const client = useMemo(() => injected ?? makeClient(), [injected])
+  const [user, setUser] = useState<SessionInfo | null>(null)
+  const [status, setStatus] = useState<AuthStatus>('loading')
+
+  useEffect(() => {
+    let cancelled = false
+    client
+      .getSession()
+      .then((info) => {
+        if (!cancelled) {
+          setUser(info)
+          setStatus('authed')
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setUser(null)
+          setStatus('anon')
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [client])
 
   const value = useMemo<AuthValue>(
     () => ({
-      token,
+      user,
+      status,
       client,
       async login(username, password) {
-        const { token: minted } = await client.login(username, password)
-        sessionStorage.setItem(TOKEN_KEY, minted)
-        setToken(minted)
+        const info = await client.login(username, password)
+        setUser(info)
+        setStatus('authed')
       },
-      logout() {
-        sessionStorage.removeItem(TOKEN_KEY)
-        setToken(null)
+      async logout() {
+        try {
+          await client.logout()
+        } catch (err) {
+          // An already-expired session still ends in the logged-out state.
+          if (!(err instanceof UnauthorizedError)) throw err
+        }
+        setUser(null)
+        setStatus('anon')
       },
     }),
-    [token, client],
+    [user, status, client],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

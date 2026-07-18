@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import hmac
 import logging
-import secrets
+import os
 import uuid
 from dataclasses import asdict
 from typing import Any
@@ -21,14 +21,22 @@ from fastapi.websockets import WebSocket, WebSocketDisconnect
 
 from ..models import Position
 from .auth import hash_password, verify_password
-from .dto import BotView, CreateBotRequest, LoginRequest, LoginResponse, PatchBotRequest, TradeView
+from .dto import BotView, CreateBotRequest, LoginRequest, PatchBotRequest, SessionInfo, TradeView
 from .events import DecisionEvent, OrderEvent
+from .principal import Principal
 from .registry import available_strategies, available_venues
+from .sessions import SessionStore
 from .store import BotStore
 from .supervisor import BotConfig, BotInstance, BotSupervisor
 
 _log = logging.getLogger(__name__)
 _security = HTTPBearer(auto_error=False)
+
+# Cookie/header names for the browser session. The session id is HttpOnly; the
+# CSRF token is a readable companion cookie the SPA echoes back in a header.
+SESSION_COOKIE = "tb_session"
+CSRF_COOKIE = "tb_csrf"
+CSRF_HEADER = "x-csrf-token"
 
 # A valid PBKDF2 encoding verified against when the username is unknown, so login
 # always performs the same hashing work and does not leak which usernames exist.
@@ -40,20 +48,63 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def _load_token_hashes(store: BotStore) -> set[str]:
-    """Load valid bearer token hashes from ``store``.
+def _load_users(store: BotStore) -> list[dict[str, Any]]:
+    """Return the list of user records from ``store``."""
+    data = store.load_users()
+    users = data.get("users", []) if isinstance(data, dict) else []
+    return [u for u in users if isinstance(u, dict)] if isinstance(users, list) else []
+
+
+def _roles_of(user: dict[str, Any]) -> tuple[str, ...]:
+    """Return the roles for ``user``, defaulting to ``("operator",)``."""
+    roles = user.get("roles")
+    if isinstance(roles, list) and roles:
+        return tuple(str(r) for r in roles)
+    return ("operator",)
+
+
+def _principal_of(user: dict[str, Any], kind: str) -> Principal:
+    """Build a :class:`Principal` from a stored user record.
 
     Args:
-        store: Persistence layer containing user records.
+        user: Stored user mapping.
+        kind: ``"user"`` (session) or ``"service"`` (direct-API token).
 
     Returns:
-        Set of configured SHA-256 token hashes.
+        The resolved principal. ``id`` falls back to the username for records
+        created before stable ids existed.
     """
-    data = store.load_users()
-    users = data.get("users", [])
-    if not isinstance(users, list):
-        return set()
-    return {str(u.get("token_hash", "")) for u in users if isinstance(u, dict)}
+    username = str(user.get("username", ""))
+    return Principal(
+        id=str(user.get("id") or username),
+        username=username,
+        roles=_roles_of(user),
+        kind=kind,
+    )
+
+
+def _ensure_user_id(store: BotStore, user: dict[str, Any]) -> str:
+    """Return ``user``'s stable id, assigning and persisting one if absent.
+
+    Records created before stable ids existed are upgraded in place the first
+    time they authenticate, so sessions and audit records reference a durable id.
+    """
+    existing = user.get("id")
+    if existing:
+        return str(existing)
+    new_id = str(uuid.uuid4())
+    store.update_user(str(user.get("username", "")), updates={"id": new_id})
+    return new_id
+
+
+def _resolve_token_principal(store: BotStore, token: str) -> Principal | None:
+    """Resolve a direct-API bearer ``token`` to a service principal, or ``None``."""
+    provided = _hash_token(token)
+    for user in _load_users(store):
+        stored = str(user.get("token_hash", ""))
+        if stored and hmac.compare_digest(provided, stored):
+            return _principal_of(user, kind="service")
+    return None
 
 
 def _get_store(request: Request) -> BotStore:
@@ -61,42 +112,169 @@ def _get_store(request: Request) -> BotStore:
     return request.app.state.store
 
 
+def _get_sessions(request: Request) -> SessionStore:
+    """Return the ``SessionStore`` attached to the app state."""
+    return request.app.state.sessions
+
+
 def _get_supervisor(request: Request) -> BotSupervisor:
     """Return the ``BotSupervisor`` attached to the app state."""
     return request.app.state.supervisor
 
 
+def _unauthorized() -> HTTPException:
+    """Return a generic 401 that does not leak why authentication failed."""
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Not authenticated",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def _resolve_cookie_principal(
+    request: Request, store: BotStore, sessions: SessionStore
+) -> Principal | None:
+    """Resolve the session cookie to a user principal, or ``None``.
+
+    Records the live session on ``request.state`` so CSRF validation can read the
+    session's expected token without re-resolving it.
+    """
+    session = sessions.resolve(request.cookies.get(SESSION_COOKIE))
+    if session is None:
+        return None
+    user = next((u for u in _load_users(store) if str(u.get("id") or u.get("username")) == session.user_id), None)
+    if user is None or user.get("disabled"):
+        return None
+    request.state.session = session
+    return _principal_of(user, kind="user")
+
+
 async def require_auth(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_security),
     store: BotStore = Depends(_get_store),
-) -> str:
-    """Validate the bearer token against stored token hashes.
+    sessions: SessionStore = Depends(_get_sessions),
+) -> Principal:
+    """Authenticate a request via session cookie or direct-API bearer token.
+
+    Browser clients present the ``tb_session`` cookie; scripts present an
+    ``Authorization: Bearer`` API token. Either resolves to a :class:`Principal`.
 
     Args:
-        credentials: Authorization header parsed by FastAPI.
+        request: The incoming request (carries cookies and per-request state).
+        credentials: Authorization header parsed by FastAPI, when present.
         store: Persistence layer containing user records.
+        sessions: Server-side session store.
 
     Returns:
-        The raw bearer token when authentication succeeds.
+        The authenticated principal.
 
     Raises:
-        HTTPException: If the token is missing, malformed or invalid.
+        HTTPException: 401 when neither credential authenticates.
     """
-    if credentials is None or credentials.scheme.lower() != "bearer":
+    principal = _resolve_cookie_principal(request, store, sessions)
+    if principal is not None:
+        return principal
+    if credentials is not None and credentials.scheme.lower() == "bearer":
+        principal = _resolve_token_principal(store, credentials.credentials)
+        if principal is not None:
+            return principal
+    raise _unauthorized()
+
+
+async def require_auth_csrf(
+    request: Request,
+    principal: Principal = Depends(require_auth),
+) -> Principal:
+    """Authenticate, and enforce CSRF for cookie-authenticated state changes.
+
+    Cookie sessions are ambient, so a state-changing request authenticated by
+    cookie must also echo the session CSRF token in the ``X-CSRF-Token`` header
+    (double-submit). Direct-API bearer callers carry no ambient cookie and are
+    exempt.
+
+    Args:
+        request: The incoming request; ``request.state.session`` is set when the
+            caller authenticated via cookie.
+        principal: The already-authenticated principal.
+
+    Returns:
+        The authenticated principal.
+
+    Raises:
+        HTTPException: 403 when a cookie session fails CSRF validation.
+    """
+    session = getattr(request.state, "session", None)
+    if session is None:  # bearer/API caller — no ambient cookie, no CSRF risk
+        return principal
+    header = request.headers.get(CSRF_HEADER, "")
+    if not header or not hmac.compare_digest(header, session.csrf_token):
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid authorization",
-            headers={"WWW-Authenticate": "Bearer"},
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Missing or invalid CSRF token",
         )
-    valid_hashes = _load_token_hashes(store)
-    provided_hash = _hash_token(credentials.credentials)
-    if not any(hmac.compare_digest(provided_hash, h) for h in valid_hashes):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return credentials.credentials
+    return principal
+
+
+def _allowed_origins() -> set[str]:
+    """Return the configured WebSocket origin allowlist from the environment."""
+    raw = os.environ.get("TRADINGBOT_ALLOWED_ORIGINS", "")
+    return {o.strip() for o in raw.split(",") if o.strip()}
+
+
+def _origin_allowed(origin: str | None, host: str | None) -> bool:
+    """Return whether a WebSocket ``origin`` may connect.
+
+    A configured allowlist (``TRADINGBOT_ALLOWED_ORIGINS``) is authoritative.
+    With no allowlist, same-origin connections are accepted by comparing the
+    Origin's host to the request ``Host`` header. A missing Origin is allowed:
+    browsers always send it (so cross-site attempts are still rejected), while
+    non-browser clients that omit it cannot mount a CSRF-style attack.
+    """
+    if origin is None:
+        return True
+    allowed = _allowed_origins()
+    if allowed:
+        return origin in allowed
+    if host is None:
+        return False
+    return origin.split("://", 1)[-1] == host
+
+
+def _cookie_secure(request: Request) -> bool:
+    """Return whether session cookies should carry the ``Secure`` flag.
+
+    ``TRADINGBOT_COOKIE_SECURE`` forces the flag on/off; otherwise it tracks the
+    request scheme (``https`` behind a TLS-terminating proxy with forwarded
+    headers), so cookies work over plain HTTP in local development and tests.
+    """
+    override = os.environ.get("TRADINGBOT_COOKIE_SECURE", "").strip().lower()
+    if override in ("1", "true", "yes", "on"):
+        return True
+    if override in ("0", "false", "no", "off"):
+        return False
+    return request.url.scheme == "https"
+
+
+def _set_session_cookies(
+    response: Response, request: Request, raw_id: str, csrf_token: str
+) -> None:
+    """Attach the HttpOnly session cookie and readable CSRF cookie to ``response``."""
+    secure = _cookie_secure(request)
+    response.set_cookie(
+        SESSION_COOKIE, raw_id,
+        httponly=True, secure=secure, samesite="strict", path="/",
+    )
+    response.set_cookie(
+        CSRF_COOKIE, csrf_token,
+        httponly=False, secure=secure, samesite="strict", path="/",
+    )
+
+
+def _clear_session_cookies(response: Response) -> None:
+    """Remove the session and CSRF cookies from the browser."""
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie(CSRF_COOKIE, path="/")
 
 
 def _event_to_dict(event: Any) -> dict[str, Any]:
@@ -192,55 +370,84 @@ def create_app(
     app = FastAPI(title="Trading Console")
     app.state.store = store
     app.state.supervisor = supervisor
+    app.state.sessions = SessionStore(store)
 
     # REST routes live under /api so the SPA can be mounted at / without shadowing
     # them. The WebSocket stays at /ws (top-level, simpler to proxy).
     api_router = APIRouter(prefix="/api")
 
     @api_router.post("/login")
-    async def login(request: LoginRequest) -> LoginResponse:
-        """Authenticate an operator and mint a fresh bearer token.
+    async def login(
+        body: LoginRequest, request: Request, response: Response
+    ) -> SessionInfo:
+        """Authenticate an operator and open a browser session.
 
-        On success a new random token is issued and the user's stored token
-        hash is rotated to match, so only the SHA-256 hash is ever persisted and
-        the previous token is invalidated. Unknown users still run a password
-        verification against a dummy hash to avoid leaking which usernames exist.
+        On success a server-side session is created and its random id is set in a
+        ``Secure; HttpOnly; SameSite=Strict`` cookie (plus a readable CSRF
+        companion cookie); no secret is returned in the body. Unknown or disabled
+        users still run a password verification against a dummy hash so login
+        timing does not leak which usernames exist.
 
         Args:
-            request: Username and password payload.
+            body: Username and password payload.
+            request: The incoming request (for cookie scheme).
+            response: Response whose cookies carry the new session.
 
         Returns:
-            The newly minted bearer token.
+            The authenticated user's display info.
 
         Raises:
             HTTPException: 401 when the username or password is invalid.
         """
-        data = store.load_users()
-        users = data.get("users", []) if isinstance(data, dict) else []
         user = next(
-            (u for u in users if isinstance(u, dict) and u.get("username") == request.username),
+            (u for u in _load_users(store) if u.get("username") == body.username),
             None,
         )
         stored_hash = str(user.get("password_hash", "")) if user is not None else _DUMMY_PASSWORD_HASH
-        if not verify_password(request.password, stored_hash) or user is None:
+        password_ok = verify_password(body.password, stored_hash)
+        if not password_ok or user is None or user.get("disabled"):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid username or password",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        token = secrets.token_urlsafe(32)
-        updated = store.update_user(
-            request.username,
-            expected={"password_hash": stored_hash},
-            updates={"token_hash": _hash_token(token)},
-        )
-        if not updated:
+        user_id = _ensure_user_id(store, user)
+        raw_id, csrf_token = app.state.sessions.create(user_id)
+        _set_session_cookies(response, request, raw_id, csrf_token)
+        return SessionInfo(username=str(user.get("username", "")), roles=list(_roles_of(user)))
+
+    @api_router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+    async def logout(request: Request, response: Response) -> Response:
+        """Revoke the current browser session and clear its cookies.
+
+        Guarded by double-submit CSRF against the readable ``tb_csrf`` cookie so a
+        cross-site page cannot force a logout, yet it still works for an expired
+        session (the cookie outlives the server-side record), letting a stale
+        browser reach a clean logged-out state.
+
+        Raises:
+            HTTPException: 403 when the CSRF token is missing or mismatched.
+        """
+        cookie_csrf = request.cookies.get(CSRF_COOKIE, "")
+        header_csrf = request.headers.get(CSRF_HEADER, "")
+        if not cookie_csrf or not header_csrf or not hmac.compare_digest(cookie_csrf, header_csrf):
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid username or password",
-                headers={"WWW-Authenticate": "Bearer"},
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Missing or invalid CSRF token",
             )
-        return LoginResponse(token=token)
+        app.state.sessions.revoke(request.cookies.get(SESSION_COOKIE))
+        _clear_session_cookies(response)
+        response.status_code = status.HTTP_204_NO_CONTENT
+        return response
+
+    @api_router.get("/session")
+    async def session_info(principal: Principal = Depends(require_auth)) -> SessionInfo:
+        """Return the authenticated user's info so the SPA can restore its state.
+
+        Requires a valid session (or API token); returns 401 otherwise, letting
+        the SPA distinguish logged-in from logged-out without holding a secret.
+        """
+        return SessionInfo(username=principal.username, roles=list(principal.roles))
 
     @api_router.put(
         "/venues/{venue}/{market_type}/secrets",
@@ -252,7 +459,7 @@ def create_app(
         venue: str,
         market_type: str,
         creds: dict[str, str],
-        _: str = Depends(require_auth),
+        _: Principal = Depends(require_auth_csrf),
     ) -> None:
         """Store venue credentials for a ``(venue, market_type)`` pair.
 
@@ -275,19 +482,19 @@ def create_app(
         store.save_secrets(venue, market_type, creds)
 
     @api_router.get("/venues")
-    async def list_venues(_: str = Depends(require_auth)) -> list[dict[str, str]]:
+    async def list_venues(_: Principal = Depends(require_auth)) -> list[dict[str, str]]:
         """List supported venue/market-type mappings."""
         return available_venues()
 
     @api_router.get("/strategies")
-    async def list_strategies(_: str = Depends(require_auth)) -> list[str]:
+    async def list_strategies(_: Principal = Depends(require_auth)) -> list[str]:
         """List registered strategy names."""
         return available_strategies()
 
     @api_router.post("/bots", status_code=status.HTTP_201_CREATED)
     async def create_bot(
         request: CreateBotRequest,
-        _: str = Depends(require_auth),
+        _: Principal = Depends(require_auth_csrf),
     ) -> BotView:
         """Create and persist a new bot from ``request``.
 
@@ -322,12 +529,12 @@ def create_app(
         return _to_view(bot)
 
     @api_router.get("/bots")
-    async def list_bots(_: str = Depends(require_auth)) -> list[BotView]:
+    async def list_bots(_: Principal = Depends(require_auth)) -> list[BotView]:
         """List all created bots."""
         return [_to_view(bot) for bot in supervisor.list()]
 
     @api_router.get("/bots/{bot_id}")
-    async def get_bot(bot_id: str, _: str = Depends(require_auth)) -> BotView:
+    async def get_bot(bot_id: str, _: Principal = Depends(require_auth)) -> BotView:
         """Return the bot identified by ``bot_id``.
 
         Args:
@@ -348,7 +555,7 @@ def create_app(
     async def patch_bot(
         bot_id: str,
         request: PatchBotRequest,
-        _: str = Depends(require_auth),
+        _: Principal = Depends(require_auth_csrf),
     ) -> BotView:
         """Update mutable fields of the bot identified by ``bot_id``.
 
@@ -377,7 +584,7 @@ def create_app(
         return _to_view(bot)
 
     @api_router.post("/bots/{bot_id}/start")
-    async def start_bot(bot_id: str, _: str = Depends(require_auth)) -> BotView:
+    async def start_bot(bot_id: str, _: Principal = Depends(require_auth_csrf)) -> BotView:
         """Start the bot identified by ``bot_id``.
 
         Credentials are loaded from the store and attached to the bot config
@@ -406,7 +613,7 @@ def create_app(
         return _to_view(bot)
 
     @api_router.post("/bots/{bot_id}/stop")
-    async def stop_bot(bot_id: str, _: str = Depends(require_auth)) -> BotView:
+    async def stop_bot(bot_id: str, _: Principal = Depends(require_auth_csrf)) -> BotView:
         """Stop the bot identified by ``bot_id``.
 
         Args:
@@ -425,7 +632,7 @@ def create_app(
         return _to_view(bot)
 
     @api_router.get("/bots/{bot_id}/trades")
-    async def list_trades(bot_id: str, _: str = Depends(require_auth)) -> list[TradeView]:
+    async def list_trades(bot_id: str, _: Principal = Depends(require_auth)) -> list[TradeView]:
         """List persisted trade events for ``bot_id`` as typed views.
 
         Args:
@@ -443,22 +650,24 @@ def create_app(
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
-        """Stream supervisor events to authenticated WebSocket clients.
+        """Stream supervisor events to authenticated browser clients.
 
-        Clients must provide a valid ``token`` query parameter.
+        Authentication uses the session cookie sent on the upgrade — no secret in
+        the URL. The ``Origin`` header must pass the allowlist so a cross-site
+        page cannot open a socket against a logged-in operator's cookie.
 
         Args:
-            websocket: Accepted WebSocket connection.
+            websocket: The pending WebSocket connection.
         """
-        await websocket.accept()
-        store = websocket.app.state.store
         supervisor = websocket.app.state.supervisor
-        token = websocket.query_params.get("token")
-        if token is None or not any(
-            hmac.compare_digest(_hash_token(token), h) for h in _load_token_hashes(store)
-        ):
+        sessions = websocket.app.state.sessions
+        origin = websocket.headers.get("origin")
+        host = websocket.headers.get("host")
+        session = sessions.resolve(websocket.cookies.get(SESSION_COOKIE))
+        if not _origin_allowed(origin, host) or session is None:
             await websocket.close(code=1008)
             return
+        await websocket.accept()
         queue = supervisor.event_bus.subscribe()
         try:
             while True:

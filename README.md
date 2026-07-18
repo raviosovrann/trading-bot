@@ -112,14 +112,25 @@ service once 2B task B5 lands).
 
 ## API
 
-All endpoints except `POST /login` require `Authorization: Bearer <token>`.
+All endpoints except `POST /login` require authentication — a browser session
+cookie or an `Authorization: Bearer <token>` API token.
 
 ### Auth & secrets
 
-- `POST /login` — `{username, password}` → `{token}`; mints a fresh bearer
-  token and rotates the stored hash (previous token is invalidated).
+- `POST /login` — `{username, password}` → `{username, roles}`; opens a
+  revocable server-side session and sets it in a `Secure; HttpOnly;
+  SameSite=Strict` cookie (plus a readable `tb_csrf` companion). No token is
+  returned in the body.
+- `POST /logout` — revoke the current session and clear its cookies.
+- `GET /session` — `{username, roles}` for the authenticated session (used by
+  the SPA to restore state); 401 when no session is live.
 - `PUT /venues/{venue}/{market_type}/secrets` — store venue credentials
   (encrypted at rest; never echoed back).
+
+Browser clients authenticate with the session cookie; state-changing requests
+must echo the `tb_csrf` cookie in an `X-CSRF-Token` header. Scripts may still use
+a long-lived `Authorization: Bearer <token>` API token (from `users.json`'s
+`token_hash`), which is exempt from CSRF.
 
 ### Meta
 
@@ -138,7 +149,9 @@ All endpoints except `POST /login` require `Authorization: Bearer <token>`.
 
 ### WebSocket
 
-- `WS /ws?token=<token>` — live decision, order, and position events.
+- `WS /ws` — live decision, order, and position events. Authenticated by the
+  session cookie sent on the upgrade (no token in the URL); the `Origin` must
+  pass the allowlist (`TRADINGBOT_ALLOWED_ORIGINS`, default same-origin).
 
 ---
 

@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 
-/** Operator login form. On success, stores the token and goes to the dashboard. */
+/** Operator login form. On success, opens a session and goes to the dashboard. */
 export function Login() {
   const { login } = useAuth()
   const navigate = useNavigate()
