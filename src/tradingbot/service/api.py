@@ -496,17 +496,20 @@ def _mount_spa(app: FastAPI, dist: Path) -> None:
         app: The FastAPI application to attach the SPA routes to.
         dist: Directory containing the built SPA (``index.html`` + ``assets/``).
     """
-    index = dist / "index.html"
+    # Resolve the root once so every file candidate can be checked against the
+    # canonical directory.  The catch-all receives percent-decoded paths, so a
+    # lexical ``dist / full_path`` check is not sufficient to stop ``..`` or a
+    # symlink inside the bundle from escaping the SPA directory.
+    root = dist.resolve()
+    index = root / "index.html"
     if not index.is_file():
         return
-    assets = dist / "assets"
+    assets = root / "assets"
     if assets.is_dir():
         app.mount("/assets", StaticFiles(directory=str(assets)), name="assets")
 
     @app.get("/{full_path:path}")
     async def spa(full_path: str) -> FileResponse:
-        """Return a static file if it exists, else the SPA entry point."""
-        candidate = dist / full_path
-        if full_path and candidate.is_file():
-            return FileResponse(str(candidate))
+        """Return the SPA entry point for every non-API deep link."""
+        del full_path
         return FileResponse(str(index))
