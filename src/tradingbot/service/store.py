@@ -245,6 +245,27 @@ class BotStore:
         with self._transaction():
             self._save_json_unlocked(self._users_file, data)
 
+    def add_user(self, record: Mapping[str, Any]) -> bool:
+        """Append a new user record if the username is not already taken.
+
+        Args:
+            record: User mapping containing at least ``username``.
+
+        Returns:
+            ``True`` when the user was added; ``False`` if the username exists.
+        """
+        with self._transaction():
+            data = self._load_json(self._users_file)
+            users = data.get("users", []) if isinstance(data, dict) else []
+            if not isinstance(users, list):
+                users = []
+            username = record.get("username")
+            if any(isinstance(u, dict) and u.get("username") == username for u in users):
+                return False
+            users.append(dict(record))
+            self._save_json_unlocked(self._users_file, {"users": users})
+            return True
+
     def update_user(
         self,
         username: str,

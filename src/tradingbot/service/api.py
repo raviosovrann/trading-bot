@@ -21,7 +21,7 @@ from fastapi.websockets import WebSocket, WebSocketDisconnect
 
 from ..models import Position
 from .audit import AuditLog
-from .auth import hash_password, verify_password
+from .auth import hash_password, needs_rehash, verify_password
 from .dto import BotView, CreateBotRequest, LoginRequest, PatchBotRequest, SessionInfo, TradeView
 from .events import DecisionEvent, OrderEvent
 from .login_guard import LoginGuard, LoginLocked
@@ -489,6 +489,12 @@ def create_app(
                 headers={"WWW-Authenticate": "Bearer"},
             )
         guard.record_success(f"user:{body.username}", f"ip:{client_ip}")
+        # Transparently upgrade a stale password hash now that we hold the plaintext.
+        if needs_rehash(stored_hash):
+            store.update_user(
+                str(user.get("username", "")),
+                updates={"password_hash": hash_password(body.password)},
+            )
         user_id = _ensure_user_id(store, user)
         raw_id, csrf_token = app.state.sessions.create(user_id)
         _set_session_cookies(response, request, raw_id, csrf_token)

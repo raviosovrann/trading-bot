@@ -284,6 +284,27 @@ class TestLogin:
         response = client.post("/api/login", json={"username": _USERNAME, "password": _PASSWORD})
         assert response.status_code == 401
 
+    def test_login_upgrades_a_stale_password_hash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A weak-iteration stored hash is upgraded on successful login."""
+        from tradingbot.service.auth import hash_password as hp, needs_rehash
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        (data_dir / "users.json").write_text(
+            json.dumps({"users": [{"username": _USERNAME, "password_hash": hp(_PASSWORD, iterations=1000)}]})
+        )
+        (data_dir / "trades").mkdir()
+        store = BotStore(data_dir)
+        app = create_app(store=store, supervisor=_supervisor(monkeypatch))
+        with TestClient(app) as client:
+            assert client.post(
+                "/api/login", json={"username": _USERNAME, "password": _PASSWORD}
+            ).status_code == 200
+        upgraded = store.load_users()["users"][0]["password_hash"]
+        assert needs_rehash(upgraded) is False
+
     def test_unknown_user_still_runs_real_pbkdf2(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
