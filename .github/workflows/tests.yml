@@ -39,7 +39,7 @@ jobs:
             --junitxml=test-results-${{ matrix.python-version }}.xml
       - name: Upload test & coverage artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-coverage-${{ matrix.python-version }}
           path: |
