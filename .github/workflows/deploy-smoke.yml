@@ -64,6 +64,14 @@ jobs:
             | docker exec -i console tradingbot bootstrap --username smoke
           docker exec console tradingbot user list | grep -q smoke
 
+      - name: Store an encrypted venue secret
+        # Needed so key continuity is actually exercised: with no secrets on
+        # disk there is nothing to decrypt and any key would look valid.
+        run: |
+          docker exec console python -c \
+            "from tradingbot.service.store import BotStore; \
+             BotStore('/data').save_secrets('coinbase', 'spot', {'api_key': 'smoke-key'})"
+
       - name: Graceful shutdown honours SIGTERM
         run: |
           docker stop -t 30 console
