@@ -248,6 +248,23 @@ class TestLogin:
         response = client.post("/api/login", json={"username": "nobody", "password": _PASSWORD})
         assert response.status_code == 401
 
+    def test_login_uses_atomic_user_update(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Token rotation does not replace a separately loaded users snapshot."""
+        store = client.app.state.store  # type: ignore[attr-defined]
+
+        def reject_snapshot_replace(data: dict) -> None:
+            del data
+            raise AssertionError("login must update its user inside the store transaction")
+
+        monkeypatch.setattr(store, "save_users", reject_snapshot_replace)
+        response = client.post(
+            "/api/login",
+            json={"username": _USERNAME, "password": _PASSWORD},
+        )
+        assert response.status_code == 200
+
     def test_unknown_user_still_runs_real_pbkdf2(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:

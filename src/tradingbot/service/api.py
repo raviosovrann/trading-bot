@@ -229,8 +229,17 @@ def create_app(
                 headers={"WWW-Authenticate": "Bearer"},
             )
         token = secrets.token_urlsafe(32)
-        user["token_hash"] = _hash_token(token)
-        store.save_users(data)
+        updated = store.update_user(
+            request.username,
+            expected={"password_hash": stored_hash},
+            updates={"token_hash": _hash_token(token)},
+        )
+        if not updated:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         return LoginResponse(token=token)
 
     @api_router.put(
