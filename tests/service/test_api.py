@@ -154,12 +154,61 @@ class TestSpaServing:
         assert response.status_code == 200
         assert "SPA" in response.text
 
+    def test_static_asset_is_served(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A legitimate file under the mounted assets directory remains available."""
+        client = self._client(tmp_path, monkeypatch)
+        response = client.get("/assets/app.js")
+        assert response.status_code == 200
+        assert response.text == "console.log('hi')"
+
     def test_deep_link_falls_back_to_index(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """A client-side route falls back to index.html (SPA routing)."""
         client = self._client(tmp_path, monkeypatch)
         response = client.get("/bots/some-id")
         assert response.status_code == 200
         assert "SPA" in response.text
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/%2e%2e%2Foutside.txt",
+            "/..%2Foutside.txt",
+            "/nested%2F..%2F..%2Foutside.txt",
+            "/%2e%2e/%2e%2e%2Foutside.txt",
+        ],
+    )
+    def test_encoded_path_traversal_cannot_escape_dist(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        path: str,
+    ) -> None:
+        """Percent-decoded traversal never serves a file outside the SPA root."""
+        secret = "must-not-leak"
+        (tmp_path / "outside.txt").write_text(secret, encoding="utf-8")
+        client = self._client(tmp_path, monkeypatch)
+
+        response = client.get(path)
+
+        assert response.status_code == 404
+        assert secret not in response.text
+
+    def test_symlink_cannot_escape_dist(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bundle symlink cannot expose a file outside the SPA root."""
+        secret = "must-not-leak"
+        outside = tmp_path / "outside.txt"
+        outside.write_text(secret, encoding="utf-8")
+        client = self._client(tmp_path, monkeypatch)
+        (tmp_path / "dist" / "escape.txt").symlink_to(outside)
+
+        response = client.get("/escape.txt")
+
+        assert response.status_code == 404
+        assert secret not in response.text
 
     def test_api_not_shadowed_by_spa(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """API routes still resolve when the SPA catch-all is mounted."""
