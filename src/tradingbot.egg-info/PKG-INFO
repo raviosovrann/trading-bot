@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: tradingbot
+Version: 0.1.0
+Summary: Multi-bot trading console for internal operators
+Requires-Python: >=3.11
+Requires-Dist: pydantic==2.10.4
+Requires-Dist: pytest==8.3.4
+Requires-Dist: pytest-asyncio<0.25,>=0.23
+Requires-Dist: pyright==1.1.402
+Requires-Dist: ccxt<5,>=4.4
+Requires-Dist: httpx<0.29,>=0.27
+Requires-Dist: fastapi<0.116,>=0.115
+Requires-Dist: uvicorn[standard]<0.35,>=0.30
+Requires-Dist: websockets<14,>=12
+Requires-Dist: cryptography<50,>=42

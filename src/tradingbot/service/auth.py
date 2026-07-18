@@ -19,6 +19,56 @@ _SALT_BYTES = 16
 # and an absurdly large one would hang the request. Both fail closed instead.
 _MAX_ITERATIONS = 100_000_000
 
+# Minimum operator password length. Internal-deployment policy; enforced by the
+# admin CLI and any password-setting flow.
+MIN_PASSWORD_LENGTH = 12
+
+
+class WeakPasswordError(ValueError):
+    """Raised when a proposed password does not meet the policy."""
+
+
+def check_password_policy(password: str) -> None:
+    """Validate ``password`` against the policy, raising on failure.
+
+    Args:
+        password: Proposed plaintext password.
+
+    Raises:
+        WeakPasswordError: If the password is too short or all whitespace.
+    """
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise WeakPasswordError(
+            f"password must be at least {MIN_PASSWORD_LENGTH} characters"
+        )
+    if not password.strip():
+        raise WeakPasswordError("password must not be blank")
+
+
+def needs_rehash(encoded: str) -> bool:
+    """Return whether ``encoded`` should be re-hashed with current parameters.
+
+    A stored hash produced with a different algorithm or a lower iteration count
+    is upgraded transparently on the next successful login.
+
+    Args:
+        encoded: Encoded hash produced by :func:`hash_password`.
+
+    Returns:
+        ``True`` when the hash is stale (or unparseable) and should be replaced.
+    """
+    try:
+        algo, iterations_str, _salt_hex, _hash_hex = encoded.split("$")
+    except ValueError:
+        return True
+    if algo != _ALGO:
+        return True
+    try:
+        iterations = int(iterations_str)
+    except ValueError:
+        return True
+    return iterations < _ITERATIONS
+
 
 def hash_password(password: str, *, iterations: int = _ITERATIONS) -> str:
     """Hash ``password`` with a fresh random salt.

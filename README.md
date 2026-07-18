@@ -52,23 +52,19 @@ PYTHONPATH=src python -c "from tradingbot.service.crypto import generate_key; pr
 export TRADINGBOT_SECRETS_KEY=<the key>   # required whenever the service runs
 ```
 
-Create `data/users.json` with at least one operator. `password_hash` is used by
-the UI login (which mints and rotates the bearer token); `token_hash` is the
-SHA-256 of a pre-issued token for direct API use:
+Install the package to get the `tradingbot` admin CLI, then create the first
+administrator. The CLI prompts for the password with hidden confirmation and
+writes `data/users.json` for you (owner-only permissions) — never hand-edit it:
 
 ```bash
-PYTHONPATH=src python - <<'EOF'
-import hashlib, json
-from tradingbot.service.auth import hash_password
-
-print(json.dumps({"users": [{
-    "username": "operator",
-    "password_hash": hash_password("choose-a-password"),
-    "token_hash": hashlib.sha256(b"choose-a-token").hexdigest(),
-}]}, indent=2))
-EOF
-# save the output as data/users.json
+pip install -e .                       # provides the `tradingbot` command
+tradingbot bootstrap --username admin   # prompts for a password
 ```
+
+`bootstrap` is one-time and refuses once any user exists. Manage users later
+with `tradingbot user add|list|disable|reset-password|revoke-sessions`
+(`TRADINGBOT_DATA_DIR` selects the data directory, default `data`). For direct
+API access, add a `token_hash` (SHA-256 of a pre-issued token) to a user record.
 
 Start the service (uses the default file-based store under `data/`):
 

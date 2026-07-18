@@ -1,0 +1,2 @@
+[console_scripts]
+tradingbot = tradingbot.admin:main

@@ -2,7 +2,42 @@
 
 from __future__ import annotations
 
-from tradingbot.service.auth import hash_password, verify_password
+import pytest
+
+from tradingbot.service.auth import (
+    MIN_PASSWORD_LENGTH,
+    WeakPasswordError,
+    check_password_policy,
+    hash_password,
+    needs_rehash,
+    verify_password,
+)
+
+
+def test_policy_accepts_a_strong_password() -> None:
+    check_password_policy("a" * MIN_PASSWORD_LENGTH)
+
+
+def test_policy_rejects_short_password() -> None:
+    with pytest.raises(WeakPasswordError):
+        check_password_policy("a" * (MIN_PASSWORD_LENGTH - 1))
+
+
+def test_policy_rejects_blank_password() -> None:
+    with pytest.raises(WeakPasswordError):
+        check_password_policy(" " * (MIN_PASSWORD_LENGTH + 2))
+
+
+def test_needs_rehash_false_for_current_params() -> None:
+    assert needs_rehash(hash_password("some-password")) is False
+
+
+def test_needs_rehash_true_for_low_iterations() -> None:
+    assert needs_rehash(hash_password("some-password", iterations=1000)) is True
+
+
+def test_needs_rehash_true_for_garbage() -> None:
+    assert needs_rehash("not-a-valid-hash") is True
 
 
 def test_hash_is_not_plaintext() -> None:
