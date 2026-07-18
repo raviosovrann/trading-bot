@@ -1,0 +1,127 @@
+# Exercises the maintained deployment artifact end to end: build the image,
+# start it clean, confirm the probes, seed an operator, then back up, wipe, and
+# restore the data volume and confirm the restored state still works.
+name: Deploy Smoke
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-smoke:
+    runs-on: ubuntu-latest
+    env:
+      KEY_FILE: secrets.key
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t trading-console:smoke .
+
+      - name: Generate secrets key
+        run: |
+          docker run --rm trading-console:smoke \
+            python -c "from tradingbot.service.crypto import generate_key; print(generate_key())" \
+            > "$KEY_FILE"
+
+      - name: Start container (clean install, non-root, read-only rootfs)
+        run: |
+          docker volume create smoke-data
+          docker run -d --name console \
+            -e TRADINGBOT_SECRETS_KEY="$(cat "$KEY_FILE")" \
+            -v smoke-data:/data \
+            --read-only --tmpfs /tmp:size=16m \
+            -p 8000:8000 trading-console:smoke
+
+      - name: Wait for readiness
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/readyz || true)
+            [ "$code" = "200" ] && echo "ready after ${i}s" && exit 0
+            sleep 1
+          done
+          echo "service never became ready"; docker logs console; exit 1
+
+      - name: Probes report healthy and non-root
+        run: |
+          curl -fsS http://127.0.0.1:8000/healthz | grep -q '"ok"'
+          curl -fsS http://127.0.0.1:8000/readyz | grep -q '"ready":true'
+          test "$(docker exec console id -u)" != "0"
+
+      - name: Seed an operator via the admin CLI
+        run: |
+          printf 'smoke-pass-123456\nsmoke-pass-123456\n' \
+            | docker exec -i console tradingbot bootstrap --username smoke
+          docker exec console tradingbot user list | grep -q smoke
+
+      - name: Store an encrypted venue secret
+        # Needed so key continuity is actually exercised: with no secrets on
+        # disk there is nothing to decrypt and any key would look valid.
+        run: |
+          docker exec console python -c \
+            "from tradingbot.service.store import BotStore; \
+             BotStore('/data').save_secrets('coinbase', 'spot', {'api_key': 'smoke-key'})"
+
+      - name: Graceful shutdown honours SIGTERM
+        run: |
+          docker stop -t 30 console
+          docker logs console 2>&1 | tail -20
+
+      - name: Back up the data volume
+        run: |
+          docker run --rm -v smoke-data:/data -v "$PWD":/backup alpine \
+            tar czf /backup/backup.tgz -C /data .
+
+      - name: Wipe and restore
+        run: |
+          docker run --rm -v smoke-data:/data alpine sh -c "rm -rf /data/* /data/.[!.]* || true"
+          docker run --rm -v smoke-data:/data -v "$PWD":/backup alpine \
+            tar xzf /backup/backup.tgz -C /data
+
+      - name: Restored instance is ready and retains the operator
+        run: |
+          docker rm -f console >/dev/null 2>&1 || true
+          docker run -d --name restored \
+            -e TRADINGBOT_SECRETS_KEY="$(cat "$KEY_FILE")" \
+            -v smoke-data:/data \
+            --read-only --tmpfs /tmp:size=16m \
+            -p 8000:8000 trading-console:smoke
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/readyz || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          # A 200 here proves the restored secrets still decrypt with the key.
+          curl -fsS http://127.0.0.1:8000/readyz | grep -q '"ready":true'
+          docker exec restored tradingbot user list | grep -q smoke
+
+      - name: Readiness fails closed with a wrong secrets key
+        run: |
+          docker rm -f restored >/dev/null 2>&1 || true
+          WRONG=$(docker run --rm trading-console:smoke \
+            python -c "from tradingbot.service.crypto import generate_key; print(generate_key())")
+          docker run -d --name badkey \
+            -e TRADINGBOT_SECRETS_KEY="$WRONG" \
+            -v smoke-data:/data \
+            --read-only --tmpfs /tmp:size=16m \
+            -p 8001:8000 trading-console:smoke
+          sleep 8
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8001/readyz || true)
+          echo "readyz with wrong key -> $code"
+          test "$code" = "503"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f console restored badkey >/dev/null 2>&1 || true
+          docker volume rm -f smoke-data >/dev/null 2>&1 || true

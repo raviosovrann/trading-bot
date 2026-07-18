@@ -8,6 +8,8 @@ import hmac
 import logging
 import os
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Any
 
@@ -24,6 +26,7 @@ from .audit import AuditLog
 from .auth import hash_password, needs_rehash, verify_password
 from .dto import BotView, CreateBotRequest, LoginRequest, PatchBotRequest, SessionInfo, TradeView
 from .events import DecisionEvent, OrderEvent
+from .health import readiness
 from .login_guard import LoginGuard, LoginLocked
 from .principal import Principal
 from .registry import available_strategies, available_venues
@@ -418,12 +421,47 @@ def create_app(
     Returns:
         Configured ``FastAPI`` application.
     """
-    app = FastAPI(title="Trading Console")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        """Stop every running bot before the process exits.
+
+        SIGTERM reaches uvicorn, which runs this shutdown phase, so bots and
+        their market-data streams are closed cleanly instead of being killed
+        mid-order.
+        """
+        yield
+        for bot in supervisor.list():
+            try:
+                await supervisor.stop(bot.config.id)
+            except Exception:  # noqa: BLE001 - never block shutdown on one bot
+                _log.exception("failed to stop bot %s during shutdown", bot.config.id)
+
+    app = FastAPI(title="Trading Console", lifespan=lifespan)
     app.state.store = store
     app.state.supervisor = supervisor
     app.state.sessions = SessionStore(store)
     app.state.login_guard = LoginGuard()
     app.state.audit = AuditLog(store)
+
+    # Probes live at the top level (before the SPA catch-all is mounted, so they
+    # are not shadowed) and are unauthenticated: an orchestrator must be able to
+    # reach them without credentials. Neither leaks configuration values.
+    @app.get("/healthz")
+    async def healthz() -> dict[str, str]:
+        """Shallow liveness probe: the process is up and serving."""
+        return {"status": "ok"}
+
+    @app.get("/readyz")
+    async def readyz(response: Response) -> dict[str, Any]:
+        """Dependency-aware readiness probe.
+
+        Returns 503 until the data directory is writable and the secrets key
+        decrypts stored secrets, so traffic is never routed to an instance that
+        cannot persist trades or read credentials.
+        """
+        ready, checks = readiness(store)
+        response.status_code = status.HTTP_200_OK if ready else status.HTTP_503_SERVICE_UNAVAILABLE
+        return {"ready": ready, "checks": checks}
 
     @app.middleware("http")
     async def _request_id(request: Request, call_next: Any) -> Any:

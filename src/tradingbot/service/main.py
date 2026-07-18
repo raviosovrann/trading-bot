@@ -9,16 +9,20 @@ it for their venue.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
 from .api import create_app
 from .events import EventBus
+from .health import validate_startup
 from .hub_factory import HubFactory
 from .risk import GlobalExposure
 from .store import BotStore
 from .supervisor import BotSupervisor
+
+_log = logging.getLogger(__name__)
 
 
 def create_service_app() -> Any:
@@ -33,6 +37,10 @@ def create_service_app() -> Any:
     """
     data_dir = Path(os.environ.get("TRADINGBOT_DATA_DIR", "data"))
     store = BotStore(data_dir)
+    # Fail closed in production; otherwise surface problems prominently so a
+    # developer sees them instead of hitting a silent failure later.
+    for problem in validate_startup(store):
+        _log.error("startup check failed: %s", problem)
     supervisor = BotSupervisor(
         hub_factory=HubFactory(store),
         event_bus=EventBus(),
