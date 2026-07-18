@@ -20,14 +20,14 @@ service serves at `/`.
 
 ## Scripts
 
-| Command | Purpose |
-|---------|---------|
-| `npm test` | Vitest unit/component tests |
-| `npm run typecheck` | `tsc -b --noEmit` |
-| `npm run lint` | ESLint |
-| `npm run format` | Prettier check (`format:fix` writes) |
-| `npm run build` | Production bundle into `dist/` |
-| `npm run e2e` | Playwright smoke (builds the SPA, serves API + bundle on `:8000`) |
+| Command             | Purpose                                                           |
+| ------------------- | ----------------------------------------------------------------- |
+| `npm test`          | Vitest unit/component tests                                       |
+| `npm run typecheck` | `tsc -b --noEmit`                                                 |
+| `npm run lint`      | ESLint                                                            |
+| `npm run format`    | Prettier check (`format:fix` writes)                              |
+| `npm run build`     | Production bundle into `dist/`                                    |
+| `npm run e2e`       | Playwright smoke (builds the SPA, serves API + bundle on `:8000`) |
 
 `npm run e2e` drives the real backend using the repo virtualenv, so create
 `.venv` and install `requirements.txt` first.
