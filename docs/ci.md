@@ -47,3 +47,32 @@ The gates carry **no `paths` filters**, so every workflow triggers for backend,
 UI, and shared changes alike — there is no path-filtered gap where a change can
 merge without its relevant gate running. Adding a `paths` filter to any workflow
 requires re-checking that shared-code changes still trigger every affected gate.
+
+## Security scanning
+
+Three blocking, version-pinned scanners run on PRs, `push` to `main`, and a
+weekly schedule:
+
+| Scanner | Workflow | Policy |
+|---------|----------|--------|
+| Bandit `1.9.4` | `bandit.yml` | Static analysis of `src/tradingbot` at medium severity **and** confidence; a finding fails the build (no `exit_zero`). |
+| pip-audit `2.10.1` | `security.yml` | Audits `constraints.txt`; a new advisory fails the build. |
+| npm audit | `security.yml` | Fails on `high`+ advisories in `ui/`. |
+
+**Dependabot** (`.github/dependabot.yml`) opens weekly update PRs for pip, npm,
+and GitHub Actions, so surfaced advisories become actionable upgrades.
+
+### Suppression policy (no blanket ignores)
+
+- **Bandit**: suppress a specific false positive inline with
+  `# nosec <test-id>  # rationale` — never disable a rule globally.
+- **pip-audit**: suppress a specific advisory with `--ignore-vuln <ID>` in
+  `security.yml`, each with a comment. A blanket success-on-findings is never
+  used, so any *unlisted* advisory still fails.
+
+Current pip-audit exceptions (transitive via `fastapi`/`starlette` or dev/build
+tooling with no in-range fix; tracked by Dependabot) — **review by 2026-10-01**,
+owner: repo maintainers:
+
+`PYSEC-2026-161`, `-248`, `-249`, `-1941`, `-1942`, `-2280`, `-2281` (starlette);
+`PYSEC-2026-1845` (pytest); `PYSEC-2026-3447` (setuptools).

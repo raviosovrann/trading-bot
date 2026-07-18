@@ -1,0 +1,64 @@
+# Dependency vulnerability scanning. Both jobs are BLOCKING: a new advisory in a
+# Python or npm dependency fails CI. Known, currently-unfixable transitive/tooling
+# advisories are suppressed by explicit id below (never a blanket ignore); each is
+# tracked by Dependabot and documented in docs/ci.md with an expiry/review owner.
+name: Security
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "29 20 * * 3"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pip-audit (pinned)
+        run: pip install pip-audit==2.10.1
+      # Audit the locked project dependencies (constraints.txt) — not the full
+      # runner environment — so the result is deterministic.
+      # Suppressions (review by 2026-10-01): transitive via fastapi/starlette and
+      # dev/build tooling (pytest, setuptools) with no in-range fix; Dependabot
+      # tracks the upgrades. Any advisory NOT listed here fails the build.
+      - name: Audit Python dependencies (blocking)
+        run: |
+          pip-audit -r constraints.txt \
+            --ignore-vuln PYSEC-2026-161 \
+            --ignore-vuln PYSEC-2026-248 \
+            --ignore-vuln PYSEC-2026-249 \
+            --ignore-vuln PYSEC-2026-1941 \
+            --ignore-vuln PYSEC-2026-1942 \
+            --ignore-vuln PYSEC-2026-2280 \
+            --ignore-vuln PYSEC-2026-2281 \
+            --ignore-vuln PYSEC-2026-1845 \
+            --ignore-vuln PYSEC-2026-3447
+
+  npm-audit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+      - name: Audit npm dependencies (blocking on high+)
+        run: npm audit --audit-level=high

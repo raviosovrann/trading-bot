@@ -1,0 +1,27 @@
+# Automated dependency-update PRs. Dependabot opens the actionable upgrades that
+# the blocking security scans (bandit / pip-audit / npm audit) surface.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      python-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: "npm"
+    directory: "/ui"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      ui-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10

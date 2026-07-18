@@ -20,3 +20,10 @@ where = ["src"]
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
+
+[tool.bandit]
+# Production security scan of the app only; test code is not deployed and its
+# asserts (B101) are idiomatic. Findings block CI (no exit_zero) — suppress a
+# specific false positive inline with `# nosec <ID>  # rationale`, never globally.
+exclude_dirs = ["tests", "ui", ".venv"]
+
