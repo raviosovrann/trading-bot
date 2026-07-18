@@ -192,7 +192,8 @@ class TestSpaServing:
 
         response = client.get(path)
 
-        assert response.status_code == 404
+        assert response.status_code == 200
+        assert "SPA" in response.text
         assert secret not in response.text
 
     def test_symlink_cannot_escape_dist(
@@ -207,7 +208,8 @@ class TestSpaServing:
 
         response = client.get("/escape.txt")
 
-        assert response.status_code == 404
+        assert response.status_code == 200
+        assert "SPA" in response.text
         assert secret not in response.text
 
     def test_api_not_shadowed_by_spa(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

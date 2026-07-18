@@ -510,11 +510,6 @@ def _mount_spa(app: FastAPI, dist: Path) -> None:
 
     @app.get("/{full_path:path}")
     async def spa(full_path: str) -> FileResponse:
-        """Return a static file if it exists, else the SPA entry point."""
-        safe_path = full_path.lstrip("/\\")
-        candidate = (root / safe_path).resolve()
-        if not candidate.is_relative_to(root):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
-        if safe_path and candidate.is_file():
-            return FileResponse(str(candidate))
+        """Return the SPA entry point for every non-API deep link."""
+        del full_path
         return FileResponse(str(index))
