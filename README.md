@@ -77,6 +77,13 @@ PYTHONPATH=src TRADINGBOT_SECRETS_KEY=<the key> \
   uvicorn tradingbot.service.main:create_service_app --factory --host 0.0.0.0 --port 8000
 ```
 
+The file store serializes writers across processes on one POSIX host and
+enforces `0700` data directories plus `0600` record files. It deliberately
+refuses to start where POSIX file locking is unavailable. This is not a
+multi-host database: run one application replica on a persistent volume, or
+replace the file store with shared transactional storage before scaling the
+service horizontally.
+
 Store venue credentials through the API (they are written encrypted under
 `data/secrets.json`; never hand-edit that file):
 

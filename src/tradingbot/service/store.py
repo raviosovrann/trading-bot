@@ -6,11 +6,18 @@ import json
 import logging
 import os
 import re
+import threading
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - exercised only on non-POSIX platforms
+    _fcntl = None  # type: ignore[assignment]
 
 from .crypto import decrypt, encrypt
 from .supervisor import BotConfig
@@ -19,6 +26,16 @@ _log = logging.getLogger(__name__)
 
 _BOT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 """Allowed characters in a bot identifier used for filesystem paths."""
+
+_THREAD_LOCKS_GUARD = threading.Lock()
+_THREAD_LOCKS: dict[Path, Any] = {}
+
+
+def _thread_lock_for(data_dir: Path) -> Any:
+    """Return the process-local reentrant lock shared by a data directory."""
+    key = data_dir.resolve()
+    with _THREAD_LOCKS_GUARD:
+        return _THREAD_LOCKS.setdefault(key, threading.RLock())
 
 
 def _validate_bot_id(bot_id: str) -> None:
@@ -44,11 +61,19 @@ class BotStore:
         Args:
             data_dir: Directory where JSON files and trade logs are stored.
         """
+        if _fcntl is None:
+            raise RuntimeError(
+                "BotStore requires POSIX flock support for safe multi-process access"
+            )
         self._data_dir = Path(data_dir)
+        self._thread_lock = _thread_lock_for(self._data_dir)
+        self._lock_file = self._data_dir / ".store.lock"
         self._bots_file = self._data_dir / "bots.json"
         self._trades_dir = self._data_dir / "trades"
         self._secrets_file = self._data_dir / "secrets.json"
         self._users_file = self._data_dir / "users.json"
+        self._secure_directory(self._data_dir)
+        self._harden_existing_paths()
 
     def save_config(self, cfg: BotConfig) -> None:
         """Persist ``cfg`` to the bot config file.
@@ -56,10 +81,11 @@ class BotStore:
         Args:
             cfg: Bot configuration to save. Credentials are stripped before writing.
         """
-        configs = self.load_configs()
-        by_id = {c.id: c for c in configs}
-        by_id[cfg.id] = cfg
-        self._save_configs(by_id.values())
+        with self._transaction():
+            configs = self._load_configs()
+            by_id = {c.id: c for c in configs}
+            by_id[cfg.id] = cfg
+            self._save_configs(by_id.values())
 
     def load_configs(self) -> list[BotConfig]:
         """Load all persisted bot configurations.
@@ -67,9 +93,13 @@ class BotStore:
         Returns:
             List of ``BotConfig`` records, or an empty list when the file is missing or invalid.
         """
+        return self._load_configs()
+
+    def _load_configs(self) -> list[BotConfig]:
+        """Load bot configurations without acquiring the mutation lock."""
         if not self._bots_file.exists():
             return []
-        text = self._bots_file.read_text()
+        text = self._bots_file.read_text(encoding="utf-8")
         if not text.strip():
             return []
         try:
@@ -87,15 +117,12 @@ class BotStore:
         Args:
             configs: Bot configurations to persist.
         """
-        self._data_dir.mkdir(parents=True, exist_ok=True)
         records: list[dict[str, Any]] = []
         for cfg in configs:
             record = asdict(cfg)
             record.pop("creds", None)
             records.append(record)
-        tmp = self._data_dir / f"bots-{uuid.uuid4()}.json.tmp"
-        tmp.write_text(json.dumps(records, indent=2), encoding="utf-8")
-        os.replace(str(tmp), str(self._bots_file))
+        self._save_text_unlocked(self._bots_file, json.dumps(records, indent=2))
 
     def append_trade(self, bot_id: str, order_event: dict[str, Any]) -> None:
         """Append an order event to a bot's JSONL trade log.
@@ -108,10 +135,16 @@ class BotStore:
             ValueError: If ``bot_id`` is not a safe identifier.
         """
         _validate_bot_id(bot_id)
-        self._trades_dir.mkdir(parents=True, exist_ok=True)
-        path = self._trades_dir / f"{bot_id}.jsonl"
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(order_event, separators=(",", ":")) + "\n")
+        with self._transaction():
+            self._secure_directory(self._trades_dir)
+            path = self._trades_dir / f"{bot_id}.jsonl"
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as f:
+                f.write(json.dumps(order_event, separators=(",", ":")) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            self._fsync_directory(self._trades_dir)
 
     def read_trades(self, bot_id: str) -> list[dict[str, Any]]:
         """Read all trade events persisted for ``bot_id``.
@@ -152,6 +185,10 @@ class BotStore:
         Returns:
             Parsed secrets dictionary, or an empty dictionary when missing/invalid.
         """
+        return self._load_secrets()
+
+    def _load_secrets(self) -> dict[str, Any]:
+        """Load secrets without acquiring the mutation lock."""
         if not self._secrets_file.exists():
             return {}
         token = self._secrets_file.read_text(encoding="utf-8").strip()
@@ -179,13 +216,14 @@ class BotStore:
         """
         venue = venue.strip().lower()
         market_type = market_type.strip().lower()
-        secrets = self.load_secrets()
-        venue_secrets = secrets.get(venue)
-        if not isinstance(venue_secrets, dict):
-            venue_secrets = {}
-        venue_secrets[market_type] = creds
-        secrets[venue] = venue_secrets
-        self._save_text(self._secrets_file, encrypt(json.dumps(secrets)))
+        with self._transaction():
+            secrets = self._load_secrets()
+            venue_secrets = secrets.get(venue)
+            if not isinstance(venue_secrets, dict):
+                venue_secrets = {}
+            venue_secrets[market_type] = creds
+            secrets[venue] = venue_secrets
+            self._save_text_unlocked(self._secrets_file, encrypt(json.dumps(secrets)))
 
     def load_users(self) -> dict[str, Any]:
         """Load user/token records from ``users.json``.
@@ -201,28 +239,80 @@ class BotStore:
         Args:
             data: Users mapping (e.g. ``{"users": [...]}``) to write.
         """
-        self._save_json(self._users_file, data)
+        with self._transaction():
+            self._save_json_unlocked(self._users_file, data)
 
-    def _save_json(self, path: Path, data: dict[str, Any]) -> None:
+    def update_user(
+        self,
+        username: str,
+        *,
+        updates: Mapping[str, Any],
+        expected: Mapping[str, Any] | None = None,
+    ) -> bool:
+        """Atomically update fields on one existing user record.
+
+        Args:
+            username: Stable username identifying the record to update.
+            updates: Field values to store. The username itself cannot be changed.
+            expected: Optional compare-and-set fields that must still match.
+
+        Returns:
+            ``True`` when the user matched and was updated; otherwise ``False``.
+        """
+        if "username" in updates:
+            raise ValueError("update_user cannot change username")
+        with self._transaction():
+            data = self._load_json(self._users_file)
+            users = data.get("users", []) if isinstance(data, dict) else []
+            if not isinstance(users, list):
+                return False
+            user = next(
+                (
+                    item
+                    for item in users
+                    if isinstance(item, dict) and item.get("username") == username
+                ),
+                None,
+            )
+            if user is None:
+                return False
+            if expected is not None and any(
+                user.get(key) != value for key, value in expected.items()
+            ):
+                return False
+            user.update(updates)
+            self._save_json_unlocked(self._users_file, data)
+            return True
+
+    def _save_json_unlocked(self, path: Path, data: dict[str, Any]) -> None:
         """Atomically write ``data`` as JSON to ``path``.
 
         Args:
             path: Destination file.
             data: JSON-serializable mapping to persist.
         """
-        self._save_text(path, json.dumps(data, indent=2))
+        self._save_text_unlocked(path, json.dumps(data, indent=2))
 
-    def _save_text(self, path: Path, text: str) -> None:
+    def _save_text_unlocked(self, path: Path, text: str) -> None:
         """Atomically write ``text`` to ``path``.
 
         Args:
             path: Destination file.
             text: Content to persist.
         """
-        self._data_dir.mkdir(parents=True, exist_ok=True)
         tmp = self._data_dir / f"{path.stem}-{uuid.uuid4()}.tmp"
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(str(tmp), str(path))
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(str(tmp), str(path))
+            path.chmod(0o600)
+            self._fsync_directory(self._data_dir)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     def _load_json(self, path: Path) -> dict[str, Any]:
         """Load a JSON object from ``path``.
@@ -235,7 +325,7 @@ class BotStore:
         """
         if not path.exists():
             return {}
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         if not text.strip():
             return {}
         try:
@@ -244,3 +334,51 @@ class BotStore:
             _log.warning("could not parse %s: %s", path, exc)
             return {}
         return data if isinstance(data, dict) else {}
+
+    @contextmanager
+    def _transaction(self) -> Iterator[None]:
+        """Serialize one mutation across threads and operating-system processes."""
+        fcntl_module = _fcntl
+        if fcntl_module is None:  # pragma: no cover - rejected during initialization
+            raise RuntimeError(
+                "BotStore requires POSIX flock support for safe multi-process access"
+            )
+        with self._thread_lock:
+            self._secure_directory(self._data_dir)
+            fd = os.open(self._lock_file, os.O_RDWR | os.O_CREAT, 0o600)
+            os.fchmod(fd, 0o600)
+            locked = False
+            try:
+                fcntl_module.flock(fd, fcntl_module.LOCK_EX)
+                locked = True
+                yield
+            finally:
+                if locked:
+                    fcntl_module.flock(fd, fcntl_module.LOCK_UN)
+                os.close(fd)
+
+    @staticmethod
+    def _secure_directory(path: Path) -> None:
+        """Create ``path`` if needed and enforce owner-only permissions."""
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.chmod(0o700)
+
+    def _harden_existing_paths(self) -> None:
+        """Restrict permissions on records created by older releases."""
+        for path in (self._bots_file, self._secrets_file, self._users_file):
+            if path.is_file():
+                path.chmod(0o600)
+        if self._trades_dir.is_dir():
+            self._trades_dir.chmod(0o700)
+            for path in self._trades_dir.glob("*.jsonl"):
+                if path.is_file():
+                    path.chmod(0o600)
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        """Persist directory metadata after creating or replacing a record."""
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
