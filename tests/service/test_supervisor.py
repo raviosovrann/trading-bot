@@ -357,3 +357,160 @@ def test_restore_without_store_is_a_no_op() -> None:
 
     assert supervisor.restore() == 0
     assert supervisor.list() == []
+
+
+class _SlowHub(_FakeHub):
+    """Hub whose warmup blocks until released, to widen the start window."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+
+    async def warmup(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
+        await self.release.wait()
+        return await super().warmup(symbol, timeframe, limit)
+
+
+def _lifecycle_supervisor(monkeypatch, hub_factory) -> BotSupervisor:
+    monkeypatch.setattr("tradingbot.service.supervisor.build_venue", lambda *a, **k: _FakeVenue())
+    monkeypatch.setattr("tradingbot.service.supervisor.build_strategy", lambda *a, **k: _SignalStrategy())
+    return BotSupervisor(
+        hub_factory=hub_factory,
+        event_bus=EventBus(),
+        global_exposure=GlobalExposure(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_starts_create_exactly_one_runtime(monkeypatch) -> None:
+    """Two simultaneous starts must not build two runtimes for one bot."""
+    hub = _SlowHub()
+    supervisor = _lifecycle_supervisor(monkeypatch, lambda cfg: hub)
+    supervisor.create(_config("one"))
+
+    # Both starts must be in flight before either completes, otherwise the
+    # race this guards against never happens.
+    first = asyncio.create_task(supervisor.start("one"))
+    second = asyncio.create_task(supervisor.start("one"))
+    await asyncio.sleep(0)
+    hub.release.set()
+    await asyncio.gather(first, second)
+
+    bot = supervisor.get("one")
+    assert bot is not None
+    assert hub.warmups == 1, "second start rebuilt the runtime"
+    assert len(hub.handlers[("BTC/USD", "1m")]) == 1, "duplicate market subscription"
+    assert bot.status == "running"
+    await supervisor.stop("one")
+
+
+@pytest.mark.asyncio
+async def test_start_while_starting_does_not_orphan_a_task(monkeypatch) -> None:
+    """A start issued mid-startup joins the in-flight one instead of racing it."""
+    hub = _SlowHub()
+    supervisor = _lifecycle_supervisor(monkeypatch, lambda cfg: hub)
+    supervisor.create(_config("one"))
+
+    first = asyncio.create_task(supervisor.start("one"))
+    await asyncio.sleep(0)  # let the first start reach the blocking warmup
+    bot = supervisor.get("one")
+    assert bot is not None
+    assert bot.status == "starting", "no transitional state while starting"
+
+    second = asyncio.create_task(supervisor.start("one"))
+    hub.release.set()
+    await asyncio.gather(first, second)
+
+    assert hub.warmups == 1
+    assert bot.status == "running"
+    await supervisor.stop("one")
+
+
+@pytest.mark.asyncio
+async def test_concurrent_stops_clean_up_exactly_once(monkeypatch) -> None:
+    """Simultaneous stops leave one clean shutdown and no orphan task."""
+    hub = _SlowHub()
+    hub.release.set()
+    supervisor = _lifecycle_supervisor(monkeypatch, lambda cfg: hub)
+    supervisor.create(_config("one"))
+    await supervisor.start("one")
+    bot = supervisor.get("one")
+    assert bot is not None
+    task = bot.task
+
+    await asyncio.gather(supervisor.stop("one"), supervisor.stop("one"))
+
+    assert bot.status == "stopped"
+    assert task is not None and task.done()
+    assert hub.handlers[("BTC/USD", "1m")] == [], "subscription outlived the stop"
+
+
+@pytest.mark.asyncio
+async def test_stop_is_idempotent_for_a_bot_that_never_started(monkeypatch) -> None:
+    """Stopping a created bot is a no-op, not an error."""
+    supervisor = _lifecycle_supervisor(monkeypatch, lambda cfg: _FakeHub())
+    supervisor.create(_config("one"))
+
+    await supervisor.stop("one")
+    await supervisor.stop("one")
+
+    bot = supervisor.get("one")
+    assert bot is not None and bot.status == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_failed_start_releases_resources_and_allows_retry(monkeypatch) -> None:
+    """A start that blows up mid-build leaves nothing behind and can be retried."""
+    hub = _FakeHub()
+    calls = {"n": 0}
+
+    def flaky_strategy(*args, **kwargs):
+        # Fail *after* the hub, venue and multiplier have been attached, so the
+        # test proves those partial resources get released.
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("strategy params rejected")
+        return _SignalStrategy()
+
+    monkeypatch.setattr("tradingbot.service.supervisor.build_venue", lambda *a, **k: _FakeVenue())
+    monkeypatch.setattr("tradingbot.service.supervisor.build_strategy", flaky_strategy)
+    supervisor = BotSupervisor(
+        hub_factory=lambda cfg: hub,
+        event_bus=EventBus(),
+        global_exposure=GlobalExposure(),
+    )
+    supervisor.create(_config("one"))
+
+    with pytest.raises(RuntimeError):
+        await supervisor.start("one")
+
+    bot = supervisor.get("one")
+    assert bot is not None
+    assert bot.status == "failed"
+    assert bot.task is None and bot.runtime is None
+    assert bot.venue is None and bot.hub is None
+
+    await supervisor.start("one")
+    assert bot.status == "running"
+    await supervisor.stop("one")
+
+
+@pytest.mark.asyncio
+async def test_stop_during_start_waits_and_leaves_the_bot_stopped(monkeypatch) -> None:
+    """A stop racing a start serializes behind it rather than half-cancelling."""
+    hub = _SlowHub()
+    supervisor = _lifecycle_supervisor(monkeypatch, lambda cfg: hub)
+    supervisor.create(_config("one"))
+
+    start = asyncio.create_task(supervisor.start("one"))
+    await asyncio.sleep(0)
+    stop = asyncio.create_task(supervisor.stop("one"))
+    await asyncio.sleep(0)
+    hub.release.set()
+    await asyncio.gather(start, stop)
+
+    bot = supervisor.get("one")
+    assert bot is not None
+    assert bot.status == "stopped"
+    assert bot.task is None or bot.task.done()
+    assert hub.handlers[("BTC/USD", "1m")] == []

@@ -55,6 +55,10 @@ export function Dashboard() {
       {bots && (
         <BotTable
           bots={bots}
+          busyIds={[
+            startBot.isPending ? startBot.variables : null,
+            stopBot.isPending ? stopBot.variables : null,
+          ].filter((id): id is string => typeof id === 'string')}
           onStart={(bot) =>
             setPending({
               message: `Start ${bot.symbol} (${bot.live ? 'LIVE' : 'dry-run'})?`,

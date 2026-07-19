@@ -744,6 +744,15 @@ def create_app(
         bot = supervisor.get(bot_id)
         if bot is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="bot not found")
+        # A bot mid-transition is about to build or tear down its venue, risk
+        # guard and strategy from this config. Patching now would half-apply,
+        # so reject and let the caller retry once the transition settles.
+        # (Patching a *running* bot is a separate, larger question — issue #109.)
+        if bot.status in ("starting", "stopping"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"bot is {bot.status}; retry when the transition completes",
+            )
         before = {
             "live": bot.config.live,
             "per_bot_cap": bot.config.per_bot_cap,
