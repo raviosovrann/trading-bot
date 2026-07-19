@@ -252,8 +252,12 @@ def test_construction_rejects_a_venue_that_cannot_stream_candles():
     message = str(excinfo.value)
     assert "coinbase" in message
     assert "watchOHLCV" in message
-    # The operator needs to know a restart will not help.
-    assert "not" in message.lower()
+    # The operator needs to know a restart will not help...
+    assert "restarting will not help" in message
+    # ...and that this is a client-library gap, not a broken venue: coinbase's
+    # own WebSocket works, ccxt simply has no OHLCV mapping for it (#171).
+    assert "ccxt" in message
+    assert "venue limitation" not in message
 
 
 def test_construction_accepts_a_venue_that_can_stream():

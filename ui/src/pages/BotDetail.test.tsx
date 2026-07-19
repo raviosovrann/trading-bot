@@ -133,7 +133,7 @@ describe('BotDetail', () => {
       pnl: 0,
       last_decision: null,
       degraded: true,
-      degraded_reason: 'NotSupported: coinbase watchOHLCV() is not supported yet',
+      degraded_reason: 'ccxt does not implement watchOHLCV for coinbase',
       degraded_permanent: true,
     })
 
