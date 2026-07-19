@@ -104,7 +104,14 @@ class MarketDataHub:
         task = self._stream_tasks.pop(key, None)
         if task is not None and not task.done():
             task.cancel()
-        if not self._handlers:
+        # Stop only this symbol where the feed supports it; the shared client
+        # stays open for the other symbols and is closed by whichever watch
+        # loop exits last. Feeds without per-symbol control keep the old
+        # all-or-nothing behaviour, applied only once nothing is left.
+        stop_symbol = getattr(self._stream_feed, "stop_symbol", None)
+        if callable(stop_symbol):
+            stop_symbol(symbol)
+        elif not self._handlers:
             self._stream_feed.stop()
 
     async def _run_stream(self, key: _Key) -> None:

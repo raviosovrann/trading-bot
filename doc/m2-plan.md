@@ -82,18 +82,17 @@ issue's "disable or debounce matching UI actions while a request is pending" is
 the same in-flight guard as #132's "confirm can trigger at most one request".
 Build it once — in `ConfirmDialog` — and have #126 rely on it.
 
-## 3. Known carry-over, not yet issues
+## 3. Carry-over, now tracked
 
-- **No delete or archive path for a bot.** There is no `DELETE /api/bots/{id}`
-  and nothing in the store or supervisor to remove one; a created bot is
-  permanent. Needs: refuse while running, purge config + retained trades, audit
-  the removal.
-- **UI/UX quality** — flagged by the operator as needing a polish pass.
+- **#163 — delete/archive a bot** (M2). There was no `DELETE /api/bots/{id}` at
+  all; a created bot was permanent, and since #108 it also returns on every
+  restart. Open decision inside it: purge or archive `data/trades/<id>.jsonl`.
+- **#164 — UI design and polish pass** (M4). Sequenced *after* #114 and #122,
+  which change what the UI renders.
+- **#165 — Poetry migration** (M5). Retires `requirements.txt` and
+  `constraints.txt`.
 - **`example` strategy is a no-op** (#78) and **Tradovate market data raises
   `NotImplementedError`** (#96). Neither blocks M2.
-- **Dependency management** — migrate from `requirements.txt` + `constraints.txt`
-  to Poetry with `poetry.lock`. Touches `pyproject.toml`, the `Dockerfile`, and
-  five workflows. Scheduled after M2.
 
 ## 4. Definition of done
 

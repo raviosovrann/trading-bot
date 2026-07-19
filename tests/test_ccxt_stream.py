@@ -1,6 +1,9 @@
 """Tests for the CCXT streaming candle feed."""
 
+import asyncio
 from typing import Any
+
+import pytest
 
 from tradingbot.models import Candle
 from tradingbot.stream import CcxtStreamFeed
@@ -13,7 +16,7 @@ def _row(ts, close=1.0):
 
 class _FakeProExchange:
     """Async ccxt.pro-like stub. Delivers pre-seeded watch_ohlcv batches, then
-    flips the feed's stop flag so the run loop exits deterministically."""
+    stops the feed so the run loop exits deterministically."""
 
     def __init__(self, batches):
         self._batches = list(batches)
@@ -25,7 +28,7 @@ class _FakeProExchange:
         self.watch_calls.append((symbol, timeframe))
         batch = self._batches.pop(0)
         if not self._batches and self.feed is not None:
-            self.feed._stopped = True  # stop after this batch is processed
+            self.feed.stop()  # stop after this batch is processed
         return batch
 
     async def close(self):
@@ -95,4 +98,129 @@ def test_stop_is_idempotent():
     feed, ex, _ = _make([[_row(1000)]])
     feed.stop()
     feed.stop()  # second call must not raise
-    assert feed._stopped is True
+    assert feed._should_run("BTC/USD") is False
+
+
+class _MultiSymbolExchange:
+    """Async ccxt.pro-like stub modelling real client close semantics.
+
+    A real exchange client is shared by every symbol watch and cannot be used
+    after ``close()``. Modelling that is the whole point: the previous fakes
+    tolerated post-close use, which hid the bug where one symbol unsubscribing
+    tore down the connection for the others.
+    """
+
+    def __init__(self) -> None:
+        self.closed = False
+        self.close_calls = 0
+        self.pending: dict[str, list] = {}
+        self._gates: dict[str, asyncio.Event] = {}
+
+    def gate(self, symbol: str) -> asyncio.Event:
+        return self._gates.setdefault(symbol, asyncio.Event())
+
+    def deliver(self, symbol: str, rows: list) -> None:
+        self.pending.setdefault(symbol, []).append(rows)
+        self.gate(symbol).set()
+
+    async def watch_ohlcv(self, symbol, timeframe):
+        del timeframe
+        if self.closed:
+            raise RuntimeError("exchange is closed")
+        gate = self.gate(symbol)
+        await gate.wait()
+        queued = self.pending.get(symbol) or []
+        if queued:
+            return queued.pop(0)
+        gate.clear()
+        await gate.wait()
+        return (self.pending.get(symbol) or [[]]).pop(0)
+
+    async def close(self):
+        self.closed = True
+        self.close_calls += 1
+
+
+@pytest.mark.asyncio
+async def test_stopping_one_symbol_leaves_the_other_streaming() -> None:
+    """Unsubscribing one symbol must not close the shared client."""
+    exchange = _MultiSymbolExchange()
+    feed = CcxtStreamFeed(exchange=exchange, timeframe="1m")
+    btc: list[Candle] = []
+    eth: list[Candle] = []
+    feed.on_bar_for("BTC/USD", btc.append)
+    feed.on_bar_for("ETH/USD", eth.append)
+
+    btc_task = asyncio.create_task(feed.run_async("BTC/USD"))
+    eth_task = asyncio.create_task(feed.run_async("ETH/USD"))
+    await asyncio.sleep(0)
+
+    feed.stop_symbol("BTC/USD")
+    exchange.deliver("BTC/USD", [_row(1), _row(2)])
+    await asyncio.wait_for(btc_task, timeout=1.0)
+
+    assert not exchange.closed, "closing the client killed the other symbol's stream"
+
+    # The surviving symbol still receives data.
+    exchange.deliver("ETH/USD", [_row(1, 5.0), _row(2, 6.0)])
+    await asyncio.sleep(0.01)
+    assert eth, "second symbol stopped receiving candles"
+
+    feed.stop_symbol("ETH/USD")
+    exchange.deliver("ETH/USD", [_row(3), _row(4)])
+    await asyncio.wait_for(eth_task, timeout=1.0)
+    assert exchange.closed, "client not closed once the last symbol stopped"
+
+
+@pytest.mark.asyncio
+async def test_feed_can_be_restarted_after_a_full_stop() -> None:
+    """A cached hub whose bots all stopped must be usable again later."""
+    exchanges: list[_MultiSymbolExchange] = []
+
+    def build() -> _MultiSymbolExchange:
+        exchange = _MultiSymbolExchange()
+        exchanges.append(exchange)
+        return exchange
+
+    feed = CcxtStreamFeed(exchange=build(), exchange_factory=build, timeframe="1m")
+    received: list[Candle] = []
+    feed.on_bar_for("BTC/USD", received.append)
+
+    first = asyncio.create_task(feed.run_async("BTC/USD"))
+    await asyncio.sleep(0)
+    feed.stop()
+    exchanges[0].deliver("BTC/USD", [_row(1), _row(2)])
+    await asyncio.wait_for(first, timeout=1.0)
+    assert exchanges[0].closed
+
+    # Restart: a closed client cannot be reused, so a fresh one is built.
+    second = asyncio.create_task(feed.run_async("BTC/USD"))
+    await asyncio.sleep(0)
+    assert len(exchanges) == 2, "restart reused the closed client"
+    exchanges[1].deliver("BTC/USD", [_row(10, 9.0), _row(11, 9.0)])
+    await asyncio.sleep(0.01)
+
+    assert any(c.close == 9.0 for c in received), "restarted feed delivered no candles"
+    feed.stop()
+    exchanges[1].deliver("BTC/USD", [_row(12), _row(13)])
+    await asyncio.wait_for(second, timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_stop_only_affects_the_named_symbol() -> None:
+    """``stop_symbol`` is per-symbol; the global ``stop`` ends everything."""
+    exchange = _MultiSymbolExchange()
+    feed = CcxtStreamFeed(exchange=exchange, timeframe="1m")
+    feed.on_bar_for("BTC/USD", lambda c: None)
+    feed.on_bar_for("ETH/USD", lambda c: None)
+    btc_task = asyncio.create_task(feed.run_async("BTC/USD"))
+    eth_task = asyncio.create_task(feed.run_async("ETH/USD"))
+    await asyncio.sleep(0)
+
+    feed.stop()
+    exchange.deliver("BTC/USD", [_row(1), _row(2)])
+    exchange.deliver("ETH/USD", [_row(1), _row(2)])
+    await asyncio.wait_for(asyncio.gather(btc_task, eth_task), timeout=1.0)
+
+    assert exchange.closed
+    assert exchange.close_calls == 1, "client closed more than once"
