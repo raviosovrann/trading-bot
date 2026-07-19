@@ -6,6 +6,7 @@
   --muted: #9aa3af;
   --accent: #3b82f6;
   --danger: #ef4444;
+  --warning: #f59e0b;
   font-family:
     system-ui,
     -apple-system,
@@ -121,6 +122,24 @@ label {
 .badge-dry {
   background: var(--border);
   color: var(--muted);
+}
+
+/* A degraded bot is still running, so this warns rather than alarms (#114). */
+.badge-degraded {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--warning);
+  border-radius: 4px;
+  color: var(--warning);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.warning {
+  color: var(--warning);
 }
 
 .bot-table {

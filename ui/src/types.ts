@@ -24,6 +24,9 @@ export interface BotView {
   position: Position | null
   pnl: number
   last_decision: string | null
+  // Running but starved of market data — orthogonal to `status` (#114).
+  degraded?: boolean
+  degraded_reason?: string | null
 }
 
 export interface Trade {
@@ -68,7 +71,23 @@ export interface SessionInfo {
   roles: string[]
 }
 
-// WebSocket /ws events: {type: "decision"|"order", bot_id, ...}
+// WebSocket /ws events: {type: "state"|"decision"|"order", bot_id, ...}
+
+// The authoritative snapshot of a bot. Carries the whole view, so a client can
+// apply it without refetching; `seq` increases per bot so a snapshot that
+// arrives after a newer one can be discarded.
+export interface BotStateEvent {
+  type: 'state'
+  bot_id: string
+  seq: number
+  status: string
+  position: Position | null
+  pnl: number
+  last_decision: string | null
+  degraded: boolean
+  degraded_reason: string | null
+}
+
 export interface DecisionEvent {
   type: 'decision'
   bot_id: string
@@ -86,4 +105,4 @@ export interface OrderEvent {
   order_id: string | null
 }
 
-export type WsEvent = DecisionEvent | OrderEvent
+export type WsEvent = BotStateEvent | DecisionEvent | OrderEvent

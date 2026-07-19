@@ -252,3 +252,74 @@ async def test_concurrent_warmup_dedupes_single_fetch() -> None:
     )
     assert feed.calls == 1
     assert results[0] == results[1]
+
+
+@pytest.mark.asyncio
+async def test_unexpected_stream_exit_notifies_listeners() -> None:
+    """Verify a stream returning on its own notifies the degradation listeners."""
+    stream = _FakeStream()
+    hub = MarketDataHub(
+        stream_feed=stream,
+        candle_feed=_FakeCandleFeed(),
+        limiter=RateLimiter(1000, 1000),
+    )
+    seen: list[tuple[str, str, str]] = []
+    hub.add_stream_listener(lambda symbol, timeframe, reason: seen.append((symbol, timeframe, reason)))
+
+    hub.subscribe("BTC/USD", "1m", lambda candle: None)
+    await asyncio.sleep(0)
+    # The feed's watch loop returns without anyone unsubscribing.
+    stream.stop()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert [(s, t) for s, t, _ in seen] == [("BTC/USD", "1m")]
+
+
+@pytest.mark.asyncio
+async def test_stream_error_notifies_listeners_with_the_reason() -> None:
+    """Verify a stream raising reports the exception text to listeners."""
+
+    class _BoomStream(_FakeStream):
+        async def run_async(self, *symbols: str) -> None:
+            del symbols
+            raise RuntimeError("socket exploded")
+
+    hub = MarketDataHub(
+        stream_feed=_BoomStream(),
+        candle_feed=_FakeCandleFeed(),
+        limiter=RateLimiter(1000, 1000),
+    )
+    seen: list[tuple[str, str, str]] = []
+    hub.add_stream_listener(lambda symbol, timeframe, reason: seen.append((symbol, timeframe, reason)))
+
+    hub.subscribe("BTC/USD", "1m", lambda candle: None)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert len(seen) == 1
+    assert "socket exploded" in seen[0][2]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stream_does_not_notify_listeners() -> None:
+    """Verify unsubscribing cancels the stream without reporting degradation."""
+    stream = _FakeStream()
+    hub = MarketDataHub(
+        stream_feed=stream,
+        candle_feed=_FakeCandleFeed(),
+        limiter=RateLimiter(1000, 1000),
+    )
+    seen: list[tuple[str, str, str]] = []
+    listener = lambda symbol, timeframe, reason: seen.append((symbol, timeframe, reason))
+    hub.add_stream_listener(listener)
+
+    handler = lambda candle: None
+    hub.subscribe("BTC/USD", "1m", handler)
+    await asyncio.sleep(0)
+    hub.unsubscribe("BTC/USD", "1m", handler)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert seen == []
+    hub.remove_stream_listener(listener)

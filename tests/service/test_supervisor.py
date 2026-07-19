@@ -146,10 +146,16 @@ async def test_supervisor_start_stop_and_order_event(monkeypatch) -> None:
     await supervisor.start("one")
     assert supervisor.get("one").status == "running"  # type: ignore[union-attr]
 
-    event = await asyncio.wait_for(queue.get(), timeout=1.0)
-    assert isinstance(event, OrderEvent)
-    assert event.bot_id == "one"
-    assert event.action == "buy"
+    # State snapshots (#114) share the bus, so skip past them to the order.
+    async def _next_order() -> OrderEvent:
+        while True:
+            event = await asyncio.wait_for(queue.get(), timeout=1.0)
+            if isinstance(event, OrderEvent):
+                return event
+
+    order = await asyncio.wait_for(_next_order(), timeout=2.0)
+    assert order.bot_id == "one"
+    assert order.action == "buy"
 
     await supervisor.stop("one")
     assert supervisor.get("one").status == "stopped"  # type: ignore[union-attr]

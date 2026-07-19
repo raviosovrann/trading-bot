@@ -102,3 +102,8 @@ class BotView(BaseModel):
     position: dict[str, Any] | None = None
     pnl: float
     last_decision: str | None = None
+    degraded: bool = False
+    """Whether the bot is running but no longer receiving market data."""
+
+    degraded_reason: str | None = None
+    """Why the bot is degraded, or ``None`` when healthy."""

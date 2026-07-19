@@ -15,6 +15,8 @@ _log = logging.getLogger(__name__)
 _Key = tuple[str, str]
 _Handler = Callable[[Candle], None]
 _StreamRunner = Callable[..., Awaitable[None]]
+_ExitListener = Callable[[str, str, str], None]
+"""Called with ``(symbol, timeframe, reason)`` when a stream exits unexpectedly."""
 
 
 class MarketDataHub:
@@ -59,6 +61,43 @@ class MarketDataHub:
         self._warmup_cache: dict[_Key, tuple[float, list[Candle]]] = {}
         self._warmup_locks: dict[_Key, asyncio.Lock] = {}
         self._latest_prices: dict[_Key, float] = {}
+        self._exit_listeners: list[_ExitListener] = []
+
+    def add_stream_listener(self, listener: _ExitListener) -> None:
+        """Register ``listener`` to be told when a stream exits unexpectedly.
+
+        "Unexpectedly" means anything other than the cancellation an
+        ``unsubscribe`` causes: an exception, or the feed's watch loop simply
+        returning. Both leave subscribers registered but starved of candles,
+        which is invisible without this signal.
+
+        Args:
+            listener: Callable invoked with ``(symbol, timeframe, reason)``.
+        """
+        if listener not in self._exit_listeners:
+            self._exit_listeners.append(listener)
+
+    def remove_stream_listener(self, listener: _ExitListener) -> None:
+        """Unregister ``listener``; unknown listeners are ignored.
+
+        Args:
+            listener: Callable previously passed to ``add_stream_listener``.
+        """
+        if listener in self._exit_listeners:
+            self._exit_listeners.remove(listener)
+
+    def _notify_stream_exit(self, key: _Key, reason: str) -> None:
+        """Tell every listener that ``key``'s stream stopped delivering data.
+
+        Args:
+            key: Symbol/timeframe whose stream exited.
+            reason: Human-readable cause, shown to the operator.
+        """
+        for listener in tuple(self._exit_listeners):
+            try:
+                listener(key[0], key[1], reason)
+            except Exception:  # noqa: BLE001 - a bad listener must not kill the stream task
+                _log.exception("stream exit listener failed for %s %s", *key)
 
     def subscribe(self, symbol: str, timeframe: str, handler: _Handler) -> None:
         """Register ``handler`` for closed candles on ``symbol/timeframe``.
@@ -115,7 +154,12 @@ class MarketDataHub:
             self._stream_feed.stop()
 
     async def _run_stream(self, key: _Key) -> None:
-        """Run the underlying stream for ``key`` until cancelled."""
+        """Run the underlying stream for ``key`` until cancelled.
+
+        An exit that is not a cancellation is reported to the stream listeners:
+        handlers stay registered, so without that signal the bot goes on
+        reporting ``running`` while no candle ever arrives again.
+        """
         try:
             runner = getattr(self._stream_feed, "run_async", None)
             if callable(runner):
@@ -127,8 +171,12 @@ class MarketDataHub:
                 await asyncio.to_thread(legacy_runner, key[0])
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             _log.exception("market data stream stopped for %s %s", *key)
+            self._notify_stream_exit(key, f"{type(exc).__name__}: {exc}")
+        else:
+            _log.warning("market data stream for %s %s returned unexpectedly", *key)
+            self._notify_stream_exit(key, "stream ended without an unsubscribe")
         finally:
             try:
                 current = asyncio.current_task()

@@ -85,6 +85,94 @@ function setup(theBot: BotView, trades: Trade[] = []) {
 }
 
 describe('BotDetail', () => {
+  it('applies a PnL-only state event without refetching the bot', async () => {
+    const { client, emit } = setup(bot({ status: 'running' }))
+    expect(await screen.findByText('running')).toBeInTheDocument()
+    const before = (client.getBot as unknown as { mock: { calls: unknown[] } }).mock.calls.length
+
+    emit({
+      type: 'state',
+      bot_id: 'b1',
+      seq: 1,
+      status: 'running',
+      position: null,
+      pnl: -7.25,
+      last_decision: null,
+      degraded: false,
+      degraded_reason: null,
+    })
+
+    expect(await screen.findByText(/-7\.25/)).toBeInTheDocument()
+    expect((client.getBot as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(
+      before,
+    )
+  })
+
+  it('shows a position change pushed over the socket', async () => {
+    const { emit } = setup(bot({ status: 'running' }))
+    expect(await screen.findByText('running')).toBeInTheDocument()
+    emit({
+      type: 'state',
+      bot_id: 'b1',
+      seq: 1,
+      status: 'running',
+      position: { symbol: 'BTC/USD', side: 'short', size: 3, entry_price: 25 },
+      pnl: 0,
+      last_decision: null,
+      degraded: false,
+      degraded_reason: null,
+    })
+    expect(await screen.findByText(/short 3 @ 25/)).toBeInTheDocument()
+  })
+
+  it('surfaces a runtime failure and a degraded stream', async () => {
+    const { emit } = setup(bot({ status: 'running' }))
+    expect(await screen.findByText('running')).toBeInTheDocument()
+
+    emit({
+      type: 'state',
+      bot_id: 'b1',
+      seq: 1,
+      status: 'running',
+      position: null,
+      pnl: 0,
+      last_decision: null,
+      degraded: true,
+      degraded_reason: 'ConnectionResetError: peer went away',
+    })
+    expect(await screen.findByText(/peer went away/)).toBeInTheDocument()
+
+    emit({
+      type: 'state',
+      bot_id: 'b1',
+      seq: 2,
+      status: 'failed',
+      position: null,
+      pnl: 0,
+      last_decision: null,
+      degraded: false,
+      degraded_reason: null,
+    })
+    expect(await screen.findByText('failed')).toBeInTheDocument()
+  })
+
+  it('ignores a state event for a different bot', async () => {
+    const { emit } = setup(bot({ status: 'running' }))
+    expect(await screen.findByText('running')).toBeInTheDocument()
+    emit({
+      type: 'state',
+      bot_id: 'other',
+      seq: 1,
+      status: 'failed',
+      position: null,
+      pnl: 0,
+      last_decision: null,
+      degraded: false,
+      degraded_reason: null,
+    })
+    expect(screen.getByText('running')).toBeInTheDocument()
+  })
+
   it('enabling LIVE shows a confirm and only PATCHes after confirming', async () => {
     const { client } = setup(bot({ live: false }))
     await screen.findByText('BTC/USD')

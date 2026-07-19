@@ -161,6 +161,33 @@ configuration change would half-apply — the venue, risk guard and strategy are
 built from the config at start — so `PATCH /api/bots/{id}` is rejected with
 `409` and the caller should retry once the transition settles.
 
+### Degraded: running but starved of data
+
+A bot also carries a `degraded` flag with a `degraded_reason`, shown in the UI
+as a **NO DATA** badge on the dashboard row and a banner on the bot detail page.
+It is deliberately *not* a status: a degraded bot is still `running`, and the
+lifecycle and `PATCH` rules above are unchanged.
+
+It is set when the market-data stream behind the bot exits without anyone
+unsubscribing — the socket dropped, or the venue's watch loop returned. The
+runtime stays alive and keeps reporting `running`, but no new bars arrive, so
+without this flag the condition is invisible. The reason text carries the
+underlying error.
+
+**To recover: stop the bot and start it again.** That rebuilds the stream and
+clears the flag. Nothing reconnects automatically today.
+
+### Live state updates
+
+The operator console does not poll. Every lifecycle transition, position
+change, PnL move and degradation is broadcast over `WS /ws` as a `state` event
+carrying the bot's full authoritative view, so the UI applies it without
+refetching. Running bots also re-mark position and PnL every 5 seconds, and the
+poll publishes only when the snapshot actually changed, so an idle bot is
+silent. Each event carries a per-bot `seq` that increases monotonically; the
+client drops any snapshot older than one it has already applied, and resets
+that bookkeeping on reconnect so a restarted service is not ignored.
+
 Every sensitive action — login success/failure, logout, credential changes, bot
 create/start/stop/update, live-mode toggles, cap changes, user management — is
 written to a redacted, hash-chained audit trail readable by an admin at
