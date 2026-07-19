@@ -15,6 +15,7 @@ from typing import Any
 from ..datafeed import CcxtCandleFeed
 from ..stream import CcxtStreamFeed
 from ..tradovate_feed import TradovateStreamFeed
+from .blocking import WorkerPools
 from .datahub import MarketDataHub
 from .ratelimit import RateLimiter
 from .supervisor import BotConfig
@@ -67,8 +68,13 @@ class HubFactory:
         burst: int = 8,
         feed_builder: FeedBuilder | None = None,
         mtf_cache_seconds: float = 60.0,
+        workers: WorkerPools | None = None,
     ) -> None:
         self._store = store
+        # One pool per venue account, shared by every hub on it, so a slow
+        # exchange's REST calls queue behind its own workers rather than
+        # stalling another venue or the event loop (#111).
+        self._workers = workers if workers is not None else WorkerPools()
         self._rate_per_sec = rate_per_sec
         self._burst = burst
         self._feed_builder = feed_builder or _default_feed_builder
@@ -95,6 +101,7 @@ class HubFactory:
             candle_feed=candle_feed,
             limiter=limiter,
             mtf_cache_seconds=self._mtf_cache_seconds,
+            workers=self._workers.for_name(f"{venue}:{market_type}"),
         )
         self._hubs[hub_key] = hub
         return hub

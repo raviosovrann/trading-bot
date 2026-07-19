@@ -13,6 +13,7 @@ from ..router import SignalRouter
 from ..runtime import StreamRuntime
 from ..strategies import StrategyContext
 from ..stream import StreamingFeed
+from .blocking import BlockingCalls, BlockingCallTimeout, WorkerPools
 from .events import BotStateEvent, DecisionEvent, EventBus, OrderEvent
 from .registry import build_strategy, build_venue
 from .risk import GlobalExposure
@@ -121,17 +122,25 @@ class BotInstance:
     stream_listener: Any | None = None
     """Hub stream-exit listener registered while the bot runs."""
 
+    lane: Any | None = None
+    """Single-worker pool serializing this bot's blocking strategy/order work."""
+
 
 class _HubFeed:
     """Adapter that exposes a market-data hub as a ``StreamingFeed``."""
 
-    def __init__(self, hub: Any, cfg: BotConfig, warmup: list[Candle]) -> None:
+    def __init__(
+        self, hub: Any, cfg: BotConfig, warmup: list[Candle], lane: BlockingCalls
+    ) -> None:
         """Initialize the feed adapter.
 
         Args:
             hub: Market-data hub providing candles and subscriptions.
             cfg: Bot configuration used for symbol/timeframe selection.
             warmup: Historical closed candles to replay on start.
+            lane: This bot's single-worker pool. Bar processing runs there so
+                the strategy and the synchronous order placement behind it stay
+                off the event loop, while a single worker keeps bars in order.
         """
         self._hub = hub
         self._cfg = cfg
@@ -139,6 +148,7 @@ class _HubFeed:
         self._handler: Callable[[Candle], None] | None = None
         self._stopped = asyncio.Event()
         self._subscribed = False
+        self._lane = lane
 
     def warmup_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
         """Return the newest ``limit`` warm-up candles.
@@ -160,8 +170,12 @@ class _HubFeed:
         Args:
             handler: Callback invoked for each new closed bar.
         """
-        self._handler = handler
-        self._hub.subscribe(self._cfg.symbol, self._cfg.timeframe, handler)
+        # The hub fans bars out from the stream task, on the event loop. Hand
+        # each one straight to this bot's lane instead of processing inline:
+        # the chain below runs strategy -> router -> venue.place_order, all
+        # synchronous, and would otherwise block every other bot and the API.
+        self._handler = lambda candle: self._lane.submit(handler, candle)
+        self._hub.subscribe(self._cfg.symbol, self._cfg.timeframe, self._handler)
         self._subscribed = True
 
     async def run_async(self, *symbols: str) -> None:
@@ -204,6 +218,7 @@ class BotSupervisor:
         global_exposure: GlobalExposure,
         store: Any | None = None,
         state_poll_seconds: float = _STATE_POLL_SECONDS,
+        workers: WorkerPools | None = None,
     ) -> None:
         """Initialize the supervisor.
 
@@ -216,6 +231,8 @@ class BotSupervisor:
             state_poll_seconds: How often a running bot re-marks its position
                 and PnL. This bounds state traffic: the poll publishes only
                 when the snapshot actually changed.
+            workers: Per-venue thread pools used to keep synchronous exchange
+                calls off the event loop (#111). Created if not supplied.
 
         Raises:
             ValueError: If ``state_poll_seconds`` is not positive.
@@ -227,6 +244,7 @@ class BotSupervisor:
         self._global_exposure = global_exposure
         self._store = store
         self._state_poll_seconds = state_poll_seconds
+        self._workers = workers if workers is not None else WorkerPools()
         self._bots: dict[str, BotInstance] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._last_snapshots: dict[str, tuple[Any, ...]] = {}
@@ -319,7 +337,10 @@ class BotSupervisor:
         try:
             hub = self._hub_factory(bot.config)
             warmup = await hub.warmup(bot.config.symbol, bot.config.timeframe, _WARMUP_BARS)
-            feed = _HubFeed(hub, bot.config, warmup)
+            # One worker: bars for a bot must be processed in order, and a
+            # bot stuck in a slow order must not delay any other bot.
+            bot.lane = BlockingCalls(f"bot-{bot.config.id}", max_workers=1)
+            feed = _HubFeed(hub, bot.config, warmup, bot.lane)
             venue = build_venue(
                 bot.config.venue,
                 bot.config.market_type,
@@ -361,6 +382,7 @@ class BotSupervisor:
                 timeframe=bot.config.timeframe,
                 warmup_bars=len(warmup),
                 on_event=lambda text: self._handle_event(bot, text),
+                run_blocking=bot.lane.run,
             )
             bot.status = "running"
             bot.task = asyncio.create_task(bot.runtime.start_async(install_signals=False))
@@ -411,6 +433,7 @@ class BotSupervisor:
                     pass
             bot.task = None
             bot.runtime = None
+            self._release_lane(bot)
             bot.status = "stopped"
             self._publish_state(bot)
 
@@ -457,6 +480,43 @@ class BotSupervisor:
         bot.venue = None
         bot.hub = None
         bot.multiplier = 1.0
+        self._release_lane(bot)
+
+    def _release_lane(self, bot: BotInstance) -> None:
+        """Shut down ``bot``'s worker lane, if it has one.
+
+        Not waited on: a lane may be parked in a hung exchange call, and a
+        stop must not inherit that wait.
+
+        Args:
+            bot: Bot whose lane should be released.
+        """
+        lane = bot.lane
+        bot.lane = None
+        if lane is not None:
+            lane.shutdown(wait=False)
+
+    def shutdown_workers(self) -> None:
+        """Release every venue worker pool.
+
+        Called during application shutdown. Does not wait: a pool may be parked
+        in a hung exchange call, and shutdown must not inherit that wait.
+        """
+        self._workers.shutdown(wait=False)
+
+    def _venue_workers(self, bot: BotInstance):
+        """Return the thread pool dedicated to ``bot``'s venue.
+
+        Keyed per venue and market type so one stuck exchange exhausts only
+        its own workers, never another venue's or the event loop.
+
+        Args:
+            bot: Bot whose venue pool is wanted.
+
+        Returns:
+            The venue's :class:`BlockingCalls` pool.
+        """
+        return self._workers.for_name(f"{bot.config.venue}:{bot.config.market_type}")
 
     async def _cancel_poll(self, bot: BotInstance) -> None:
         """Cancel and await ``bot``'s state-poll task, if one is running.
@@ -488,9 +548,13 @@ class BotSupervisor:
         while True:
             await asyncio.sleep(self._state_poll_seconds)
             try:
-                self._refresh_position(bot)
+                # get_position() is a blocking exchange call; run it on the
+                # venue's pool so a slow venue cannot stall the loop.
+                await self._venue_workers(bot).run(self._refresh_position, bot)
                 self._refresh_pnl(bot)
                 self._publish_state_if_changed(bot)
+            except BlockingCallTimeout:
+                _log.warning("position refresh timed out for bot %s", bot.config.id)
             except Exception:  # noqa: BLE001 - a bad poll must not stop the bot
                 _log.exception("state poll failed for bot %s", bot.config.id)
 
