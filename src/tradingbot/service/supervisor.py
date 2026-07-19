@@ -219,6 +219,33 @@ class BotSupervisor:
         self._bots[cfg.id] = instance
         return instance
 
+    def restore(self) -> int:
+        """Adopt every persisted bot config that is not already managed.
+
+        Called during application startup so a restart does not lose the
+        operator's bots. Restored bots are **not** started: they are given a
+        non-running status and only begin trading when explicitly started, so a
+        restart can never silently resume live orders.
+
+        Returns:
+            Number of bots adopted from the store.
+        """
+        if self._store is None:
+            return 0
+        try:
+            configs = self._store.load_configs()
+        except Exception:  # noqa: BLE001 - a bad store must not stop the service booting
+            _log.exception("failed to load persisted bot configs")
+            return 0
+        restored = 0
+        for cfg in configs:
+            if cfg.id in self._bots:
+                continue
+            self._bots[cfg.id] = BotInstance(config=cfg, status="stopped")
+            restored += 1
+        _log.info("restored %d persisted bot(s)", restored)
+        return restored
+
     async def start(self, bot_id: str) -> None:
         """Build and start the bot identified by ``bot_id``.
 

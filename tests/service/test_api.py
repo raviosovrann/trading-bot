@@ -791,3 +791,119 @@ class TestWebSocketEvents:
             supervisor.event_bus.publish("plain-string")
             data = ws.receive_json()
             assert data["type"] == "unknown"
+
+
+def _supervisor_with_store(monkeypatch: pytest.MonkeyPatch, store: BotStore) -> BotSupervisor:
+    """A supervisor wired to ``store`` so it can restore persisted bots."""
+    monkeypatch.setattr("tradingbot.service.supervisor.build_venue", lambda *a, **k: _FakeVenue())
+    monkeypatch.setattr("tradingbot.service.supervisor.build_strategy", lambda *a, **k: _SignalStrategy())
+    return BotSupervisor(
+        hub_factory=lambda cfg: _FakeHub(),
+        event_bus=EventBus(),
+        global_exposure=GlobalExposure(),
+        store=store,
+    )
+
+
+_BOT_PAYLOAD = {
+    "venue": "coinbase",
+    "market_type": "spot",
+    "strategy": "example",
+    "symbol": "BTC/USD",
+    "timeframe": "1m",
+    "quantity": 0.1,
+    "per_bot_cap": 1_000.0,
+    "global_cap": 10_000.0,
+    "params": {},
+}
+
+
+class TestRestartRestoresBots:
+    def test_bot_created_before_restart_is_visible_after_restart(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bot persisted by one process is served by the next one."""
+        data_dir = tmp_path / "data"
+        store = _store(tmp_path)
+        first = create_app(store=store, supervisor=_supervisor_with_store(monkeypatch, store))
+        with TestClient(first) as client:
+            created = client.post("/api/bots", json=_BOT_PAYLOAD, headers=_auth())
+            assert created.status_code == 201
+            bot_id = created.json()["id"]
+
+        # Restart: a brand-new store and supervisor over the same data directory.
+        restarted_store = BotStore(data_dir)
+        second = create_app(
+            store=restarted_store,
+            supervisor=_supervisor_with_store(monkeypatch, restarted_store),
+        )
+        with TestClient(second) as client:
+            listed = client.get("/api/bots", headers=_auth())
+            assert listed.status_code == 200
+            bots = listed.json()
+            assert [bot["id"] for bot in bots] == [bot_id]
+            # Restored, but deliberately not trading.
+            assert bots[0]["status"] == "stopped"
+
+    def test_restored_bot_can_be_started(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A restored bot is fully operable, not just a listing entry."""
+        data_dir = tmp_path / "data"
+        store = _store(tmp_path)
+        first = create_app(store=store, supervisor=_supervisor_with_store(monkeypatch, store))
+        with TestClient(first) as client:
+            bot_id = client.post("/api/bots", json=_BOT_PAYLOAD, headers=_auth()).json()["id"]
+
+        restarted_store = BotStore(data_dir)
+        second = create_app(
+            store=restarted_store,
+            supervisor=_supervisor_with_store(monkeypatch, restarted_store),
+        )
+        with TestClient(second) as client:
+            started = client.post(f"/api/bots/{bot_id}/start", headers=_auth())
+            assert started.status_code == 200
+            assert started.json()["status"] == "running"
+            client.post(f"/api/bots/{bot_id}/stop", headers=_auth())
+
+    def test_malformed_record_does_not_hide_valid_bots(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One corrupt entry in bots.json must not blank the dashboard."""
+        data_dir = tmp_path / "data"
+        store = _store(tmp_path)
+        first = create_app(store=store, supervisor=_supervisor_with_store(monkeypatch, store))
+        with TestClient(first) as client:
+            bot_id = client.post("/api/bots", json=_BOT_PAYLOAD, headers=_auth()).json()["id"]
+
+        bots_file = data_dir / "bots.json"
+        records = json.loads(bots_file.read_text(encoding="utf-8"))
+        records.append({"id": "corrupt"})
+        bots_file.write_text(json.dumps(records), encoding="utf-8")
+
+        restarted_store = BotStore(data_dir)
+        second = create_app(
+            store=restarted_store,
+            supervisor=_supervisor_with_store(monkeypatch, restarted_store),
+        )
+        with TestClient(second) as client:
+            bots = client.get("/api/bots", headers=_auth()).json()
+            assert [bot["id"] for bot in bots] == [bot_id]
+
+
+class TestGracefulShutdown:
+    def test_running_bot_is_stopped_when_the_app_shuts_down(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Leaving the app context stops running bots instead of abandoning them."""
+        store = _store(tmp_path)
+        supervisor = _supervisor_with_store(monkeypatch, store)
+        app = create_app(store=store, supervisor=supervisor)
+        with TestClient(app) as client:
+            bot_id = client.post("/api/bots", json=_BOT_PAYLOAD, headers=_auth()).json()["id"]
+            assert client.post(f"/api/bots/{bot_id}/start", headers=_auth()).status_code == 200
+            bot = supervisor.get(bot_id)
+            assert bot is not None and bot.status == "running"
+
+        assert bot.status == "stopped"
+        assert bot.task is None or bot.task.done()

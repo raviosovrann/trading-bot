@@ -283,3 +283,77 @@ async def test_two_bots_run_concurrently(monkeypatch) -> None:
     await asyncio.gather(supervisor.start("one"), supervisor.start("two"))
     assert [bot.status for bot in supervisor.list()] == ["running", "running"]
     await asyncio.gather(supervisor.stop("one"), supervisor.stop("two"))
+
+
+class _FakeStore:
+    """Minimal store double exposing only what the supervisor restores from."""
+
+    def __init__(self, configs: list[BotConfig]) -> None:
+        self._configs = list(configs)
+
+    def load_configs(self) -> list[BotConfig]:
+        return list(self._configs)
+
+
+def test_restore_loads_persisted_configs_into_supervisor() -> None:
+    """Every persisted config is adopted by the supervisor on restore."""
+    store = _FakeStore([_config("one"), _config("two")])
+    supervisor = BotSupervisor(
+        hub_factory=lambda cfg: _FakeHub(),
+        event_bus=EventBus(),
+        global_exposure=GlobalExposure(),
+        store=store,
+    )
+
+    restored = supervisor.restore()
+
+    assert restored == 2
+    assert sorted(bot.config.id for bot in supervisor.list()) == ["one", "two"]
+
+
+def test_restored_bots_are_not_running() -> None:
+    """Restored bots sit in a safe non-running state until explicitly started."""
+    store = _FakeStore([_config("one")])
+    supervisor = BotSupervisor(
+        hub_factory=lambda cfg: _FakeHub(),
+        event_bus=EventBus(),
+        global_exposure=GlobalExposure(),
+        store=store,
+    )
+
+    supervisor.restore()
+
+    bot = supervisor.get("one")
+    assert bot is not None
+    assert bot.status == "stopped"
+    assert bot.task is None
+    assert bot.runtime is None
+
+
+def test_restore_does_not_clobber_existing_bots() -> None:
+    """Restoring twice is a no-op for ids the supervisor already manages."""
+    store = _FakeStore([_config("one")])
+    supervisor = BotSupervisor(
+        hub_factory=lambda cfg: _FakeHub(),
+        event_bus=EventBus(),
+        global_exposure=GlobalExposure(),
+        store=store,
+    )
+    supervisor.restore()
+    supervisor.get("one").status = "running"  # type: ignore[union-attr]
+
+    assert supervisor.restore() == 0
+    assert supervisor.get("one").status == "running"  # type: ignore[union-attr]
+    assert len(supervisor.list()) == 1
+
+
+def test_restore_without_store_is_a_no_op() -> None:
+    """A supervisor with no store restores nothing rather than failing."""
+    supervisor = BotSupervisor(
+        hub_factory=lambda cfg: _FakeHub(),
+        event_bus=EventBus(),
+        global_exposure=GlobalExposure(),
+    )
+
+    assert supervisor.restore() == 0
+    assert supervisor.list() == []

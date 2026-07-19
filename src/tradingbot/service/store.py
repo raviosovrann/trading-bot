@@ -117,7 +117,20 @@ class BotStore:
             return []
         if not isinstance(data, list):
             return []
-        return [BotConfig(**item) for item in data]
+        # Isolate malformed records: one bad entry must not cost the operator
+        # every other bot on restart.
+        configs: list[BotConfig] = []
+        for index, item in enumerate(data):
+            if not isinstance(item, dict):
+                _log.warning("skipping non-object bot record at index %d in %s", index, self._bots_file)
+                continue
+            try:
+                configs.append(BotConfig(**item))
+            except TypeError as exc:
+                _log.warning(
+                    "skipping malformed bot record at index %d in %s: %s", index, self._bots_file, exc
+                )
+        return configs
 
     def _save_configs(self, configs: Iterable[BotConfig]) -> None:
         """Atomically write configs to disk with credentials removed.
