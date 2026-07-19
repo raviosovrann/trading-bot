@@ -32,6 +32,16 @@ export interface BotView {
   degraded_permanent?: boolean
 }
 
+// One order-lifecycle event (#135). The log holds discrete events -- a
+// submission, a fill snapshot, a rejection -- rather than one row per order
+// outcome, so a submitted-but-unfilled order is no longer shown as a trade.
+export type TradeKind =
+  | 'submitted'
+  | 'order_status'
+  | 'dry_run'
+  | 'rejected'
+  | 'canceled'
+
 export interface Trade {
   bot_id: string
   action: string
@@ -42,6 +52,15 @@ export interface Trade {
   ts: number | null
   // Stable per-bot cursor used to page backward through history (#122).
   seq: number | null
+  // null for legacy rows written before #135, which are shown as-is rather
+  // than reinterpreted -- the data to classify them honestly was never kept.
+  kind: TradeKind | null
+  client_order_id: string | null
+  side: string | null
+  qty: number | null
+  filled_qty: number | null
+  avg_price: number | null
+  reason: string | null
 }
 
 // Trade history is unbounded, so the API always returns one bounded page.

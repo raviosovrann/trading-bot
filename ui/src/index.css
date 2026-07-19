@@ -312,3 +312,18 @@ section.card {
 .wizard .button-row {
   justify-content: space-between;
 }
+
+/* Order-lifecycle event tones (#135). A submission or dry run is deliberately
+   muted: only fill evidence gets the affirmative colour, so an acknowledged
+   order can no longer be misread as a completed trade at a glance. */
+.trade-positive {
+  color: #22c55e;
+}
+
+.trade-neutral {
+  color: var(--muted);
+}
+
+.trade-negative {
+  color: var(--danger);
+}
