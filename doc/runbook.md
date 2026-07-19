@@ -231,6 +231,32 @@ dropped. The console treats it as "my live view is now incomplete" and refetches
 the bot list and trade history rather than carrying on with a partial picture.
 **Overflow is therefore always visible, never silent.**
 
+### Rotating venue credentials
+
+`PUT /api/venues/{venue}/{market_type}/secrets` replaces the stored credentials
+for one venue account.
+
+**Rotation is refused with `409` while any bot on that venue/market-type is
+running, starting or stopping**, and the response names the bots that block it.
+The supported flow is **stop → rotate → start**, the same shape as the
+configuration policy above.
+
+Why refuse rather than restart automatically: the venue client is built once
+when a bot starts, so a rotation mid-flight would leave the API advertising
+credentials the running bot is not actually using. Restarting bots on the
+operator's behalf is worse — it could re-enter the market from a position the
+operator was managing.
+
+Bots on *other* venues or market types are unaffected and keep running.
+
+On a successful rotation the cached market-data clients for that account are
+**closed immediately**, across every timeframe. This matters: hubs are cached
+per `(venue, market_type, timeframe)` but credentials are per account, so a
+stale hub on another timeframe would keep reconnecting with a key the operator
+believes they revoked. Hubs also carry a fingerprint of the credentials they
+were built from — a SHA-256 digest, never the secrets — so a rotation applied
+by any other route is still detected the next time a hub is requested.
+
 ### Slow exchanges cannot freeze the service
 
 ccxt is a synchronous HTTP client, but the service runs one asyncio event loop.

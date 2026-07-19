@@ -73,6 +73,26 @@ describe('makeClient', () => {
     await expect(makeClient().listBots()).rejects.toThrow(/400/)
   })
 
+  it('surfaces the API detail message rather than raw JSON', async () => {
+    // The server explains refusals in `detail`; showing the encoded body
+    // instead buries the one sentence the operator needs.
+    mockFetch(
+      JSON.stringify({
+        detail: 'cannot rotate credentials while bots are running on coinbase/spot',
+      }),
+      409,
+    )
+    await expect(makeClient().listBots()).rejects.toThrow(
+      /cannot rotate credentials while bots are running/,
+    )
+    await expect(makeClient().listBots()).rejects.not.toThrow(/detail/)
+  })
+
+  it('falls back to the raw body when there is no detail field', async () => {
+    mockFetch('upstream exploded', 500)
+    await expect(makeClient().listBots()).rejects.toThrow(/upstream exploded/)
+  })
+
   it('returns undefined for a 204 response', async () => {
     const fetchFn = vi.fn().mockResolvedValue({ ok: true, status: 204, text: async () => '' })
     vi.stubGlobal('fetch', fetchFn)

@@ -656,7 +656,33 @@ def create_app(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="no credentials supplied",
             )
+        # The venue client is built once when a bot starts, so rotating under a
+        # running bot would leave the API advertising credentials that bot is
+        # not using — the same half-applied state #109 refuses for config.
+        # Refuse rather than restart: an automatic restart mid-position could
+        # re-enter the market on the operator's behalf.
+        active = [
+            bot.config.id
+            for bot in supervisor.list()
+            if bot.config.venue.strip().lower() == venue.strip().lower()
+            and bot.config.market_type.strip().lower() == market_type.strip().lower()
+            and bot.status not in ("created", "stopped", "failed")
+        ]
+        if active:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "cannot rotate credentials while bots are running on "
+                    f"{venue}/{market_type}: {', '.join(sorted(active))}. "
+                    "Stop them, rotate, then start again."
+                ),
+            )
         store.save_secrets(venue, market_type, creds)
+        # Drop the cached clients eagerly. Waiting for the next start would
+        # leave the superseded socket reconnecting on a revoked key.
+        invalidate = getattr(supervisor.hub_factory, "invalidate", None)
+        if callable(invalidate):
+            invalidate(venue.strip().lower(), market_type.strip().lower())
         _audit(
             http_request, principal, "credentials.update",
             f"venue:{venue}/{market_type}", "success",
