@@ -188,6 +188,54 @@ silent. Each event carries a per-bot `seq` that increases monotonically; the
 client drops any snapshot older than one it has already applied, and resets
 that bookkeeping on reconnect so a restarted service is not ignored.
 
+### Backpressure: what happens to a slow client
+
+Each WebSocket subscriber has a **bounded** buffer (256 events). A browser that
+stalls briefly catches up losslessly; one that has effectively stopped reading
+cannot pin unbounded memory. When a subscriber's buffer fills, events are shed
+by kind:
+
+| Event | Under pressure |
+|-------|----------------|
+| `state` | **Coalesced.** A newer snapshot for the same bot replaces the queued one. Snapshots are complete, so nothing is lost. |
+| `decision` | **Dropped, oldest first.** These are informational ticks in a rolling log. |
+| `order` | **Never shed to make room for something else.** Orders are also written to the trade log, so an order is never lost — only possibly delayed past the socket. |
+
+Any drop sends the client an `overflow` event carrying the number of events
+dropped. The console treats it as "my live view is now incomplete" and refetches
+the bot list and trade history rather than carrying on with a partial picture.
+**Overflow is therefore always visible, never silent.**
+
+### Trade history: rotation and retention
+
+A bot's orders are written to `data/trades/<bot-id>.<ordinal>.jsonl`. When the
+active file reaches **8 MiB** the service starts a new ordinal; it never renames
+or rewrites an existing file, so a record's location — and any cursor into it —
+stays valid forever.
+
+**Nothing is ever deleted.** There is no retention window and no archival
+sweep: the service does not destroy trade records. Disk use therefore grows
+with trading activity, and pruning or off-boxing old archives is a deliberate
+operator action. `du -sh data/trades` is the number to watch.
+
+The rotation threshold is configurable via `BotStore(trade_rotate_bytes=...)`.
+It is a performance knob, not a retention one — it bounds how much must be read
+to serve one page of history.
+
+`GET /api/bots/{id}/trades` returns one **bounded page**, newest first:
+
+```
+GET /api/bots/{id}/trades?limit=50            -> {"items": [...], "next_cursor": 812}
+GET /api/bots/{id}/trades?limit=50&before=812 -> {"items": [...], "next_cursor": null}
+```
+
+`limit` is capped at 500 server-side (a larger value is rejected with `422`).
+Follow `next_cursor` until it is `null` to walk the whole history. The cursor is
+a per-bot `seq` stamped on each record, so paging only ever moves backward into
+already-written history — a trade recorded mid-page can neither be duplicated
+nor skipped. Records written before this scheme carry no `seq` and are numbered
+by their position, which is stable because segments are append-only.
+
 Every sensitive action — login success/failure, logout, credential changes, bot
 create/start/stop/update, live-mode toggles, cap changes, user management — is
 written to a redacted, hash-chained audit trail readable by an admin at

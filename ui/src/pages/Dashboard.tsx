@@ -23,7 +23,10 @@ export function Dashboard() {
   const [pending, setPending] = useState<PendingAction | null>(null)
 
   useBotEvents((event) => {
-    if (event.type === 'state') {
+    if (event.type === 'overflow') {
+      // Events were dropped for this client, so the table may be stale.
+      void queryClient.invalidateQueries({ queryKey: ['bots'] })
+    } else if (event.type === 'state') {
       // The snapshot is authoritative and complete — apply it, don't refetch.
       queryClient.setQueryData<BotView[]>(['bots'], (old) =>
         old?.map((b) =>

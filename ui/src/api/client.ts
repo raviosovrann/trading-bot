@@ -1,4 +1,4 @@
-import type { BotView, CreateBot, PatchBot, SessionInfo, Trade, VenueOption } from '../types'
+import type { BotView, CreateBot, PatchBot, SessionInfo, TradePage, VenueOption } from '../types'
 
 /** Thrown on a 401 so callers can centrally clear auth and redirect to login. */
 export class UnauthorizedError extends Error {
@@ -60,7 +60,11 @@ export function makeClient(onUnauthorized?: () => void) {
       req<BotView>(`/bots/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
     startBot: (id: string) => req<BotView>(`/bots/${id}/start`, { method: 'POST' }),
     stopBot: (id: string) => req<BotView>(`/bots/${id}/stop`, { method: 'POST' }),
-    getTrades: (id: string) => req<Trade[]>(`/bots/${id}/trades`),
+    getTrades: (id: string, opts: { limit?: number; before?: number | null } = {}) => {
+      const params = new URLSearchParams({ limit: String(opts.limit ?? 50) })
+      if (opts.before != null) params.set('before', String(opts.before))
+      return req<TradePage>(`/bots/${id}/trades?${params.toString()}`)
+    },
     listVenues: () => req<VenueOption[]>('/venues'),
     listStrategies: () => req<string[]>('/strategies'),
     putSecrets: (venue: string, marketType: string, creds: Record<string, string>) =>

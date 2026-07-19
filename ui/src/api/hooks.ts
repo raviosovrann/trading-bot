@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAuth } from '../hooks/useAuth'
 import type { CreateBot, PatchBot } from '../types'
 
@@ -15,9 +15,20 @@ export function useBot(id: string) {
   return useQuery({ queryKey: ['bots', id], queryFn: () => client.getBot(id) })
 }
 
+/**
+ * Trade history, one bounded page at a time.
+ *
+ * History grows without bound, so this never asks for all of it: pages are
+ * fetched newest-first and the operator pulls older ones on demand.
+ */
 export function useTrades(id: string) {
   const { client } = useAuth()
-  return useQuery({ queryKey: ['bots', id, 'trades'], queryFn: () => client.getTrades(id) })
+  return useInfiniteQuery({
+    queryKey: ['bots', id, 'trades'],
+    queryFn: ({ pageParam }) => client.getTrades(id, { before: pageParam }),
+    initialPageParam: null as number | null,
+    getNextPageParam: (last) => last.next_cursor,
+  })
 }
 
 export function useVenues() {

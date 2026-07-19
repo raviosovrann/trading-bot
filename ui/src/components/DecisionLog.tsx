@@ -3,7 +3,7 @@ import { useBotEvents } from '../hooks/useBotEvents'
 import type { WsEvent } from '../types'
 
 // State snapshots (#114) are rendered as fields elsewhere, not as log lines.
-type LoggableEvent = Exclude<WsEvent, { type: 'state' }>
+type LoggableEvent = Exclude<WsEvent, { type: 'state' } | { type: 'overflow' }>
 
 function describe(event: LoggableEvent): string {
   if (event.type === 'decision') {
@@ -18,7 +18,8 @@ export function DecisionLog({ botId, limit = 50 }: { botId: string; limit?: numb
   const [entries, setEntries] = useState<string[]>([])
 
   useBotEvents((event) => {
-    if (event.bot_id !== botId || event.type === 'state') return
+    if (event.type === 'state' || event.type === 'overflow') return
+    if (event.bot_id !== botId) return
     setEntries((old) => [describe(event), ...old].slice(0, limit))
   })
 
