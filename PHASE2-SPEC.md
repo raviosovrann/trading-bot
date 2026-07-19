@@ -175,7 +175,9 @@ broker.
 
 ## Implementation plans
 
-Per‑piece implementation plans live in `doc/` (e.g. `doc/2c-tradovate-plan.md`).
+Implementation plans live in `doc/`. Phase 2's per‑piece plans (2a–2d) were
+retired once the phase shipped; see the git history for them. The current plan
+is [`doc/m2-plan.md`](doc/m2-plan.md).
 
 ## Deferred / open
 

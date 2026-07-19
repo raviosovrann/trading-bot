@@ -10,5 +10,5 @@ ui/test-results
 .coverage
 coverage.xml
 .env
-docs
+doc
 tests

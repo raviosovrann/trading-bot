@@ -4,7 +4,7 @@ services:
   trading-console:
     build: .
     # Bind to loopback only: the TLS-terminating reverse proxy is the sole
-    # public entry point (see docs/deployment.md).
+    # public entry point (see doc/deployment.md).
     ports:
       - "127.0.0.1:8000:8000"
     environment:

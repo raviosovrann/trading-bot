@@ -13,10 +13,10 @@ Supported venues:
   complete** (raises `NotImplementedError`, tracked in #96), so Tradovate bots
   cannot receive candles today. Coinbase spot is the working path.
 
-> **New here? Read the [Operator & Developer Runbook](docs/runbook.md).** It is
+> **New here? Read the [Operator & Developer Runbook](doc/runbook.md).** It is
 > the single reference for setup, login/session behaviour, running bots, log and
 > file locations, environment variables, and current limitations.
-> Deployment: [docs/deployment.md](docs/deployment.md) · CI: [docs/ci.md](docs/ci.md)
+> Deployment: [doc/deployment.md](doc/deployment.md) · CI: [doc/ci.md](doc/ci.md)
 
 Everything starts in **dry-run** mode (`LIVE=0`). The service never sends real
 orders until an operator explicitly toggles a bot to `live`.
@@ -247,11 +247,11 @@ pyright --pythonpath .venv/bin/python src/tradingbot tests   # types
 > spurious missing imports.
 
 UI checks live in [`ui/README.md`](ui/README.md); the full command list is in the
-[runbook](docs/runbook.md#8-verified-commands).
+[runbook](doc/runbook.md#8-verified-commands).
 
 CI runs the full matrix (Python 3.11/3.12/3.13), `pyright`, the UI gates,
 Bandit, pip-audit/npm-audit, CodeQL, and a container deploy smoke on every PR
-and push to `main`. Required checks and branch protection: [docs/ci.md](docs/ci.md).
+and push to `main`. Required checks and branch protection: [doc/ci.md](doc/ci.md).
 
 ---
 
