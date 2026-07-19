@@ -15,6 +15,7 @@ from tradingbot.service.ledger import (
     OrderLedger,
     OrderState,
     events_from_payload,
+    events_from_status,
     events_from_result,
 )
 
@@ -343,3 +344,95 @@ class TestPayloadTranslation:
 
         (submitted,) = events_from_payload(payload, bot_id="bot-a")
         assert submitted["ts"] == 1_700_000_000
+
+
+class TestStatusPollTranslation:
+    """Translating an order-status poll response (#135, commit 3).
+
+    The poller re-reads orders the venue may know more about than we do. Its
+    responses are cumulative, so they become `order_status` events -- never
+    `fill` events, which would double-count on the second read of an order.
+    """
+
+    def test_open_order_with_no_fill_yields_nothing(self) -> None:
+        # Nothing has changed, so there is nothing to record.
+        assert events_from_status("c1", _result(status="open"), ts=5) == []
+
+    def test_open_order_with_a_partial_fill_yields_a_snapshot(self) -> None:
+        events = events_from_status(
+            "c1", _result(status="open", filled_qty=0.5, raw={"average": 100.0}), ts=5
+        )
+        assert _kinds(events) == ["order_status"]
+        assert events[0]["filled_qty"] == 0.5
+        assert events[0]["avg_price"] == 100.0
+
+    def test_closed_order_yields_a_snapshot(self) -> None:
+        events = events_from_status(
+            "c1", _result(status="closed", filled_qty=2.0, raw={"average": 150.0}), ts=5
+        )
+        assert _kinds(events) == ["order_status"]
+
+    def test_canceled_order_yields_its_fill_then_the_cancel(self) -> None:
+        # Order matters: the quantity that traded before the cancel has to be
+        # recorded, and an explicit terminal event is refused once set.
+        events = events_from_status(
+            "c1",
+            _result(status="canceled", filled_qty=0.5, raw={"average": 100.0}),
+            ts=5,
+        )
+        assert _kinds(events) == ["order_status", "canceled"]
+
+    def test_canceled_order_with_no_fill_yields_only_the_cancel(self) -> None:
+        events = events_from_status("c1", _result(status="canceled"), ts=5)
+        assert _kinds(events) == ["canceled"]
+
+    def test_rejected_order_yields_a_rejection(self) -> None:
+        events = events_from_status(
+            "c1", _result(status="rejected", error="margin"), ts=5
+        )
+        assert _kinds(events) == ["rejected"]
+        assert events[0]["reason"] == "margin"
+
+    def test_a_failed_poll_is_not_evidence_of_anything(self) -> None:
+        # A network error means we do not know the order's state. Recording it
+        # as a rejection would cancel a live order in our books while it keeps
+        # working at the venue -- the worst outcome available here.
+        assert events_from_status(
+            "c1", _result(ok=False, status="error", error="timeout"), ts=5
+        ) == []
+
+    def test_polling_twice_does_not_double_count(self) -> None:
+        response = _result(status="closed", filled_qty=2.0, raw={"average": 150.0})
+        ledger = OrderLedger()
+        ledger.apply(_submitted_event())
+        for _ in range(3):
+            for event in events_from_status("c1", response, ts=5):
+                ledger.apply(event)
+
+        order = ledger.order("c1")
+        assert order is not None
+        assert order.filled_qty == 2.0
+
+    def test_a_poll_never_emits_a_discrete_fill(self) -> None:
+        # Guards the commit-1b invariant directly: a cumulative source must
+        # not enter the ledger through the incremental path.
+        for status in ("open", "closed", "canceled", "rejected"):
+            events = events_from_status(
+                "c1", _result(status=status, filled_qty=1.0), ts=5
+            )
+            assert "fill" not in _kinds(events)
+
+
+def _submitted_event() -> dict:
+    return {
+        "kind": "submitted",
+        "client_order_id": "c1",
+        "bot_id": "bot-a",
+        "symbol": "BTC/USD",
+        "side": "buy",
+        "order_type": "market",
+        "qty": 2.0,
+        "price": None,
+        "venue_order_id": "v1",
+        "ts": 1,
+    }

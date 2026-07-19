@@ -640,3 +640,67 @@ def events_from_payload(payload: dict[str, Any], *, bot_id: str) -> list[dict[st
     return events_from_result(
         order, result, bot_id=bot_id, ts=int(_coerce_float(payload.get("ts")) or 0)
     )
+
+
+_REJECTED_STATUSES = frozenset({"rejected", "expired"})
+"""Venue status strings meaning the order will never fill."""
+
+
+def events_from_status(
+    client_order_id: str,
+    result: "OrderResult",
+    *,
+    ts: int,
+) -> list[dict[str, Any]]:
+    """Translate an order-status poll response into ledger lifecycle events.
+
+    The poller re-reads orders the venue may know more about than we do. Venue
+    status responses are **cumulative**, so they become ``order_status``
+    events and never ``fill`` events -- routing a cumulative source through
+    the incremental path would double-count on the second read of the same
+    order. A test asserts no branch here can emit a fill.
+
+    A failed poll produces nothing. A network error means the order's state is
+    unknown, and recording that as a rejection would mark a live order dead in
+    our books while it keeps working at the venue.
+
+    Args:
+        client_order_id: Ledger key for the order being polled.
+        result: The venue's status response.
+        ts: Timestamp to stamp the events with.
+
+    Returns:
+        Lifecycle events to persist and fold, oldest first. Empty when the poll
+        failed or reported no change.
+    """
+    if not result.ok:
+        return []
+
+    status = str(result.status).strip().lower()
+    if status in _REJECTED_STATUSES:
+        return [{
+            "kind": "rejected",
+            "client_order_id": client_order_id,
+            "reason": result.error or status,
+            "ts": ts,
+        }]
+
+    events: list[dict[str, Any]] = []
+    filled_qty = _coerce_float(result.filled_qty)
+    if filled_qty is not None and filled_qty > _QTY_EPSILON:
+        avg_price = _coerce_float(result.raw.get("average")) if result.raw else None
+        events.append({
+            "kind": "order_status",
+            "client_order_id": client_order_id,
+            "filled_qty": filled_qty,
+            "avg_price": avg_price,
+            "ts": ts,
+        })
+
+    # The cancel goes last so the quantity that traded before it is recorded
+    # first -- the ledger refuses a second terminal event, not a later fill,
+    # but ordering the events honestly keeps the persisted log readable.
+    if status in _CANCELED_STATUSES:
+        events.append({"kind": "canceled", "client_order_id": client_order_id, "ts": ts})
+
+    return events
