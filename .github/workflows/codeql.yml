@@ -8,7 +8,13 @@ on:
 
 concurrency:
   group: codeql-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Deliberately NOT cancel-in-progress. Cancelling a CodeQL run mid-analysis
+  # leaves the ref without a complete set of uploaded results, and the
+  # code-scanning branch rule then cannot evaluate — it reports a neutral
+  # "skipping" check that blocks the merge until a full run lands. Two quick
+  # pushes to a PR were enough to trigger that. Letting analyses finish costs
+  # a few runner-minutes; the alternative costs a blocked PR.
+  cancel-in-progress: false
 
 jobs:
   analyze:
@@ -23,6 +29,10 @@ jobs:
         with:
           languages: python
           build-mode: none
+      # No explicit category. This analysis uploads under the category derived
+      # from the workflow path, which is what main's baseline already carries;
+      # renaming it would leave every PR unable to diff against main until the
+      # rename itself landed there.
       - uses: github/codeql-action/analyze@v3
 
   analyze-javascript-typescript:
