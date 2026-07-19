@@ -43,6 +43,9 @@ export function BotEventsProvider({
 }) {
   const { status, onUnauthorized } = useAuth()
   const handlers = useRef(new Set<Handler>())
+  // Highest state `seq` seen per bot. State snapshots are authoritative, so a
+  // frame that arrives after a newer one must be dropped rather than applied.
+  const lastSeq = useRef(new Map<string, number>())
 
   useEffect(() => {
     if (status !== 'authed') return
@@ -59,10 +62,18 @@ export function BotEventsProvider({
         } catch {
           return // ignore malformed frames
         }
+        if (parsed.type === 'state') {
+          const seen = lastSeq.current.get(parsed.bot_id)
+          if (seen !== undefined && parsed.seq <= seen) return
+          lastSeq.current.set(parsed.bot_id, parsed.seq)
+        }
         handlers.current.forEach((h) => h(parsed))
       }
       socket.onclose = (ev) => {
         if (disposed) return
+        // The server may have restarted with its counters back at zero, so the
+        // old high-water marks would silently drop every new snapshot.
+        lastSeq.current.clear()
         if (ev?.code === AUTH_CLOSE_CODE) {
           onUnauthorized() // session gone: stop retrying, drop to /login
           return

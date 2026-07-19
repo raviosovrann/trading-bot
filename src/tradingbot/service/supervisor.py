@@ -13,7 +13,7 @@ from ..router import SignalRouter
 from ..runtime import StreamRuntime
 from ..strategies import StrategyContext
 from ..stream import StreamingFeed
-from .events import DecisionEvent, EventBus, OrderEvent
+from .events import BotStateEvent, DecisionEvent, EventBus, OrderEvent
 from .registry import build_strategy, build_venue
 from .risk import GlobalExposure
 
@@ -21,6 +21,9 @@ _log = logging.getLogger(__name__)
 
 _WARMUP_BARS = 220
 """Default number of warm-up bars requested when starting a bot."""
+
+_STATE_POLL_SECONDS = 5.0
+"""Default cadence for re-marking a running bot's position and PnL."""
 
 
 @dataclass
@@ -97,6 +100,26 @@ class BotInstance:
 
     multiplier: float = 1.0
     """Contract multiplier used when marking PnL (1.0 for spot)."""
+
+    degraded: bool = False
+    """Whether the bot is alive but starved of market data.
+
+    Deliberately orthogonal to ``status``: a degraded bot is still ``running``
+    and its lifecycle rules (idempotent start, the #109 patch refusal) are
+    unchanged. Folding this into ``status`` would silently alter both.
+    """
+
+    degraded_reason: str | None = None
+    """Why the bot is degraded, shown to the operator."""
+
+    state_seq: int = 0
+    """Monotonic counter stamped on every published state event."""
+
+    poll_task: asyncio.Task[None] | None = None
+    """Background task refreshing position/PnL at a bounded cadence."""
+
+    stream_listener: Any | None = None
+    """Hub stream-exit listener registered while the bot runs."""
 
 
 class _HubFeed:
@@ -180,6 +203,7 @@ class BotSupervisor:
         event_bus: EventBus,
         global_exposure: GlobalExposure,
         store: Any | None = None,
+        state_poll_seconds: float = _STATE_POLL_SECONDS,
     ) -> None:
         """Initialize the supervisor.
 
@@ -189,13 +213,23 @@ class BotSupervisor:
             global_exposure: Shared exposure tracker used by risk guards.
             store: Optional persistence layer; when set, order events are
                 appended to its trade log in addition to being published.
+            state_poll_seconds: How often a running bot re-marks its position
+                and PnL. This bounds state traffic: the poll publishes only
+                when the snapshot actually changed.
+
+        Raises:
+            ValueError: If ``state_poll_seconds`` is not positive.
         """
+        if state_poll_seconds <= 0:
+            raise ValueError("state_poll_seconds must be positive")
         self._hub_factory = hub_factory
         self._event_bus = event_bus
         self._global_exposure = global_exposure
         self._store = store
+        self._state_poll_seconds = state_poll_seconds
         self._bots: dict[str, BotInstance] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._last_snapshots: dict[str, tuple[Any, ...]] = {}
 
     @property
     def event_bus(self) -> EventBus:
@@ -218,6 +252,7 @@ class BotSupervisor:
             raise ValueError(f"bot {cfg.id!r} already exists")
         instance = BotInstance(config=cfg)
         self._bots[cfg.id] = instance
+        self._publish_state(instance)
         return instance
 
     def restore(self) -> int:
@@ -242,7 +277,9 @@ class BotSupervisor:
         for cfg in configs:
             if cfg.id in self._bots:
                 continue
-            self._bots[cfg.id] = BotInstance(config=cfg, status="stopped")
+            instance = BotInstance(config=cfg, status="stopped")
+            self._bots[cfg.id] = instance
+            self._publish_state(instance)
             restored += 1
         _log.info("restored %d persisted bot(s)", restored)
         return restored
@@ -275,6 +312,10 @@ class BotSupervisor:
         # Claim the bot before the first await, so a concurrent caller that
         # takes the lock afterwards sees a bot that is already under way.
         bot.status = "starting"
+        # A fresh run starts from a clean data-health slate.
+        bot.degraded = False
+        bot.degraded_reason = None
+        self._publish_state(bot)
         try:
             hub = self._hub_factory(bot.config)
             warmup = await hub.warmup(bot.config.symbol, bot.config.timeframe, _WARMUP_BARS)
@@ -324,9 +365,13 @@ class BotSupervisor:
             bot.status = "running"
             bot.task = asyncio.create_task(bot.runtime.start_async(install_signals=False))
             bot.task.add_done_callback(lambda task: self._task_done(bot, task))
+            self._attach_stream_listener(bot, hub)
+            bot.poll_task = asyncio.create_task(self._poll_state(bot))
+            self._publish_state(bot)
         except Exception:
             self._release_partial(bot)
             bot.status = "failed"
+            self._publish_state(bot)
             raise
 
     async def stop(self, bot_id: str) -> None:
@@ -345,9 +390,16 @@ class BotSupervisor:
         bot = self._require(bot_id)
         async with self._lock_for(bot_id):
             if bot.status in ("created", "stopped", "failed"):
-                bot.status = "stopped"
+                # Idempotent, but clearing a created/failed bot is a real
+                # transition the operator should see.
+                if bot.status != "stopped":
+                    bot.status = "stopped"
+                    self._publish_state(bot)
                 return
             bot.status = "stopping"
+            self._publish_state(bot)
+            self._detach_stream_listener(bot)
+            await self._cancel_poll(bot)
             if bot.runtime is not None:
                 bot.runtime.stop()
             task = bot.task
@@ -360,6 +412,7 @@ class BotSupervisor:
             bot.task = None
             bot.runtime = None
             bot.status = "stopped"
+            self._publish_state(bot)
 
     def _lock_for(self, bot_id: str) -> asyncio.Lock:
         """Return the lifecycle lock for ``bot_id``, creating it on first use.
@@ -388,6 +441,11 @@ class BotSupervisor:
         Args:
             bot: Bot whose partially built runtime should be released.
         """
+        self._detach_stream_listener(bot)
+        poll_task = bot.poll_task
+        if poll_task is not None and not poll_task.done():
+            poll_task.cancel()
+        bot.poll_task = None
         runtime = bot.runtime
         if runtime is not None:
             try:
@@ -399,6 +457,135 @@ class BotSupervisor:
         bot.venue = None
         bot.hub = None
         bot.multiplier = 1.0
+
+    async def _cancel_poll(self, bot: BotInstance) -> None:
+        """Cancel and await ``bot``'s state-poll task, if one is running.
+
+        Args:
+            bot: Bot whose poll task should be torn down.
+        """
+        task = bot.poll_task
+        bot.poll_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _poll_state(self, bot: BotInstance) -> None:
+        """Re-mark ``bot``'s position and PnL until the bot is stopped.
+
+        PnL moves with the price, not only with fills, so without this the
+        operator sees a stale number between orders. Publishing only on change
+        keeps the fan-out proportional to real movement rather than to the
+        clock.
+
+        Args:
+            bot: Running bot to poll.
+        """
+        while True:
+            await asyncio.sleep(self._state_poll_seconds)
+            try:
+                self._refresh_position(bot)
+                self._refresh_pnl(bot)
+                self._publish_state_if_changed(bot)
+            except Exception:  # noqa: BLE001 - a bad poll must not stop the bot
+                _log.exception("state poll failed for bot %s", bot.config.id)
+
+    def _attach_stream_listener(self, bot: BotInstance, hub: Any) -> None:
+        """Subscribe ``bot`` to unexpected stream exits on its hub.
+
+        Hubs are shared between bots, so the listener filters on the bot's own
+        symbol and timeframe. Feeds without the signal (older hubs, test
+        doubles) simply never degrade.
+
+        Args:
+            bot: Bot to mark degraded when its stream dies.
+            hub: Market-data hub backing the bot.
+        """
+        register = getattr(hub, "add_stream_listener", None)
+        if not callable(register):
+            return
+
+        def _on_stream_exit(symbol: str, timeframe: str, reason: str) -> None:
+            if symbol != bot.config.symbol or timeframe != bot.config.timeframe:
+                return
+            if bot.status not in ("running", "starting"):
+                return
+            bot.degraded = True
+            bot.degraded_reason = reason
+            self._publish_state(bot)
+
+        bot.stream_listener = _on_stream_exit
+        register(_on_stream_exit)
+
+    def _detach_stream_listener(self, bot: BotInstance) -> None:
+        """Remove ``bot``'s stream listener from its hub, if registered.
+
+        The hub outlives the bot, so leaving the listener attached would
+        degrade a bot that is no longer running.
+
+        Args:
+            bot: Bot whose listener should be removed.
+        """
+        listener = bot.stream_listener
+        bot.stream_listener = None
+        if listener is None or bot.hub is None:
+            return
+        remove = getattr(bot.hub, "remove_stream_listener", None)
+        if callable(remove):
+            remove(listener)
+
+    def _snapshot(self, bot: BotInstance) -> tuple[Any, ...]:
+        """Return the comparable state tuple used to suppress no-op events.
+
+        Args:
+            bot: Bot to snapshot.
+
+        Returns:
+            Tuple of every field carried by a ``BotStateEvent``.
+        """
+        return (
+            bot.status,
+            None if bot.position is None else bot.position.model_dump_json(),
+            bot.pnl,
+            bot.last_decision,
+            bot.degraded,
+            bot.degraded_reason,
+        )
+
+    def _publish_state(self, bot: BotInstance) -> None:
+        """Broadcast ``bot``'s current state, stamping the next sequence number.
+
+        Args:
+            bot: Bot whose state to broadcast.
+        """
+        bot.state_seq += 1
+        self._last_snapshots[bot.config.id] = self._snapshot(bot)
+        self._event_bus.publish(
+            BotStateEvent(
+                bot_id=bot.config.id,
+                seq=bot.state_seq,
+                status=bot.status,
+                position=None if bot.position is None else bot.position.model_dump(),
+                pnl=bot.pnl,
+                last_decision=bot.last_decision,
+                degraded=bot.degraded,
+                degraded_reason=bot.degraded_reason,
+            )
+        )
+
+    def _publish_state_if_changed(self, bot: BotInstance) -> None:
+        """Broadcast ``bot``'s state only when it differs from the last one sent.
+
+        Args:
+            bot: Bot whose state to broadcast.
+        """
+        if self._last_snapshots.get(bot.config.id) == self._snapshot(bot):
+            return
+        self._publish_state(bot)
 
     def list(self) -> list[BotInstance]:
         """Return all managed bot instances."""
@@ -444,11 +631,12 @@ class BotSupervisor:
             return
         if task.cancelled():
             bot.status = "stopped"
-            return
-        if task.exception() is not None:
+        elif task.exception() is not None:
             bot.status = "failed"
         else:
             bot.status = "stopped"
+        # Without this the UI keeps showing a bot that died as running.
+        self._publish_state(bot)
 
     def _persist_trade(self, bot: BotInstance, payload: dict[str, Any], event: OrderEvent) -> None:
         """Append an order event to the store's trade log, if a store is set.
@@ -502,6 +690,7 @@ class BotSupervisor:
             # A fill may have changed the position; refresh it, then mark PnL.
             self._refresh_position(bot)
             self._refresh_pnl(bot)
+            self._publish_state_if_changed(bot)
             return
         text = str(payload.get("text", raw))
         bot.last_decision = text
@@ -513,6 +702,7 @@ class BotSupervisor:
             ts=int(payload.get("ts", 0)),
             text=text,
         ))
+        self._publish_state_if_changed(bot)
 
     def _refresh_position(self, bot: BotInstance) -> None:
         """Update ``bot.position`` from the venue, tolerating venue errors.

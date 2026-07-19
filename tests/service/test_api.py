@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from tradingbot.models import Action, Candle, Order, OrderResult, OrderType, Position, PositionSide, Signal
 from tradingbot.service.api import create_app
 from tradingbot.service.auth import hash_password
-from tradingbot.service.events import DecisionEvent, EventBus, OrderEvent
+from tradingbot.service.events import BotStateEvent, DecisionEvent, EventBus, OrderEvent
 from tradingbot.service.risk import GlobalExposure
 from tradingbot.service.store import BotStore
 from tradingbot.service.supervisor import BotConfig, BotSupervisor
@@ -781,6 +781,35 @@ class TestWebSocketEvents:
             data = ws.receive_json()
             assert data["type"] == "decision"
             assert data["bot_id"] == "b1"
+
+    def test_ws_receives_state_event(self, client: TestClient) -> None:
+        """Verify the WebSocket forwards the authoritative bot-state snapshot."""
+        app = cast(FastAPI, client.app)
+        supervisor = app.state.supervisor
+        _login(client)
+        with client.websocket_connect("/ws") as ws:
+            _wait_for_subscribers(supervisor.event_bus)
+            supervisor.event_bus.publish(
+                BotStateEvent(
+                    bot_id="b1",
+                    seq=7,
+                    status="running",
+                    position={"symbol": "BTC/USD", "side": "long", "size": 1.0, "entry_price": 10.0},
+                    pnl=12.5,
+                    last_decision="buy",
+                    degraded=True,
+                    degraded_reason="stream ended without an unsubscribe",
+                )
+            )
+            data = ws.receive_json()
+            assert data["type"] == "state"
+            assert data["bot_id"] == "b1"
+            assert data["seq"] == 7
+            assert data["status"] == "running"
+            assert data["pnl"] == 12.5
+            assert data["position"]["side"] == "long"
+            assert data["degraded"] is True
+            assert data["degraded_reason"] == "stream ended without an unsubscribe"
 
     def test_ws_receives_unknown_event(self, client: TestClient) -> None:
         """Verify that the WebSocket serializes unknown events safely."""

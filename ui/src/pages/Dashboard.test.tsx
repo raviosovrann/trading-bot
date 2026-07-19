@@ -32,7 +32,7 @@ function bot(overrides: Partial<BotView> = {}): BotView {
 
 class FakeSocket implements BotSocket {
   onmessage: ((ev: { data: string }) => void) | null = null
-  onclose: (() => void) | null = null
+  onclose: ((ev?: { code?: number }) => void) | null = null
   close = vi.fn()
 }
 
@@ -64,7 +64,9 @@ function setup(bots: BotView[]) {
   )
   const emit = (event: WsEvent) =>
     act(() => sockets.forEach((s) => s.onmessage?.({ data: JSON.stringify(event) })))
-  return { client, emit }
+  // Drop the socket the way a server restart would, so the provider reconnects.
+  const reconnect = () => act(() => sockets.forEach((s) => s.onclose?.({ code: 1006 })))
+  return { client, emit, reconnect }
 }
 
 describe('Dashboard', () => {
@@ -73,6 +75,107 @@ describe('Dashboard', () => {
     expect(await screen.findByText('DOGE/USD')).toBeInTheDocument()
     emit({ type: 'decision', bot_id: '1', symbol: 'DOGE/USD', ts: 1, text: 'BUY signal' })
     expect(await screen.findByText(/BUY signal/)).toBeInTheDocument()
+  })
+
+  it('applies a ws state event to the row without refetching', async () => {
+    const { client, emit } = setup([bot({ id: '1', symbol: 'DOGE/USD', status: 'created' })])
+    expect(await screen.findByText('DOGE/USD')).toBeInTheDocument()
+    const fetchesBefore = (client.listBots as unknown as { mock: { calls: unknown[] } }).mock.calls
+      .length
+
+    emit({
+      type: 'state',
+      bot_id: '1',
+      seq: 1,
+      status: 'running',
+      position: { symbol: 'DOGE/USD', side: 'long', size: 2, entry_price: 10 },
+      pnl: 4.5,
+      last_decision: 'BUY signal',
+      degraded: false,
+      degraded_reason: null,
+    })
+
+    expect(await screen.findByText('running')).toBeInTheDocument()
+    expect(screen.getByText('4.50')).toBeInTheDocument()
+    expect(screen.getByText(/long 2 @ 10/)).toBeInTheDocument()
+    expect((client.listBots as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(
+      fetchesBefore,
+    )
+  })
+
+  it('shows a runtime failure arriving over the socket', async () => {
+    const { emit } = setup([bot({ id: '1', status: 'running' })])
+    expect(await screen.findByText('running')).toBeInTheDocument()
+    emit({
+      type: 'state',
+      bot_id: '1',
+      seq: 2,
+      status: 'failed',
+      position: null,
+      pnl: 0,
+      last_decision: null,
+      degraded: false,
+      degraded_reason: null,
+    })
+    expect(await screen.findByText('failed')).toBeInTheDocument()
+  })
+
+  it('flags a degraded bot without changing its status', async () => {
+    const { emit } = setup([bot({ id: '1', status: 'running' })])
+    expect(await screen.findByText('running')).toBeInTheDocument()
+    emit({
+      type: 'state',
+      bot_id: '1',
+      seq: 3,
+      status: 'running',
+      position: null,
+      pnl: 0,
+      last_decision: null,
+      degraded: true,
+      degraded_reason: 'stream ended without an unsubscribe',
+    })
+    expect(await screen.findByText(/no data/i)).toBeInTheDocument()
+    expect(screen.getByText('running')).toBeInTheDocument()
+  })
+
+  it('ignores a state event that arrives out of order', async () => {
+    const { emit } = setup([bot({ id: '1', status: 'created' })])
+    expect(await screen.findByText('created')).toBeInTheDocument()
+    const snapshot = {
+      type: 'state' as const,
+      bot_id: '1',
+      position: null,
+      pnl: 0,
+      last_decision: null,
+      degraded: false,
+      degraded_reason: null,
+    }
+    emit({ ...snapshot, seq: 5, status: 'running' })
+    expect(await screen.findByText('running')).toBeInTheDocument()
+    // A stale frame must not resurrect the older status.
+    emit({ ...snapshot, seq: 4, status: 'starting' })
+    expect(screen.getByText('running')).toBeInTheDocument()
+  })
+
+  it('accepts a restarted server sequence after a reconnect', async () => {
+    const { emit, reconnect } = setup([bot({ id: '1', status: 'created' })])
+    expect(await screen.findByText('created')).toBeInTheDocument()
+    const snapshot = {
+      type: 'state' as const,
+      bot_id: '1',
+      position: null,
+      pnl: 0,
+      last_decision: null,
+      degraded: false,
+      degraded_reason: null,
+    }
+    emit({ ...snapshot, seq: 9, status: 'running' })
+    expect(await screen.findByText('running')).toBeInTheDocument()
+
+    // The backend restarted: its counter is back at 1 and must not be dropped.
+    reconnect()
+    emit({ ...snapshot, seq: 1, status: 'stopped' })
+    expect(await screen.findByText('stopped')).toBeInTheDocument()
   })
 
   it('shows a red LIVE badge for live bots and DRY-RUN otherwise', async () => {

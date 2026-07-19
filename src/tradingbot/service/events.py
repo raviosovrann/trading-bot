@@ -27,6 +27,26 @@ class OrderEvent:
     order_id: str | None
 
 
+@dataclass
+class BotStateEvent:
+    """An authoritative snapshot of one bot's runtime state.
+
+    Carries the whole view rather than a delta so a subscriber can apply it
+    without refetching, and so a dropped frame costs nothing: the next event
+    is still complete. ``seq`` increases strictly per bot, letting a client
+    discard a snapshot that arrives after a newer one.
+    """
+
+    bot_id: str
+    seq: int
+    status: str
+    position: dict[str, Any] | None
+    pnl: float
+    last_decision: str | None
+    degraded: bool = False
+    degraded_reason: str | None = None
+
+
 class EventBus:
     """In-memory fan-out bus for bot events.
 

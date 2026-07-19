@@ -25,7 +25,7 @@ from ..models import Position
 from .audit import AuditLog
 from .auth import hash_password, needs_rehash, verify_password
 from .dto import BotView, CreateBotRequest, LoginRequest, PatchBotRequest, SessionInfo, TradeView
-from .events import DecisionEvent, OrderEvent
+from .events import BotStateEvent, DecisionEvent, OrderEvent
 from .health import readiness
 from .login_guard import LoginGuard, LoginLocked
 from .principal import Principal
@@ -335,11 +335,13 @@ def _event_to_dict(event: Any) -> dict[str, Any]:
     """Serialize a supervisor event into a dictionary for the WebSocket.
 
     Args:
-        event: Decision or order event from the event bus.
+        event: State, decision or order event from the event bus.
 
     Returns:
         Dictionary with ``type`` and event fields.
     """
+    if isinstance(event, BotStateEvent):
+        return {"type": "state", **asdict(event)}
     if isinstance(event, DecisionEvent):
         return {"type": "decision", **asdict(event)}
     if isinstance(event, OrderEvent):
@@ -384,6 +386,8 @@ def _to_view(bot: BotInstance) -> BotView:
         position=_position_to_dict(bot.position),
         pnl=bot.pnl,
         last_decision=bot.last_decision,
+        degraded=bot.degraded,
+        degraded_reason=bot.degraded_reason,
     )
 
 

@@ -55,7 +55,14 @@ export function BotTable({
             <td>
               <LiveBadge live={bot.live} />
             </td>
-            <td>{bot.status}</td>
+            <td>
+              {bot.status}
+              {bot.degraded && (
+                <span className="badge-degraded" title={bot.degraded_reason ?? undefined}>
+                  no data
+                </span>
+              )}
+            </td>
             <td>{positionText(bot)}</td>
             <td className={bot.pnl < 0 ? 'pnl-neg' : bot.pnl > 0 ? 'pnl-pos' : ''}>
               {bot.pnl.toFixed(2)}

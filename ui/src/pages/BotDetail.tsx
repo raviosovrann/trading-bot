@@ -7,6 +7,7 @@ import { DecisionLog } from '../components/DecisionLog'
 import { LiveBadge } from '../components/LiveBadge'
 import { PnlSparkline } from '../components/PnlSparkline'
 import { useBotEvents } from '../hooks/useBotEvents'
+import type { BotView } from '../types'
 
 interface PendingAction {
   message: string
@@ -28,6 +29,23 @@ export function BotDetail() {
 
   useBotEvents((event) => {
     if (event.bot_id !== id) return
+    if (event.type === 'state') {
+      // The snapshot is complete and authoritative — no refetch needed.
+      queryClient.setQueryData<BotView>(['bots', id], (old) =>
+        old
+          ? {
+              ...old,
+              status: event.status,
+              position: event.position,
+              pnl: event.pnl,
+              last_decision: event.last_decision,
+              degraded: event.degraded,
+              degraded_reason: event.degraded_reason,
+            }
+          : old,
+      )
+      return
+    }
     void queryClient.invalidateQueries({ queryKey: ['bots', id] })
     if (event.type === 'order') {
       void queryClient.invalidateQueries({ queryKey: ['bots', id, 'trades'] })
@@ -152,6 +170,14 @@ export function BotDetail() {
               {bot.pnl.toFixed(2)} <PnlSparkline values={pnlSamples} />
             </dd>
           </dl>
+
+          {bot.degraded && (
+            <p role="status" className="warning">
+              No market data is arriving — the bot is still running but is not seeing new bars.
+              {bot.degraded_reason ? ` (${bot.degraded_reason})` : ''} Stop and start it to
+              re-establish the stream.
+            </p>
+          )}
 
           <h2>Controls</h2>
           {!configurable && (

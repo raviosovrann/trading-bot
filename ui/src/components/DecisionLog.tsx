@@ -2,7 +2,10 @@ import { useState } from 'react'
 import { useBotEvents } from '../hooks/useBotEvents'
 import type { WsEvent } from '../types'
 
-function describe(event: WsEvent): string {
+// State snapshots (#114) are rendered as fields elsewhere, not as log lines.
+type LoggableEvent = Exclude<WsEvent, { type: 'state' }>
+
+function describe(event: LoggableEvent): string {
   if (event.type === 'decision') {
     const when = event.ts > 0 ? `${new Date(event.ts).toLocaleTimeString()} ` : ''
     return `${when}${event.text}`
@@ -15,7 +18,7 @@ export function DecisionLog({ botId, limit = 50 }: { botId: string; limit?: numb
   const [entries, setEntries] = useState<string[]>([])
 
   useBotEvents((event) => {
-    if (event.bot_id !== botId) return
+    if (event.bot_id !== botId || event.type === 'state') return
     setEntries((old) => [describe(event), ...old].slice(0, limit))
   })
 

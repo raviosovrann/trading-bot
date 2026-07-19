@@ -23,7 +23,24 @@ export function Dashboard() {
   const [pending, setPending] = useState<PendingAction | null>(null)
 
   useBotEvents((event) => {
-    if (event.type === 'decision') {
+    if (event.type === 'state') {
+      // The snapshot is authoritative and complete — apply it, don't refetch.
+      queryClient.setQueryData<BotView[]>(['bots'], (old) =>
+        old?.map((b) =>
+          b.id === event.bot_id
+            ? {
+                ...b,
+                status: event.status,
+                position: event.position,
+                pnl: event.pnl,
+                last_decision: event.last_decision,
+                degraded: event.degraded,
+                degraded_reason: event.degraded_reason,
+              }
+            : b,
+        ),
+      )
+    } else if (event.type === 'decision') {
       // Patch the row in place — decisions arrive every bar.
       queryClient.setQueryData<BotView[]>(['bots'], (old) =>
         old?.map((b) => (b.id === event.bot_id ? { ...b, last_decision: event.text } : b)),
