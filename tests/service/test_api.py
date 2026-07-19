@@ -825,6 +825,94 @@ class TestCredentialRotation:
         assert invalidated == [("coinbase", "spot")]
 
 
+class TestVenueErrorSurfacing:
+    """A venue failure must say whose fault it is, without leaking keys (#175)."""
+
+    def _bot(self, client: TestClient) -> str:
+        return TestBotLifecycle()._create(client)["id"]
+
+    def test_an_unavailable_exchange_returns_502_not_500(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The geo-block that prompted this issue returned a bare 500."""
+        import ccxt
+
+        bot_id = self._bot(client)
+
+        def _boom(*_a, **_k):
+            raise ccxt.ExchangeNotAvailable(
+                "binance GET https://api.binance.com/sapi/v1/capital/config/getall"
+                "?timestamp=1784480879223&signature=f7adcc27fe7a49c2854d708dece4eb 451 "
+                '{"msg": "Service unavailable from a restricted location"}'
+            )
+
+        monkeypatch.setattr("tradingbot.service.supervisor.build_venue", _boom)
+        _login(client)
+        response = client.post(f"/api/bots/{bot_id}/start", headers=_csrf(client))
+
+        assert response.status_code == 502
+        detail = response.json()["detail"]
+        assert "restricted location" in detail
+        assert "ExchangeNotAvailable" in detail
+
+    def test_the_response_never_carries_credentials(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ccxt embeds the signed URL in its message; it must not reach the client.
+
+        This is the one that matters: the signature and key would otherwise
+        land in a browser, a proxy log and any error tracker in between.
+        """
+        import ccxt
+
+        bot_id = self._bot(client)
+
+        def _boom(*_a, **_k):
+            raise ccxt.AuthenticationError(
+                "coinbase GET https://api.coinbase.com/v2/accounts"
+                "?api_key=LEAKED_KEY_VALUE&signature=LEAKED_SIGNATURE 401"
+            )
+
+        monkeypatch.setattr("tradingbot.service.supervisor.build_venue", _boom)
+        _login(client)
+        response = client.post(f"/api/bots/{bot_id}/start", headers=_csrf(client))
+
+        body = response.text
+        assert response.status_code == 400
+        assert "LEAKED_KEY_VALUE" not in body
+        assert "LEAKED_SIGNATURE" not in body
+        assert "api_key=" not in body or "<redacted>" in body
+
+    def test_rate_limiting_returns_429(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Verify a throttled venue is distinguishable from a broken one."""
+        import ccxt
+
+        bot_id = self._bot(client)
+        monkeypatch.setattr(
+            "tradingbot.service.supervisor.build_venue",
+            lambda *a, **k: (_ for _ in ()).throw(ccxt.RateLimitExceeded("too many requests")),
+        )
+        _login(client)
+        response = client.post(f"/api/bots/{bot_id}/start", headers=_csrf(client))
+
+        assert response.status_code == 429
+
+    def test_an_internal_bug_still_returns_500(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Our own faults must not be disguised as venue problems."""
+        bot_id = self._bot(client)
+        monkeypatch.setattr(
+            "tradingbot.service.supervisor.build_venue",
+            lambda *a, **k: (_ for _ in ()).throw(TypeError("bug in our own code")),
+        )
+        _login(client)
+        with pytest.raises(TypeError):
+            client.post(f"/api/bots/{bot_id}/start", headers=_csrf(client))
+
+
 class TestUnsupportedVenue:
     def test_starting_on_a_venue_that_cannot_stream_returns_a_readable_error(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
