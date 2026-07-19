@@ -289,6 +289,31 @@ undetectable through ccxt.
 Coinbase **futures** and any venue reached via a `creds["exchange"]` override
 still go through ccxt. Execution for every venue remains on ccxt; see #174.
 
+### When a venue fails, the response says whose problem it is
+
+A failure talking to an exchange is not a server fault, and `500 Internal
+Server Error` tells the operator nothing about whether their key is wrong or
+the exchange is down. Venue errors are therefore mapped:
+
+| Status | Meaning | Typical cause |
+|--------|---------|---------------|
+| `400` | You can fix this | Bad or revoked credentials, unknown symbol, unsupported feature |
+| `429` | Slow down | Venue rate limit hit |
+| `502` | The venue's problem | Exchange unavailable, under maintenance, geo-restricted, timed out |
+| `500` | **Our** problem | Anything that is not a venue error — a genuine bug in this service |
+
+That last row is the point of the split: an internal bug must never be
+disguised as an exchange problem, so only exceptions actually raised by the
+venue client are reclassified. Everything else keeps its `500`.
+
+**Messages are redacted before they leave the process.** ccxt puts the full
+request URL in its error text, and for a signed call that URL carries the API
+key and signature — surfacing it raw would leak credentials into the browser,
+any proxy log, and any error tracker in between. Query strings are dropped
+whole rather than filtered parameter by parameter, because a signed URL is
+credential-bearing by construction and the parameter names vary per exchange.
+Messages are also length-capped so a large upstream body is not echoed back.
+
 ### Rotating venue credentials
 
 `PUT /api/venues/{venue}/{market_type}/secrets` replaces the stored credentials

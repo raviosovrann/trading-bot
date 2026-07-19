@@ -42,6 +42,7 @@ from .principal import Principal
 from .registry import available_strategies, available_venues
 from .sessions import SessionStore
 from .store import BotStore
+from .venue_errors import classify_venue_error
 from .supervisor import BotConfig, BotInstance, BotSupervisor
 
 _log = logging.getLogger(__name__)
@@ -869,6 +870,22 @@ def create_app(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(exc),
             ) from exc
+        except Exception as exc:
+            # A venue failure is not a server fault, and "Internal Server
+            # Error" tells the operator nothing about a wrong key or an
+            # exchange that is down (#175). Anything that is not a venue
+            # error re-raises and keeps its 500, so our own bugs stay visible
+            # as ours. The detail is redacted: ccxt puts the signed request
+            # URL, key and signature into its messages.
+            classified = classify_venue_error(exc)
+            if classified is None:
+                raise
+            code, detail = classified
+            _audit(
+                http_request, principal, "bot.start", f"bot:{bot_id}", "failure",
+                after={"error": detail},
+            )
+            raise HTTPException(status_code=code, detail=detail) from exc
         _audit(
             http_request, principal, "bot.start", f"bot:{bot_id}", "success",
             after={"live": bot.config.live},
