@@ -91,12 +91,30 @@ Build it once — in `ConfirmDialog` — and have #126 rely on it.
   which change what the UI renders.
 - **#165 — Poetry migration** (M5). Retires `requirements.txt` and
   `constraints.txt`.
+
+## 3a. Added to M2 after the plan was written
+
+The milestone grew as live operation exposed problems the original nine did not
+cover. Recorded here so the plan and the milestone do not disagree:
+
+- **#170** — fail fast when a venue cannot stream candles (closed). A coinbase
+  bot ran indefinitely with no data while reporting `running`.
+- **#171** — native Coinbase Advanced Trade market data, replacing ccxt for the
+  market-data path. Pulled into M2 deliberately: it is what makes any venue
+  actually tradeable, and every issue closed before it makes the market-data
+  path more expensive to replace.
+- **#175** — surface venue errors as readable HTTP responses instead of bare
+  `500`s.
+
+**Decision recorded alongside #171:** market data goes native per venue
+(Coinbase here, Tradovate already so); **execution stays on ccxt** for now, with
+the trigger conditions for revisiting captured in #174.
 - **`example` strategy is a no-op** (#78) and **Tradovate market data raises
   `NotImplementedError`** (#96). Neither blocks M2.
 
 ## 4. Definition of done
 
-M2 is complete when all nine issues are closed, `main` is green on every gate,
+M2 is complete when every issue on the milestone is closed, `main` is green on every gate,
 and the runbook describes the resulting operator behaviour — in particular the
 patch-while-running policy from #109 and the credential-rotation policy from
 #137.

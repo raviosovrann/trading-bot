@@ -42,9 +42,14 @@ _BOT_PAYLOAD = {
     "params": {},
 }
 
-# How long the fake exchange blocks. Comfortably longer than the budget the
-# API is asserted against, so a regression cannot pass by being lucky.
-BLOCK_SECONDS = 1.5
+# How long the fake exchange blocks. The assertions are causal — did the API
+# answer *while* the call was in flight — not a latency budget, so this only
+# needs to be long enough to observe, not long enough to time.
+# 0.5s leaves ~50x margin over the observed in-process request latency (~10ms)
+# while cutting the old 1.5s. Note the failure direction is safe: too short
+# makes these fail, never pass vacuously, because the assertion requires the
+# response to land before the block returns.
+BLOCK_SECONDS = 0.5
 
 
 def _auth() -> dict[str, str]:
