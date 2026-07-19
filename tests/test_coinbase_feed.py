@@ -301,3 +301,40 @@ class TestCoinbaseStreamFeed:
         assert len(received) == 1
         feed.stop()
         await asyncio.gather(task, return_exceptions=True)
+
+
+class TestCoinbaseRequestLimits:
+    """Coinbase caps a single candles request at 350 rows (verified live)."""
+
+    def test_a_large_warmup_is_clamped_to_the_api_cap(self) -> None:
+        """Verify we never ask for more candles than Coinbase will return.
+
+        Exceeding the cap is a 400, so an unclamped request would turn a large
+        warmup into a confusing start failure rather than a short warmup.
+        """
+        http = _FakeHttp({"candles": [_rest_candle(60 * i, float(i)) for i in range(1, 351)]})
+        feed = CoinbaseCandleFeed(http=http)
+
+        feed.warmup_candles("BTC/USD", "1m", 1000)
+
+        _url, params = http.calls[0]
+        window = int(params["end"]) - int(params["start"])
+        assert window <= 350 * 60, f"requested {window / 60:.0f} minutes, over the 350 cap"
+
+    def test_a_normal_warmup_is_not_clamped(self) -> None:
+        """Verify the usual 220-bar warmup still asks for everything it needs."""
+        http = _FakeHttp({"candles": []})
+        feed = CoinbaseCandleFeed(http=http)
+
+        feed.warmup_candles("BTC/USD", "1m", 220)
+
+        _url, params = http.calls[0]
+        window = int(params["end"]) - int(params["start"])
+        assert window >= 220 * 60, "the requested window must cover the asked-for bars"
+
+    def test_four_hour_is_supported(self) -> None:
+        """FOUR_HOUR is a real Coinbase granularity and must be usable."""
+        from tradingbot.coinbase_feed import bucket_seconds, granularity
+
+        assert granularity("4h") == "FOUR_HOUR"
+        assert bucket_seconds("4h") == 14_400

@@ -46,10 +46,23 @@ _TIMEFRAMES: dict[str, tuple[str, int]] = {
     "30m": ("THIRTY_MINUTE", 1_800),
     "1h": ("ONE_HOUR", 3_600),
     "2h": ("TWO_HOUR", 7_200),
+    "4h": ("FOUR_HOUR", 14_400),
     "6h": ("SIX_HOUR", 21_600),
     "1d": ("ONE_DAY", 86_400),
 }
-"""House timeframe -> (Coinbase REST granularity, interval seconds)."""
+"""House timeframe -> (Coinbase REST granularity, interval seconds).
+
+Verified against the live API: these are exactly the granularities it accepts.
+Anything else (``3m``, for instance) is rejected outright, so it is refused here
+rather than silently bucketed wrongly.
+"""
+
+MAX_CANDLES_PER_REQUEST = 350
+"""Most candles Coinbase returns for one request; 351 is a 400 (verified live).
+
+Warmup windows are clamped to this. Without the clamp a large warmup would turn
+into an opaque start failure rather than a shorter-than-asked-for history.
+"""
 
 
 def to_product_id(symbol: str) -> str:
@@ -330,8 +343,17 @@ class CoinbaseCandleFeed:
         step = bucket_seconds(timeframe)
         product = to_product_id(symbol)
         end = int(time.time())
-        # One extra interval of slack so a just-closed bar is included.
-        start = end - step * (max(limit, 1) + 2)
+        # One extra interval of slack so a just-closed bar is included, then
+        # clamped: asking beyond the cap is a 400, not a truncated response.
+        wanted = max(limit, 1) + 2
+        if wanted > MAX_CANDLES_PER_REQUEST:
+            _log.warning(
+                "warmup of %d %s candles exceeds Coinbase's %d-per-request cap; "
+                "requesting the most recent %d",
+                limit, timeframe, MAX_CANDLES_PER_REQUEST, MAX_CANDLES_PER_REQUEST,
+            )
+            wanted = MAX_CANDLES_PER_REQUEST
+        start = end - step * wanted
         response = self._http.get(
             f"{REST_URL}/{product}/candles",
             params={

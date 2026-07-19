@@ -251,8 +251,19 @@ unauthenticated, so a bot can warm up and stream without any key configured.
 **Candles are aggregated from trades, not taken from a candles channel.** ccxt
 has no `watch_ohlcv` for coinbase, and Coinbase's own `candles` channel is fixed
 at five-minute buckets — neither can serve a 1m bot. Bucketing `market_trades`
-works at any supported timeframe (`1m`, `5m`, `15m`, `30m`, `1h`, `2h`, `6h`,
-`1d`).
+works at any supported timeframe: `1m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`,
+`6h`, `1d`.
+
+To be clear about where the five-minute limit does and does not apply: it is a
+property of Coinbase's pre-computed `candles` channel, which **we do not use**.
+`market_trades` carries individual fills, so the bucketing is ours and the
+interval is ours to choose. The supported set above is bounded by the *REST
+warmup* granularities Coinbase accepts — verified against the live API — not by
+the WebSocket. `3m`, for example, is unavailable because Coinbase's REST API
+rejects it, and it is refused at build time rather than silently mis-bucketed.
+
+One request returns at most **350 candles** (351 is a `400`), so warmup windows
+are clamped to that. The default 220-bar warmup is well inside it.
 
 Two behaviours worth knowing:
 
