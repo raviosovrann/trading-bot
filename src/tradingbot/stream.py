@@ -39,6 +39,8 @@ class CcxtStreamFeed:
         exchange: Any | None = None,
         warmup_feed: Any | None = None,
         timeframe: str = "1m",
+        *,
+        exchange_factory: Callable[[], Any] | None = None,
     ) -> None:
         if exchange is None:
             raise ValueError("CcxtStreamFeed requires an exchange or use from_exchange(...)")
@@ -49,8 +51,15 @@ class CcxtStreamFeed:
         self._symbol_handlers: dict[str, Callable[[Candle], None]] = {}
         self._last_ts: int | None = None
         self._last_ts_by_symbol: dict[str, int] = {}
-        self._stopped = False
         self._lock = threading.Lock()
+        # Lifecycle is per symbol: one client is shared by every watch loop, so
+        # it may only be closed once the last loop exits. A global flag would
+        # let one unsubscribing symbol tear the connection down for the rest.
+        self._exchange_factory = exchange_factory
+        self._running: set[str] = set()
+        self._stop_requested: set[str] = set()
+        self._stop_all = False
+        self._closed = False
 
     @classmethod
     def from_exchange(
@@ -105,28 +114,68 @@ class CcxtStreamFeed:
                 if handler is not None:
                     handler(_ohlcv_to_candle(row))
 
+    def _should_run(self, symbol: str) -> bool:
+        """Whether ``symbol``'s watch loop should keep going."""
+        return not self._stop_all and symbol not in self._stop_requested
+
+    def _ensure_open(self) -> None:
+        """Recreate the client if a previous full stop closed it.
+
+        A closed ccxt client cannot be reused, so restarting a cached feed
+        needs a fresh one. Without a factory the feed stays single-use.
+        """
+        if not self._closed:
+            return
+        if self._exchange_factory is None:
+            raise RuntimeError(
+                "CcxtStreamFeed was closed and has no exchange_factory to rebuild it; "
+                "construct it with exchange_factory=... to support restarts"
+            )
+        self._ex = self._exchange_factory()
+        self._closed = False
+
     async def _watch_loop(self, symbol: str) -> None:
         try:
-            while not self._stopped:
+            while self._should_run(symbol):
                 candles = await self._ex.watch_ohlcv(symbol, self._timeframe)
                 if candles:
                     self._on_candles(candles, symbol)
         finally:
-            await self._ex.close()
+            self._running.discard(symbol)
+            self._stop_requested.discard(symbol)
+            # The client is shared: only the last loop out closes it, and only
+            # once. Otherwise one symbol ending kills every other symbol.
+            if not self._running and not self._closed:
+                self._closed = True
+                await self._ex.close()
 
     async def run_async(self, *symbols: str) -> None:
         if not symbols:
             raise ValueError("CcxtStreamFeed.run_async requires a symbol")
-        await self._watch_loop(symbols[0])
+        symbol = symbols[0]
+        # Starting a symbol clears any stop left over from a previous run, so a
+        # cached feed can be restarted after all its bots stopped.
+        self._stop_requested.discard(symbol)
+        self._stop_all = False
+        self._ensure_open()
+        self._running.add(symbol)
+        await self._watch_loop(symbol)
 
     def run(self, *symbols: str) -> None:
         if not symbols:
             raise ValueError("CcxtStreamFeed.run requires a symbol")
         asyncio.run(self.run_async(*symbols))
 
+    def stop_symbol(self, symbol: str) -> None:
+        """Stop one symbol's watch loop, leaving the others running.
+
+        Idempotent. The loop exits after its current message.
+        """
+        self._stop_requested.add(symbol)
+
     def stop(self) -> None:
-        # Idempotent: signal the watch loop to exit after its current message.
-        self._stopped = True
+        """Stop every symbol. Idempotent."""
+        self._stop_all = True
 
 
 def run_with_reconnect(
