@@ -458,6 +458,9 @@ def create_app(
                 await supervisor.stop(bot.config.id)
             except Exception:  # noqa: BLE001 - never block shutdown on one bot
                 _log.exception("failed to stop bot %s during shutdown", bot.config.id)
+        # Release the venue worker threads (#111). Not waited on: a pool may
+        # be parked in a hung exchange call, and shutdown must not inherit it.
+        supervisor.shutdown_workers()
 
     app = FastAPI(title="Trading Console", lifespan=lifespan)
     app.state.store = store

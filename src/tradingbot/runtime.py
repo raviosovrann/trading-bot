@@ -6,6 +6,7 @@ import logging
 import signal
 import time
 from collections.abc import Awaitable, Callable, Iterable
+from typing import Any
 
 from .datafeed import CandleFeed
 from .models import Candle, OrderResult
@@ -182,7 +183,15 @@ class StreamRuntime:
         max_backoff: float = 60.0,
         gapfill_bars: int = 50,
         on_event: Callable[[str], None] | None = None,
+        run_blocking: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
+        # Strategy evaluation and gap-fill both reach synchronous venue calls.
+        # The service hands in its per-bot worker lane so that work is
+        # serialized with incoming bars and kept off the event loop (#111);
+        # standalone use falls back to a plain worker thread.
+        self._run_blocking: Callable[..., Awaitable[Any]] = (
+            run_blocking if run_blocking is not None else asyncio.to_thread
+        )
         self._feed = feed
         self._symbol = symbol
         self._timeframe = timeframe
@@ -244,7 +253,7 @@ class StreamRuntime:
             "%s: warmed up %d bars — evaluating now, then streaming async candles",
             self._symbol, len(self._proc.candles),
         )
-        self._proc.evaluate()
+        await self._run_blocking(self._proc.evaluate)
         backoff = self._base_backoff
         while not self._stopped:
             try:
@@ -262,7 +271,7 @@ class StreamRuntime:
             await sleep(backoff)
             if self._stopped:
                 break
-            await asyncio.to_thread(self._gap_fill)
+            await self._run_blocking(self._gap_fill)
             if not healthy:
                 backoff = min(backoff * 2, self._max_backoff)
 

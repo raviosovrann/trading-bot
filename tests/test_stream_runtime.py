@@ -150,7 +150,11 @@ async def test_stream_runtime_start_async_uses_callers_event_loop():
     rt, feed, venue = _make()
 
     task = asyncio.create_task(rt.start_async(install_signals=False))
-    await asyncio.sleep(0)
+    # The initial strategy evaluation now runs on a worker thread (#111), so
+    # the feed is reached a few ticks in rather than on the first one.
+    deadline = asyncio.get_running_loop().time() + 2.0
+    while feed.run_async_called_with is None and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
 
     assert feed.run_async_called_with == ("BTC/USD",)
     assert not task.done()

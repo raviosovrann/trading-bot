@@ -9,6 +9,7 @@ from typing import cast
 from ..datafeed import CandleFeed
 from ..models import Candle
 from ..stream import StreamingFeed
+from .blocking import BlockingCalls
 from .ratelimit import RateLimiter
 
 _log = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ class MarketDataHub:
         limiter: RateLimiter,
         mtf_cache_seconds: float = 60.0,
         clock: Callable[[], float] = time.monotonic,
+        workers: BlockingCalls | None = None,
     ) -> None:
         """Initialize the hub.
 
@@ -44,6 +46,8 @@ class MarketDataHub:
             limiter: Shared rate limiter for all REST calls.
             mtf_cache_seconds: How long cached warmups remain valid.
             clock: Time source, injected for deterministic tests.
+            workers: Thread pool used to keep the blocking REST warmup off the
+                event loop (#111). Created per hub if not supplied.
 
         Raises:
             ValueError: If ``mtf_cache_seconds`` is negative.
@@ -62,6 +66,7 @@ class MarketDataHub:
         self._warmup_locks: dict[_Key, asyncio.Lock] = {}
         self._latest_prices: dict[_Key, float] = {}
         self._exit_listeners: list[_ExitListener] = []
+        self._workers = workers if workers is not None else BlockingCalls("market-data")
 
     def add_stream_listener(self, listener: _ExitListener) -> None:
         """Register ``listener`` to be told when a stream exits unexpectedly.
@@ -210,7 +215,12 @@ class MarketDataHub:
                 return list(cached[1])
 
             await self._limiter.acquire()
-            candles = list(self._candle_feed.warmup_candles(symbol, timeframe, limit))
+            # warmup_candles() is a blocking REST call (ccxt is synchronous);
+            # running it inline would freeze the API, every socket and every
+            # other bot for as long as the exchange takes to answer.
+            candles = list(
+                await self._workers.run(self._candle_feed.warmup_candles, symbol, timeframe, limit)
+            )
             self._warmup_cache[key] = (self._clock(), candles)
             if candles:
                 self._latest_prices[key] = candles[-1].close

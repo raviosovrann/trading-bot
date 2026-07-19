@@ -206,6 +206,40 @@ dropped. The console treats it as "my live view is now incomplete" and refetches
 the bot list and trade history rather than carrying on with a partial picture.
 **Overflow is therefore always visible, never silent.**
 
+### Slow exchanges cannot freeze the service
+
+ccxt is a synchronous HTTP client, but the service runs one asyncio event loop.
+Calling a venue inline means one slow exchange stalls every API request, every
+WebSocket and every other bot. All such calls therefore run on worker threads:
+
+| Path | Where it runs |
+|------|---------------|
+| Candle warmup (REST) | The venue's shared pool, 4 workers. |
+| Position / PnL refresh | The venue's shared pool. |
+| Bar → strategy → order placement | The **bot's own single-worker lane**. |
+| Initial strategy evaluation, gap-fill | The same per-bot lane. |
+
+Two different shapes, for two different reasons:
+
+- **Per venue** (`coinbase:spot`, …) for operator-initiated work, so a stuck
+  exchange exhausts only its own four workers and never another venue's.
+- **Per bot, single worker** for the trading path, because bars for one bot
+  must be processed **in order** — a pool with several workers could reorder
+  them — while still isolating a bot stuck in a slow order from every other bot.
+
+Every call has a **20-second deadline**. An overrun is logged and the caller
+gives up; a timed-out position refresh leaves the previous value in place
+rather than failing the bot.
+
+One caveat to understand before tuning this: **a timeout abandons the wait, not
+the thread.** Python cannot interrupt a blocked C call, so the worker stays busy
+until the underlying socket gives up. A venue that hangs every call will
+therefore saturate its own pool — which is exactly why the pools are per venue,
+and why that degradation stays contained.
+
+Worker threads are released on shutdown without waiting, so a hung exchange
+cannot delay a restart.
+
 ### Trade history: rotation and retention
 
 A bot's orders are written to `data/trades/<bot-id>.<ordinal>.jsonl`. When the
