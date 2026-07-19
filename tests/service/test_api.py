@@ -825,6 +825,100 @@ class TestCredentialRotation:
         assert invalidated == [("coinbase", "spot")]
 
 
+class TestDeleteBot:
+    """DELETE /api/bots/{id} (#163)."""
+
+    def _bot(self, client: TestClient) -> str:
+        return TestBotLifecycle()._create(client)["id"]
+
+    def test_a_stopped_bot_is_deleted(self, client: TestClient) -> None:
+        """Verify the bot disappears from the API."""
+        bot_id = self._bot(client)
+        _login(client)
+
+        response = client.delete(f"/api/bots/{bot_id}", headers=_csrf(client))
+
+        assert response.status_code == 204
+        assert client.get(f"/api/bots/{bot_id}", headers=_auth()).status_code == 404
+        listed = client.get("/api/bots", headers=_auth()).json()
+        assert all(b["id"] != bot_id for b in listed)
+
+    def test_deleting_a_running_bot_is_refused(self, client: TestClient) -> None:
+        """Verify a running bot cannot be deleted, and nothing changes."""
+        bot_id = self._bot(client)
+        _login(client)
+        client.post(f"/api/bots/{bot_id}/start", headers=_csrf(client))
+
+        response = client.delete(f"/api/bots/{bot_id}", headers=_csrf(client))
+
+        assert response.status_code == 409
+        assert "running" in response.json()["detail"]
+        assert client.get(f"/api/bots/{bot_id}", headers=_auth()).status_code == 200
+
+    def test_deleting_an_unknown_bot_returns_404(self, client: TestClient) -> None:
+        """Verify an unknown id is a 404, not a 500."""
+        _login(client)
+        response = client.delete("/api/bots/no-such-bot", headers=_csrf(client))
+        assert response.status_code == 404
+
+    def test_delete_requires_csrf(self, client: TestClient) -> None:
+        """Verify deletion is CSRF-protected like every other state change."""
+        bot_id = self._bot(client)
+        _login(client)
+        response = client.delete(f"/api/bots/{bot_id}")
+        assert response.status_code == 403
+
+    def test_deletion_is_audited(self, client: TestClient) -> None:
+        """Verify the audit trail records what was removed."""
+        bot_id = self._bot(client)
+        _login(client)
+        client.delete(f"/api/bots/{bot_id}", headers=_csrf(client))
+
+        app = cast(FastAPI, client.app)
+        records, _ = app.state.store.read_audit(limit=50)
+        deletes = [r for r in records if r.get("action") == "bot.delete"]
+        assert deletes, "deletion must be audited"
+        assert deletes[0]["target"] == f"bot:{bot_id}"
+        assert deletes[0]["outcome"] == "success"
+
+    def test_a_deleted_bot_does_not_return_after_a_restart(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Verify the config is removed from disk, not just from memory.
+
+        Since #108 the supervisor restores persisted bots on startup, so an
+        in-memory-only delete would quietly resurrect the bot.
+        """
+        store = _store(tmp_path)
+        app = create_app(store=store, supervisor=_supervisor_with_store(monkeypatch, store))
+        with TestClient(app) as client:
+            bot_id = client.post("/api/bots", json=_BOT_PAYLOAD, headers=_auth()).json()["id"]
+            _login(client)
+            assert client.delete(f"/api/bots/{bot_id}", headers=_csrf(client)).status_code == 204
+
+        restarted_store = BotStore(store.data_dir)
+        restarted = create_app(
+            store=restarted_store,
+            supervisor=_supervisor_with_store(monkeypatch, restarted_store),
+        )
+        with TestClient(restarted) as client:
+            assert client.get("/api/bots", headers=_auth()).json() == []
+
+    def test_trade_history_is_archived_on_delete(self, client: TestClient) -> None:
+        """Verify executed trades survive the bot that made them."""
+        bot_id = self._bot(client)
+        app = cast(FastAPI, client.app)
+        store = app.state.store
+        store.append_trade(bot_id, {"bot_id": bot_id, "action": "buy", "order_id": "o1"})
+        _login(client)
+
+        client.delete(f"/api/bots/{bot_id}", headers=_csrf(client))
+
+        archive = Path(store.data_dir) / "trades" / "archive" / bot_id
+        assert archive.is_dir()
+        assert any(archive.glob("*.jsonl")), "history must be archived, not destroyed"
+
+
 class TestVenueErrorSurfacing:
     """A venue failure must say whose fault it is, without leaking keys (#175)."""
 

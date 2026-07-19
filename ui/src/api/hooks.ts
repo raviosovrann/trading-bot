@@ -77,6 +77,21 @@ export function useStartBot() {
   })
 }
 
+/**
+ * Delete a bot.
+ *
+ * The server refuses this while the bot is running (#163), so the UI both
+ * disables the action and surfaces the refusal if it slips through.
+ */
+export function useDeleteBot() {
+  const { client } = useAuth()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => client.deleteBot(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['bots'] }),
+  })
+}
+
 export function useStopBot() {
   const { client } = useAuth()
   const invalidate = useBotInvalidator()

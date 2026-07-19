@@ -89,6 +89,78 @@ function setup(theBot: BotView, trades: Trade[] = []) {
   return renderWith(client, theBot.id)
 }
 
+describe('BotDetail delete (#163)', () => {
+  function setupWithDelete(theBot: BotView) {
+    const client = {
+      getSession: vi.fn().mockResolvedValue({ username: 'op', roles: ['operator'] }),
+      getBot: vi.fn().mockResolvedValue(theBot),
+      getTrades: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+      patchBot: vi.fn(),
+      startBot: vi.fn(),
+      stopBot: vi.fn(),
+      deleteBot: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ApiClient
+    return { ...renderWith(client, theBot.id), client }
+  }
+
+  it('asks for confirmation naming the bot before deleting', async () => {
+    const { client } = setupWithDelete(bot({ status: 'stopped', symbol: 'DOGE/USD' }))
+    expect(await screen.findByText('stopped')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: /delete/i }))
+
+    // Naming the bot is the point: a bare "are you sure?" invites reflex clicks.
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent(/Delete DOGE\/USD/)
+    // And it must say what happens to the trades, since that is the part an
+    // operator would otherwise assume.
+    expect(dialog).toHaveTextContent(/archived, not deleted/i)
+    expect(client.deleteBot).not.toHaveBeenCalled()
+
+    await userEvent.click(screen.getByRole('button', { name: /^confirm$/i }))
+    expect(client.deleteBot).toHaveBeenCalledWith('b1')
+  })
+
+  it('does not delete when the confirmation is dismissed', async () => {
+    const { client } = setupWithDelete(bot({ status: 'stopped' }))
+    expect(await screen.findByText('stopped')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: /delete/i }))
+    await userEvent.click(screen.getByRole('button', { name: /cancel/i }))
+
+    expect(client.deleteBot).not.toHaveBeenCalled()
+  })
+
+  it('disables delete while the bot is running', async () => {
+    setupWithDelete(bot({ status: 'running' }))
+    expect(await screen.findByText('running')).toBeInTheDocument()
+
+    expect(screen.getByRole('button', { name: /delete/i })).toBeDisabled()
+  })
+
+  it('surfaces a refusal from the server', async () => {
+    const theBot = bot({ status: 'stopped' })
+    const client = {
+      getSession: vi.fn().mockResolvedValue({ username: 'op', roles: ['operator'] }),
+      getBot: vi.fn().mockResolvedValue(theBot),
+      getTrades: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+      patchBot: vi.fn(),
+      startBot: vi.fn(),
+      stopBot: vi.fn(),
+      deleteBot: vi
+        .fn()
+        .mockRejectedValue(new Error('409 bot b1 is running; stop it before deleting')),
+    } as unknown as ApiClient
+    renderWith(client, theBot.id)
+    expect(await screen.findByText('stopped')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: /delete/i }))
+    await userEvent.click(screen.getByRole('button', { name: /^confirm$/i }))
+
+    expect(await screen.findByText(/stop it before deleting/i)).toBeInTheDocument()
+  })
+})
+
 describe('BotDetail', () => {
   it('loads older trades on demand instead of all at once', async () => {
     const client = {
