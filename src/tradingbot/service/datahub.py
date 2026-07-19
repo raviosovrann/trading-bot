@@ -8,7 +8,7 @@ from typing import cast
 
 from ..datafeed import CandleFeed
 from ..models import Candle
-from ..stream import StreamingFeed
+from ..stream import StreamingFeed, StreamingNotSupported
 from .blocking import BlockingCalls
 from .ratelimit import RateLimiter
 
@@ -16,8 +16,30 @@ _log = logging.getLogger(__name__)
 _Key = tuple[str, str]
 _Handler = Callable[[Candle], None]
 _StreamRunner = Callable[..., Awaitable[None]]
-_ExitListener = Callable[[str, str, str], None]
-"""Called with ``(symbol, timeframe, reason)`` when a stream exits unexpectedly."""
+_ExitListener = Callable[[str, str, str, bool], None]
+"""Called with ``(symbol, timeframe, reason, permanent)`` on an unexpected exit.
+
+``permanent`` marks a failure a restart cannot fix — a venue that does not
+implement streaming at all, as opposed to a dropped connection (#170).
+"""
+
+
+def _is_permanent(exc: BaseException) -> bool:
+    """Whether ``exc`` means this stream can never work, not merely that it broke.
+
+    A venue that does not implement streaming fails identically on every retry,
+    so telling the operator to restart would be wrong (#170).
+
+    Args:
+        exc: Exception that ended the stream.
+
+    Returns:
+        ``True`` when retrying is futile.
+    """
+    if isinstance(exc, StreamingNotSupported):
+        return True
+    # ccxt raises NotSupported for capabilities an exchange does not implement.
+    return type(exc).__name__ == "NotSupported"
 
 
 class MarketDataHub:
@@ -91,16 +113,17 @@ class MarketDataHub:
         if listener in self._exit_listeners:
             self._exit_listeners.remove(listener)
 
-    def _notify_stream_exit(self, key: _Key, reason: str) -> None:
+    def _notify_stream_exit(self, key: _Key, reason: str, permanent: bool = False) -> None:
         """Tell every listener that ``key``'s stream stopped delivering data.
 
         Args:
             key: Symbol/timeframe whose stream exited.
             reason: Human-readable cause, shown to the operator.
+            permanent: Whether a restart could never fix this.
         """
         for listener in tuple(self._exit_listeners):
             try:
-                listener(key[0], key[1], reason)
+                listener(key[0], key[1], reason, permanent)
             except Exception:  # noqa: BLE001 - a bad listener must not kill the stream task
                 _log.exception("stream exit listener failed for %s %s", *key)
 
@@ -178,7 +201,9 @@ class MarketDataHub:
             raise
         except Exception as exc:
             _log.exception("market data stream stopped for %s %s", *key)
-            self._notify_stream_exit(key, f"{type(exc).__name__}: {exc}")
+            self._notify_stream_exit(
+                key, f"{type(exc).__name__}: {exc}", permanent=_is_permanent(exc)
+            )
         else:
             _log.warning("market data stream for %s %s returned unexpectedly", *key)
             self._notify_stream_exit(key, "stream ended without an unsubscribe")

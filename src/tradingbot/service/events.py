@@ -54,6 +54,7 @@ class BotStateEvent:
     last_decision: str | None
     degraded: bool = False
     degraded_reason: str | None = None
+    degraded_permanent: bool = False
 
 
 @dataclass

@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocket, WebSocketDisconnect
 
 from ..models import Position
+from ..stream import StreamingNotSupported
 from .audit import AuditLog
 from .auth import hash_password, needs_rehash, verify_password
 from .dto import (
@@ -399,6 +400,7 @@ def _to_view(bot: BotInstance) -> BotView:
         last_decision=bot.last_decision,
         degraded=bot.degraded,
         degraded_reason=bot.degraded_reason,
+        degraded_permanent=bot.degraded_permanent,
     )
 
 
@@ -828,7 +830,11 @@ def create_app(
         bot.config.creds = _load_credentials(store, bot.config.venue, bot.config.market_type)
         try:
             await supervisor.start(bot_id)
-        except ValueError as exc:
+        except (ValueError, StreamingNotSupported) as exc:
+            # StreamingNotSupported is an operator-actionable configuration
+            # problem (this venue cannot stream this market), not a server
+            # fault — surfacing it as a 500 would hide the one detail that
+            # tells them what to change.
             _audit(
                 http_request, principal, "bot.start", f"bot:{bot_id}", "failure",
                 after={"error": str(exc)},

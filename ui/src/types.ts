@@ -27,6 +27,9 @@ export interface BotView {
   // Running but starved of market data — orthogonal to `status` (#114).
   degraded?: boolean
   degraded_reason?: string | null
+  // A venue limitation rather than a dropped connection: restarting cannot fix
+  // it, so the UI must not suggest that (#170).
+  degraded_permanent?: boolean
 }
 
 export interface Trade {
@@ -94,6 +97,7 @@ export interface BotStateEvent {
   last_decision: string | null
   degraded: boolean
   degraded_reason: string | null
+  degraded_permanent: boolean
 }
 
 export interface DecisionEvent {

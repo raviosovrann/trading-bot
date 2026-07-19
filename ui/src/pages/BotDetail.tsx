@@ -48,6 +48,7 @@ export function BotDetail() {
               last_decision: event.last_decision,
               degraded: event.degraded,
               degraded_reason: event.degraded_reason,
+              degraded_permanent: event.degraded_permanent,
             }
           : old,
       )
@@ -185,8 +186,10 @@ export function BotDetail() {
           {bot.degraded && (
             <p role="status" className="warning">
               No market data is arriving — the bot is still running but is not seeing new bars.
-              {bot.degraded_reason ? ` (${bot.degraded_reason})` : ''} Stop and start it to
-              re-establish the stream.
+              {bot.degraded_reason ? ` (${bot.degraded_reason})` : ''}{' '}
+              {bot.degraded_permanent
+                ? 'This venue cannot stream this market, so restarting will not help — use a venue that supports streaming.'
+                : 'Stop and start it to re-establish the stream.'}
             </p>
           )}
 

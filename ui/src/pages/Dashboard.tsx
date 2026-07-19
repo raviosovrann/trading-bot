@@ -39,6 +39,7 @@ export function Dashboard() {
                 last_decision: event.last_decision,
                 degraded: event.degraded,
                 degraded_reason: event.degraded_reason,
+                degraded_permanent: event.degraded_permanent,
               }
             : b,
         ),
