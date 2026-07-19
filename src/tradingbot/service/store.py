@@ -28,6 +28,16 @@ _log = logging.getLogger(__name__)
 _BOT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 """Allowed characters in a bot identifier used for filesystem paths."""
 
+_TRADE_ROTATE_BYTES = 8 * 1024 * 1024
+"""Default size at which a bot's active trade log rolls to a new archive.
+
+Rotation bounds how much must be read to serve one page; archives are kept
+indefinitely, so no trade record is ever destroyed by the service.
+"""
+
+_TRADE_MAX_PAGE = 500
+"""Hard ceiling on a single page of trade history."""
+
 _THREAD_LOCKS_GUARD = threading.Lock()
 _THREAD_LOCKS: dict[Path, Any] = {}
 
@@ -56,12 +66,21 @@ def _validate_bot_id(bot_id: str) -> None:
 class BotStore:
     """File-based persistence for bot configs, trade history, secrets and users."""
 
-    def __init__(self, data_dir: str | Path) -> None:
+    def __init__(
+        self, data_dir: str | Path, *, trade_rotate_bytes: int = _TRADE_ROTATE_BYTES
+    ) -> None:
         """Initialize paths under ``data_dir``.
 
         Args:
             data_dir: Directory where JSON files and trade logs are stored.
+            trade_rotate_bytes: Size at which a bot's active trade log is rolled
+                to a new archive. Archives are never deleted or renamed.
+
+        Raises:
+            ValueError: If ``trade_rotate_bytes`` is not positive.
         """
+        if trade_rotate_bytes <= 0:
+            raise ValueError("trade_rotate_bytes must be positive")
         if _fcntl is None:
             raise RuntimeError(
                 "BotStore requires POSIX flock support for safe multi-process access"
@@ -75,6 +94,9 @@ class BotStore:
         self._users_file = self._data_dir / "users.json"
         self._sessions_file = self._data_dir / "sessions.json"
         self._audit_file = self._data_dir / "audit.jsonl"
+        self._trade_rotate_bytes = trade_rotate_bytes
+        self._next_trade_seq: dict[str, int] = {}
+        self._active_segment: dict[str, Path] = {}
         self._secure_directory(self._data_dir)
         self._harden_existing_paths()
 
@@ -145,12 +167,134 @@ class BotStore:
             records.append(record)
         self._save_text_unlocked(self._bots_file, json.dumps(records, indent=2))
 
-    def append_trade(self, bot_id: str, order_event: dict[str, Any]) -> None:
-        """Append an order event to a bot's JSONL trade log.
+    def _trade_segments(self, bot_id: str) -> list[Path]:
+        """Return this bot's trade log segments, oldest first.
+
+        Segments are ``<bot>.<ordinal>.jsonl`` plus the pre-#122 ``<bot>.jsonl``,
+        which sorts first as the oldest. Rotation only ever starts a *new*
+        ordinal — nothing is renamed — so a record's segment never changes and
+        cursors into history cannot dangle.
+
+        Args:
+            bot_id: Bot identifier.
+
+        Returns:
+            Existing segment paths in chronological order.
+        """
+        segments: list[tuple[int, Path]] = []
+        legacy = self._trades_dir / f"{bot_id}.jsonl"
+        if legacy.exists():
+            segments.append((-1, legacy))
+        for path in self._trades_dir.glob(f"{bot_id}.*.jsonl"):
+            ordinal = path.name[len(bot_id) + 1 : -len(".jsonl")]
+            if ordinal.isdigit():
+                segments.append((int(ordinal), path))
+        segments.sort(key=lambda pair: pair[0])
+        return [path for _, path in segments]
+
+    def _active_trade_segment(self, bot_id: str) -> Path:
+        """Return the segment to append to, rolling over when it is full.
+
+        Args:
+            bot_id: Bot identifier.
+
+        Returns:
+            Path of the segment that should receive the next record.
+        """
+        # Fast path: a stat() on the remembered segment, rather than globbing
+        # the whole directory on every append. If another process rotated, the
+        # cached segment is already at the threshold and we fall through.
+        cached = self._active_segment.get(bot_id)
+        if cached is not None and cached.exists():
+            if cached.stat().st_size < self._trade_rotate_bytes:
+                return cached
+        segments = self._trade_segments(bot_id)
+        if not segments:
+            path = self._trades_dir / f"{bot_id}.000001.jsonl"
+            self._active_segment[bot_id] = path
+            return path
+        newest = segments[-1]
+        if newest.stat().st_size < self._trade_rotate_bytes:
+            self._active_segment[bot_id] = newest
+            return newest
+        ordinal = newest.name[len(bot_id) + 1 : -len(".jsonl")]
+        next_ordinal = int(ordinal) + 1 if ordinal.isdigit() else 1
+        path = self._trades_dir / f"{bot_id}.{next_ordinal:06d}.jsonl"
+        self._active_segment[bot_id] = path
+        return path
+
+    def _read_segment(self, path: Path) -> list[dict[str, Any]]:
+        """Parse one segment, filling in a ``seq`` for pre-#122 records.
+
+        A legacy row can only appear in the pre-#122 ``<bot>.jsonl``, which is
+        always the oldest segment, so its position within that file is also its
+        position in the bot's whole history — no other segment need be read to
+        number it.
+
+        Args:
+            path: Segment to read.
+
+        Returns:
+            Parsed records in file order. Invalid lines are logged and skipped.
+        """
+        records: list[dict[str, Any]] = []
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    _log.warning("invalid trade line in %s: %s", path, exc)
+                    continue
+                if "seq" not in record:
+                    # Legacy row. Segments are append-only and never renamed,
+                    # so position is a stable identity.
+                    record["seq"] = len(records) + 1
+                records.append(record)
+        return records
+
+    def _next_seq(self, bot_id: str) -> int:
+        """Return the next sequence number for ``bot_id``.
+
+        Derived once from the newest segment, then tracked in memory. The
+        caller must hold the store transaction.
+
+        Args:
+            bot_id: Bot identifier.
+
+        Returns:
+            Sequence number to stamp on the next record.
+        """
+        cached = self._next_trade_seq.get(bot_id)
+        if cached is not None:
+            return cached
+        segments = self._trade_segments(bot_id)
+        highest = 0
+        # Only the newest segment can hold the highest seq, but a legacy log
+        # numbered by position needs its own scan, so check both ends.
+        for path in {segments[0], segments[-1]} if segments else set():
+            for record in self._read_segment(path):
+                try:
+                    highest = max(highest, int(record.get("seq", 0)))
+                except (TypeError, ValueError):
+                    continue
+        self._next_trade_seq[bot_id] = highest + 1
+        return highest + 1
+
+    def append_trade(self, bot_id: str, order_event: dict[str, Any]) -> dict[str, Any]:
+        """Append an order event to a bot's trade log, stamping a sequence.
+
+        Rolls the active segment over once it reaches the configured size, so
+        no single file grows without bound. Nothing is ever deleted.
 
         Args:
             bot_id: Bot identifier used as the log filename.
             order_event: Event data to append.
+
+        Returns:
+            The stored record, including its assigned ``seq``.
 
         Raises:
             ValueError: If ``bot_id`` is not a safe identifier.
@@ -158,42 +302,64 @@ class BotStore:
         _validate_bot_id(bot_id)
         with self._transaction():
             self._secure_directory(self._trades_dir)
-            path = self._trades_dir / f"{bot_id}.jsonl"
+            seq = self._next_seq(bot_id)
+            record = {**dict(order_event), "seq": seq}
+            path = self._active_trade_segment(bot_id)
             fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, "a", encoding="utf-8") as f:
-                f.write(json.dumps(order_event, separators=(",", ":")) + "\n")
+                f.write(json.dumps(record, separators=(",", ":")) + "\n")
                 f.flush()
                 os.fsync(f.fileno())
             self._fsync_directory(self._trades_dir)
+            self._next_trade_seq[bot_id] = seq + 1
+            return record
 
-    def read_trades(self, bot_id: str) -> list[dict[str, Any]]:
-        """Read all trade events persisted for ``bot_id``.
+    def read_trades(
+        self, bot_id: str, *, limit: int = 50, before_seq: int | None = None
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        """Return one page of a bot's trade history, newest first.
+
+        Only as many segments as the page needs are read, so history size does
+        not drive the cost of a request. The cursor walks strictly backward
+        into already-written records, so a concurrent append can neither
+        duplicate nor hide a row.
 
         Args:
             bot_id: Bot identifier used as the log filename.
+            limit: Maximum records to return; capped at 500.
+            before_seq: Return only records with ``seq`` below this cursor
+                (exclusive), for paging backward through history.
 
         Returns:
-            List of parsed trade events. Invalid lines are logged and skipped.
+            A ``(records, next_cursor)`` pair; ``next_cursor`` is the ``seq`` to
+            pass as ``before_seq`` for the next page, or ``None`` when exhausted.
 
         Raises:
             ValueError: If ``bot_id`` is not a safe identifier.
         """
         _validate_bot_id(bot_id)
-        path = self._trades_dir / f"{bot_id}.jsonl"
-        if not path.exists():
-            return []
-        trades: list[dict[str, Any]] = []
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
+        limit = max(0, min(limit, _TRADE_MAX_PAGE))
+        segments = self._trade_segments(bot_id)
+        if not segments or limit == 0:
+            return [], None
+
+        page: list[dict[str, Any]] = []
+        exhausted = True
+        for index in range(len(segments) - 1, -1, -1):
+            records = self._read_segment(segments[index])
+            for record in reversed(records):
+                seq = int(record.get("seq", 0))
+                if before_seq is not None and seq >= before_seq:
                     continue
-                try:
-                    trades.append(json.loads(line))
-                except json.JSONDecodeError as exc:
-                    _log.warning("invalid trade line in %s: %s", path, exc)
-        return trades
+                if len(page) == limit:
+                    exhausted = False
+                    break
+                page.append(record)
+            if not exhausted:
+                break
+        next_cursor = int(page[-1]["seq"]) if page and not exhausted else None
+        return page, next_cursor
 
     def load_secrets(self) -> dict[str, Any]:
         """Load and decrypt venue credentials from ``secrets.json``.

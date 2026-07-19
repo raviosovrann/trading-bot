@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -39,6 +39,7 @@ function trade(overrides: Partial<Trade> = {}): Trade {
     order_id: 'o1',
     symbol: 'BTC/USD',
     ts: 1700000000000,
+    seq: 1,
     ...overrides,
   }
 }
@@ -49,15 +50,7 @@ class FakeSocket implements BotSocket {
   close = vi.fn()
 }
 
-function setup(theBot: BotView, trades: Trade[] = []) {
-  const client = {
-    getSession: vi.fn().mockResolvedValue({ username: 'op', roles: ['operator'] }),
-    getBot: vi.fn().mockResolvedValue(theBot),
-    getTrades: vi.fn().mockResolvedValue(trades),
-    patchBot: vi.fn().mockResolvedValue({ ...theBot, live: true }),
-    startBot: vi.fn().mockResolvedValue(theBot),
-    stopBot: vi.fn().mockResolvedValue(theBot),
-  } as unknown as ApiClient
+function renderWith(client: ApiClient, botId = 'b1') {
   const sockets: FakeSocket[] = []
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
@@ -70,7 +63,7 @@ function setup(theBot: BotView, trades: Trade[] = []) {
             return s
           }}
         >
-          <MemoryRouter initialEntries={[`/bots/${theBot.id}`]}>
+          <MemoryRouter initialEntries={[`/bots/${botId}`]}>
             <Routes>
               <Route path="/bots/:id" element={<BotDetail />} />
             </Routes>
@@ -84,7 +77,63 @@ function setup(theBot: BotView, trades: Trade[] = []) {
   return { client, emit }
 }
 
+function setup(theBot: BotView, trades: Trade[] = []) {
+  const client = {
+    getSession: vi.fn().mockResolvedValue({ username: 'op', roles: ['operator'] }),
+    getBot: vi.fn().mockResolvedValue(theBot),
+    getTrades: vi.fn().mockResolvedValue({ items: trades, next_cursor: null }),
+    patchBot: vi.fn().mockResolvedValue({ ...theBot, live: true }),
+    startBot: vi.fn().mockResolvedValue(theBot),
+    stopBot: vi.fn().mockResolvedValue(theBot),
+  } as unknown as ApiClient
+  return renderWith(client, theBot.id)
+}
+
 describe('BotDetail', () => {
+  it('loads older trades on demand instead of all at once', async () => {
+    const client = {
+      getSession: vi.fn().mockResolvedValue({ username: 'op', roles: ['operator'] }),
+      getBot: vi.fn().mockResolvedValue(bot()),
+      getTrades: vi
+        .fn()
+        .mockResolvedValueOnce({ items: [trade({ order_id: 'newest', seq: 2 })], next_cursor: 2 })
+        .mockResolvedValueOnce({
+          items: [trade({ order_id: 'older', seq: 1 })],
+          next_cursor: null,
+        }),
+      patchBot: vi.fn(),
+      startBot: vi.fn(),
+      stopBot: vi.fn(),
+    } as unknown as ApiClient
+    renderWith(client)
+
+    expect(await screen.findByText('newest')).toBeInTheDocument()
+    expect(screen.queryByText('older')).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: /load older trades/i }))
+
+    expect(await screen.findByText('older')).toBeInTheDocument()
+    expect(screen.getByText('newest')).toBeInTheDocument()
+    // The second call must carry the cursor, not refetch from the top.
+    const calls = (client.getTrades as unknown as { mock: { calls: unknown[][] } }).mock.calls
+    expect(calls[1][1]).toEqual({ before: 2 })
+    expect(screen.queryByRole('button', { name: /load older trades/i })).not.toBeInTheDocument()
+  })
+
+  it('refetches when the server reports dropped events', async () => {
+    const { client, emit } = setup(bot({ status: 'running' }), [trade()])
+    expect(await screen.findByText('running')).toBeInTheDocument()
+    const before = (client.getBot as unknown as { mock: { calls: unknown[] } }).mock.calls.length
+
+    emit({ type: 'overflow', dropped: 42 })
+
+    await waitFor(() =>
+      expect(
+        (client.getBot as unknown as { mock: { calls: unknown[] } }).mock.calls.length,
+      ).toBeGreaterThan(before),
+    )
+  })
+
   it('applies a PnL-only state event without refetching the bot', async () => {
     const { client, emit } = setup(bot({ status: 'running' }))
     expect(await screen.findByText('running')).toBeInTheDocument()

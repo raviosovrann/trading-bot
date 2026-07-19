@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -176,6 +176,20 @@ describe('Dashboard', () => {
     reconnect()
     emit({ ...snapshot, seq: 1, status: 'stopped' })
     expect(await screen.findByText('stopped')).toBeInTheDocument()
+  })
+
+  it('refetches the table when the server reports dropped events', async () => {
+    const { client, emit } = setup([bot({ id: '1', status: 'running' })])
+    expect(await screen.findByText('running')).toBeInTheDocument()
+    const before = (client.listBots as unknown as { mock: { calls: unknown[] } }).mock.calls.length
+
+    emit({ type: 'overflow', dropped: 9 })
+
+    await waitFor(() =>
+      expect(
+        (client.listBots as unknown as { mock: { calls: unknown[] } }).mock.calls.length,
+      ).toBeGreaterThan(before),
+    )
   })
 
   it('shows a red LIVE badge for live bots and DRY-RUN otherwise', async () => {

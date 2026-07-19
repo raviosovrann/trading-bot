@@ -112,8 +112,11 @@ def test_append_and_read_trades(tmp_path: Path) -> None:
     store.append_trade("bot-1", {"action": "buy", "status": "filled"})
     store.append_trade("bot-1", {"action": "sell", "status": "filled"})
 
-    trades = store.read_trades("bot-1")
-    assert [t["action"] for t in trades] == ["buy", "sell"]
+    trades, cursor = store.read_trades("bot-1")
+    # Newest first, and each record carries its cursor (#122).
+    assert [t["action"] for t in trades] == ["sell", "buy"]
+    assert [t["seq"] for t in trades] == [2, 1]
+    assert cursor is None
 
 
 def test_store_paths_are_owner_only_even_with_permissive_umask(tmp_path: Path) -> None:
@@ -136,7 +139,7 @@ def test_store_paths_are_owner_only_even_with_permissive_umask(tmp_path: Path) -
         data_dir / "bots.json",
         data_dir / "users.json",
         data_dir / "secrets.json",
-        data_dir / "trades" / "bot-1.jsonl",
+        data_dir / "trades" / "bot-1.000001.jsonl",
     ]:
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
@@ -153,7 +156,7 @@ def test_store_rejects_platforms_without_process_locking(
 def test_read_trades_for_missing_bot_returns_empty_list(tmp_path: Path) -> None:
     """Verify that reading trades for a missing bot returns an empty list."""
     store = BotStore(tmp_path)
-    assert store.read_trades("missing") == []
+    assert store.read_trades("missing") == ([], None)
 
 
 @pytest.mark.parametrize("bot_id", ["../escape", "bad/id", "", "bot.id"])
@@ -304,13 +307,13 @@ def test_read_trades_skips_empty_and_invalid_lines(tmp_path: Path) -> None:
     """Verify read_trades ignores blank lines and invalid JSON."""
     store = BotStore(tmp_path)
     store.append_trade("bot-1", {"action": "buy"})
-    path = tmp_path / "trades" / "bot-1.jsonl"
+    path = tmp_path / "trades" / "bot-1.000001.jsonl"
     with path.open("a", encoding="utf-8") as f:
         f.write("\n\nnot-json\n")
     store.append_trade("bot-1", {"action": "sell"})
 
-    trades = store.read_trades("bot-1")
-    assert [t["action"] for t in trades] == ["buy", "sell"]
+    trades, _ = store.read_trades("bot-1")
+    assert [t["action"] for t in trades] == ["sell", "buy"]
 
 
 def test_load_json_returns_empty_on_missing_or_invalid(tmp_path: Path) -> None:

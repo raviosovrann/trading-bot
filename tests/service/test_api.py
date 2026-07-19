@@ -18,7 +18,13 @@ from fastapi.testclient import TestClient
 from tradingbot.models import Action, Candle, Order, OrderResult, OrderType, Position, PositionSide, Signal
 from tradingbot.service.api import create_app
 from tradingbot.service.auth import hash_password
-from tradingbot.service.events import BotStateEvent, DecisionEvent, EventBus, OrderEvent
+from tradingbot.service.events import (
+    BotStateEvent,
+    DecisionEvent,
+    EventBus,
+    OrderEvent,
+    OverflowEvent,
+)
 from tradingbot.service.risk import GlobalExposure
 from tradingbot.service.store import BotStore
 from tradingbot.service.supervisor import BotConfig, BotSupervisor
@@ -709,10 +715,13 @@ class TestTrades:
         })
         response = client.get(f"/api/bots/{bot_id}/trades", headers=_auth())
         assert response.status_code == 200
-        assert response.json() == [{
-            "bot_id": bot_id, "action": "buy", "status": "submitted",
-            "ok": True, "order_id": "o1", "symbol": "BTC/USD", "ts": 42,
-        }]
+        assert response.json() == {
+            "items": [{
+                "bot_id": bot_id, "action": "buy", "status": "submitted",
+                "ok": True, "order_id": "o1", "symbol": "BTC/USD", "ts": 42, "seq": 1,
+            }],
+            "next_cursor": None,
+        }
 
     def test_get_trades_tolerates_partial_records(self, client: TestClient) -> None:
         """A legacy/partial trade record is coerced, not 500'd."""
@@ -722,8 +731,50 @@ class TestTrades:
         store.append_trade(bot_id, {"action": "sell", "status": "filled"})
         response = client.get(f"/api/bots/{bot_id}/trades", headers=_auth())
         assert response.status_code == 200
-        row = response.json()[0]
+        row = response.json()["items"][0]
         assert row["action"] == "sell" and row["ok"] is False and row["order_id"] is None
+
+
+class TestTradePagination:
+    def _bot_with_trades(self, client: TestClient, count: int) -> str:
+        bot_id = TestBotLifecycle()._create(client)["id"]
+        store = cast(FastAPI, client.app).state.store
+        for n in range(count):
+            store.append_trade(bot_id, {
+                "bot_id": bot_id, "action": "buy", "status": "filled",
+                "ok": True, "order_id": f"o{n}", "symbol": "BTC/USD", "ts": n,
+            })
+        return bot_id
+
+    def test_pages_backward_through_history(self, client: TestClient) -> None:
+        """Verify the cursor walks every trade exactly once, newest first."""
+        bot_id = self._bot_with_trades(client, 12)
+        seen: list[str] = []
+        cursor: int | None = None
+        for _ in range(10):
+            url = f"/api/bots/{bot_id}/trades?limit=5"
+            if cursor is not None:
+                url += f"&before={cursor}"
+            body = client.get(url, headers=_auth()).json()
+            seen.extend(row["order_id"] for row in body["items"])
+            cursor = body["next_cursor"]
+            if cursor is None:
+                break
+        assert seen == [f"o{n}" for n in range(11, -1, -1)]
+        assert len(set(seen)) == 12
+
+    def test_limit_above_the_cap_is_rejected(self, client: TestClient) -> None:
+        """Verify the server enforces a maximum page size."""
+        bot_id = self._bot_with_trades(client, 1)
+        response = client.get(f"/api/bots/{bot_id}/trades?limit=100000", headers=_auth())
+        assert response.status_code == 422
+
+    def test_default_page_is_bounded(self, client: TestClient) -> None:
+        """Verify a caller that passes no limit still gets a bounded page."""
+        bot_id = self._bot_with_trades(client, 120)
+        body = client.get(f"/api/bots/{bot_id}/trades", headers=_auth()).json()
+        assert len(body["items"]) == 50
+        assert body["next_cursor"] is not None
 
 
 class TestAuthErrors:
@@ -810,6 +861,18 @@ class TestWebSocketEvents:
             assert data["position"]["side"] == "long"
             assert data["degraded"] is True
             assert data["degraded_reason"] == "stream ended without an unsubscribe"
+
+    def test_ws_reports_overflow_so_the_client_resynchronizes(self, client: TestClient) -> None:
+        """Verify a dropped-event notice reaches the browser."""
+        app = cast(FastAPI, client.app)
+        supervisor = app.state.supervisor
+        _login(client)
+        with client.websocket_connect("/ws") as ws:
+            _wait_for_subscribers(supervisor.event_bus)
+            supervisor.event_bus.publish(OverflowEvent(dropped=17))
+            data = ws.receive_json()
+            assert data["type"] == "overflow"
+            assert data["dropped"] == 17
 
     def test_ws_receives_unknown_event(self, client: TestClient) -> None:
         """Verify that the WebSocket serializes unknown events safely."""

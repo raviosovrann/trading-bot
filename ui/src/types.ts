@@ -37,6 +37,14 @@ export interface Trade {
   order_id: string | null
   symbol: string | null
   ts: number | null
+  // Stable per-bot cursor used to page backward through history (#122).
+  seq: number | null
+}
+
+// Trade history is unbounded, so the API always returns one bounded page.
+export interface TradePage {
+  items: Trade[]
+  next_cursor: number | null
 }
 
 export interface CreateBot {
@@ -105,4 +113,11 @@ export interface OrderEvent {
   order_id: string | null
 }
 
-export type WsEvent = BotStateEvent | DecisionEvent | OrderEvent
+// The server dropped events for this client: the live view is incomplete and
+// must be resynchronized from the API rather than trusted (#122).
+export interface OverflowEvent {
+  type: 'overflow'
+  dropped: number
+}
+
+export type WsEvent = BotStateEvent | DecisionEvent | OrderEvent | OverflowEvent

@@ -18,7 +18,7 @@ interface PendingAction {
 export function BotDetail() {
   const { id = '' } = useParams()
   const { data: bot, isLoading, error } = useBot(id)
-  const { data: trades } = useTrades(id)
+  const { data: tradePages, fetchNextPage, hasNextPage, isFetchingNextPage } = useTrades(id)
   const patchBot = usePatchBot(id)
   const startBot = useStartBot()
   const stopBot = useStopBot()
@@ -28,6 +28,13 @@ export function BotDetail() {
   const [pnlSamples, setPnlSamples] = useState<number[]>([])
 
   useBotEvents((event) => {
+    if (event.type === 'overflow') {
+      // The server dropped events for this client, so the live view is
+      // incomplete. Refetch rather than carry on with a partial picture.
+      void queryClient.invalidateQueries({ queryKey: ['bots', id] })
+      void queryClient.invalidateQueries({ queryKey: ['bots', id, 'trades'] })
+      return
+    }
     if (event.bot_id !== id) return
     if (event.type === 'state') {
       // The snapshot is complete and authoritative — no refetch needed.
@@ -95,6 +102,10 @@ export function BotDetail() {
     const cap = Number(capInput)
     if (Number.isFinite(cap) && cap >= 0) patchBot.mutate({ per_bot_cap: cap })
   }
+
+  // History arrives one bounded page at a time (#122); older pages are pulled
+  // on demand rather than rendered all at once.
+  const trades = tradePages?.pages.flatMap((page) => page.items) ?? []
 
   // The server refuses configuration changes unless the bot is stopped (#109),
   // because the venue, risk guard and strategy are built once at start.
@@ -225,7 +236,7 @@ export function BotDetail() {
 
       <section className="card">
         <h2>Trade history</h2>
-        {!trades || trades.length === 0 ? (
+        {trades.length === 0 ? (
           <p className="muted">No trades recorded yet.</p>
         ) : (
           <table className="bot-table">
@@ -252,6 +263,11 @@ export function BotDetail() {
               ))}
             </tbody>
           </table>
+        )}
+        {hasNextPage && (
+          <button onClick={() => void fetchNextPage()} disabled={isFetchingNextPage}>
+            {isFetchingNextPage ? 'Loading…' : 'Load older trades'}
+          </button>
         )}
       </section>
 

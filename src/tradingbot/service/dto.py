@@ -7,6 +7,10 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+TRADES_MAX_PAGE = 500
+"""Server-enforced ceiling on a single page of trade history."""
+
+
 class LoginRequest(BaseModel):
     """Operator login payload."""
 
@@ -59,6 +63,8 @@ class TradeView(BaseModel):
     order_id: str | None = None
     symbol: str | None = None
     ts: int | None = None
+    seq: int | None = None
+    """Stable per-bot cursor, used to page backward through history."""
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> "TradeView":
@@ -73,6 +79,7 @@ class TradeView(BaseModel):
         order_id = record.get("order_id")
         symbol = record.get("symbol")
         ts = record.get("ts")
+        seq = record.get("seq")
         return cls(
             bot_id=str(record.get("bot_id", "")),
             action=str(record.get("action", "")),
@@ -81,7 +88,20 @@ class TradeView(BaseModel):
             order_id=str(order_id) if order_id is not None else None,
             symbol=str(symbol) if symbol is not None else None,
             ts=int(ts) if ts is not None else None,
+            seq=int(seq) if seq is not None else None,
         )
+
+
+class TradePage(BaseModel):
+    """One page of trade history, newest first.
+
+    History grows without bound, so the API never returns all of it. Callers
+    follow ``next_cursor`` backward until it is ``None``.
+    """
+
+    items: list[TradeView]
+    next_cursor: int | None = None
+    """``seq`` to pass as ``before`` for the next page, or ``None`` when done."""
 
 
 class BotView(BaseModel):

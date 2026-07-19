@@ -15,7 +15,7 @@ from typing import Any
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
@@ -24,8 +24,17 @@ from fastapi.websockets import WebSocket, WebSocketDisconnect
 from ..models import Position
 from .audit import AuditLog
 from .auth import hash_password, needs_rehash, verify_password
-from .dto import BotView, CreateBotRequest, LoginRequest, PatchBotRequest, SessionInfo, TradeView
-from .events import BotStateEvent, DecisionEvent, OrderEvent
+from .dto import (
+    TRADES_MAX_PAGE,
+    BotView,
+    CreateBotRequest,
+    LoginRequest,
+    PatchBotRequest,
+    SessionInfo,
+    TradePage,
+    TradeView,
+)
+from .events import BotStateEvent, DecisionEvent, OrderEvent, OverflowEvent
 from .health import readiness
 from .login_guard import LoginGuard, LoginLocked
 from .principal import Principal
@@ -342,6 +351,8 @@ def _event_to_dict(event: Any) -> dict[str, Any]:
     """
     if isinstance(event, BotStateEvent):
         return {"type": "state", **asdict(event)}
+    if isinstance(event, OverflowEvent):
+        return {"type": "overflow", **asdict(event)}
     if isinstance(event, DecisionEvent):
         return {"type": "decision", **asdict(event)}
     if isinstance(event, OrderEvent):
@@ -855,21 +866,36 @@ def create_app(
         return _to_view(bot)
 
     @api_router.get("/bots/{bot_id}/trades")
-    async def list_trades(bot_id: str, _: Principal = Depends(require_auth)) -> list[TradeView]:
-        """List persisted trade events for ``bot_id`` as typed views.
+    async def list_trades(
+        bot_id: str,
+        limit: int = Query(default=50, ge=1, le=TRADES_MAX_PAGE),
+        before: int | None = Query(default=None, ge=1),
+        _: Principal = Depends(require_auth),
+    ) -> TradePage:
+        """List one page of persisted trade events for ``bot_id``, newest first.
+
+        History is unbounded, so this pages rather than returning everything:
+        ``limit`` is capped server-side and ``before`` walks backward through
+        stable per-bot sequence numbers.
 
         Args:
             bot_id: UUID of the bot.
+            limit: Maximum trades to return.
+            before: Return only trades with a ``seq`` below this cursor.
 
         Returns:
-            Trade events recorded for the bot.
+            A page of trade events and the cursor for the next page.
 
         Raises:
             HTTPException: If the bot does not exist.
         """
         if supervisor.get(bot_id) is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="bot not found")
-        return [TradeView.from_record(record) for record in store.read_trades(bot_id)]
+        records, next_cursor = store.read_trades(bot_id, limit=limit, before_seq=before)
+        return TradePage(
+            items=[TradeView.from_record(record) for record in records],
+            next_cursor=next_cursor,
+        )
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:

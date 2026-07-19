@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from tradingbot.models import Action, Candle, Order, OrderResult, OrderType, Position, PositionSide, Signal
-from tradingbot.service.events import BotStateEvent, EventBus
+from tradingbot.service.events import BotStateEvent, EventBus, EventSubscription
 from tradingbot.service.risk import GlobalExposure
 from tradingbot.service.supervisor import BotConfig, BotSupervisor
 
@@ -104,7 +104,7 @@ def _config(bot_id: str = "bot-1") -> BotConfig:
     )
 
 
-async def _drain(queue: asyncio.Queue) -> list[BotStateEvent]:
+async def _drain(queue: EventSubscription) -> list[BotStateEvent]:
     """Return every queued state event, discarding other event types.
 
     The bus hands events to the loop with ``call_soon_threadsafe``, so a tick
@@ -290,10 +290,12 @@ async def test_unexpected_stream_exit_marks_the_bot_degraded(monkeypatch) -> Non
 
     hub.fire_stream_exit("BTC/USD", "1m", "connection reset")
 
-    events = await _drain(queue)
-    assert [e.status for e in events] == ["running"]
-    assert events[0].degraded is True
-    assert "connection reset" in (events[0].degraded_reason or "")
+    # The runtime's own startup message may also republish a running snapshot;
+    # assert on the degradation itself rather than on frame counts.
+    degraded_events = [e for e in await _drain(queue) if e.degraded]
+    assert degraded_events, "the stream exit must be broadcast"
+    assert {e.status for e in degraded_events} == {"running"}
+    assert "connection reset" in (degraded_events[0].degraded_reason or "")
     assert bot.status == "running", "degradation must stay distinct from failed"
     assert bot.degraded is True
     await supervisor.stop("bot-1")
@@ -310,7 +312,7 @@ async def test_stream_exit_for_another_symbol_is_ignored(monkeypatch) -> None:
 
     hub.fire_stream_exit("ETH/USD", "1m", "connection reset")
 
-    assert await _drain(queue) == []
+    assert [e for e in await _drain(queue) if e.degraded] == []
     assert bot.degraded is False
     await supervisor.stop("bot-1")
 
