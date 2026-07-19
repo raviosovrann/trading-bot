@@ -30,7 +30,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle guard
+    from ..models import Order, OrderResult
 
 _QTY_EPSILON = 1e-9
 """Quantities closer than this are considered equal.
@@ -508,3 +511,89 @@ class OrderLedger:
             fee_currency=fill.fee_currency,
             ts=fill.ts,
         )
+
+
+_CANCELED_STATUSES = frozenset({"canceled", "cancelled"})
+"""Venue status strings meaning the order was withdrawn.
+
+Both spellings appear in the wild -- ccxt normalises to ``canceled`` but
+individual exchanges leak ``cancelled`` through ``raw``.
+"""
+
+
+def events_from_result(
+    order: "Order",
+    result: "OrderResult",
+    *,
+    bot_id: str,
+    ts: int,
+) -> list[dict[str, Any]]:
+    """Translate a venue submission response into ledger lifecycle events.
+
+    This is where the system stops treating "the venue accepted this" as
+    "this traded". An accepted order yields a ``submitted`` event and nothing
+    more unless the response carries an actual filled quantity; a dry run or a
+    rejection yields no fill evidence at all, whatever quantity the response
+    happens to report.
+
+    The translation is deterministic and carries no clock or random state, so
+    replaying it during reconciliation produces byte-identical events that the
+    ledger deduplicates rather than double-counting.
+
+    Args:
+        order: The order that was submitted; supplies the idempotency key.
+        result: The venue's response.
+        bot_id: Bot the order belongs to.
+        ts: Timestamp to stamp the events with, from the bar that caused them.
+
+    Returns:
+        Lifecycle events to persist and fold, oldest first. Empty when
+        ``order`` carries no ``client_order_id``, since nothing can be
+        recorded idempotently without one.
+    """
+    client_order_id = order.client_order_id
+    if not client_order_id:
+        return []
+
+    base: dict[str, Any] = {
+        "client_order_id": client_order_id,
+        "bot_id": bot_id,
+        "symbol": order.symbol,
+        "side": order.side.value,
+        "order_type": order.order_type.value,
+        "qty": order.qty,
+        "price": order.price,
+        "ts": ts,
+    }
+    status = str(result.status).strip().lower()
+
+    if status == "dry_run":
+        return [{**base, "kind": "dry_run"}]
+    if not result.ok:
+        return [{**base, "kind": "rejected", "reason": result.error or status}]
+
+    events: list[dict[str, Any]] = [
+        {**base, "kind": "submitted", "venue_order_id": result.order_id}
+    ]
+
+    filled_qty = _coerce_float(result.filled_qty)
+    if filled_qty is not None and filled_qty > _QTY_EPSILON:
+        # `average` is the venue's own volume-weighted fill price. It is absent
+        # on some exchanges, where a limit order's price is a far better
+        # estimate than zero -- zero would make the fill look free and corrupt
+        # cost basis downstream.
+        avg_price = _coerce_float(result.raw.get("average")) if result.raw else None
+        if avg_price is None or avg_price <= 0:
+            avg_price = order.price
+        events.append({
+            "kind": "order_status",
+            "client_order_id": client_order_id,
+            "filled_qty": filled_qty,
+            "avg_price": avg_price,
+            "ts": ts,
+        })
+
+    if status in _CANCELED_STATUSES:
+        events.append({"kind": "canceled", "client_order_id": client_order_id, "ts": ts})
+
+    return events

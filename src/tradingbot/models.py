@@ -113,6 +113,16 @@ class Order(BaseModel):
     price: float | None = None
     reduce_only: bool = False
 
+    client_order_id: str | None = None
+    """Caller-generated idempotency key for this order (#135).
+
+    Identifies the order in the durable ledger independently of the venue's
+    own id, which is not known until the venue answers -- and is never known
+    at all if the submission times out. Venues that accept a client order id
+    should forward it so a retry after an ambiguous failure can be recognised
+    rather than duplicated.
+    """
+
 
 class OrderResult(BaseModel):
     """Result of an order submission or position close."""
