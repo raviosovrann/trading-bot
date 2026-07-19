@@ -27,6 +27,7 @@ from tradingbot.service.events import (
 )
 from tradingbot.service.risk import GlobalExposure
 from tradingbot.service.store import BotStore
+from tradingbot.stream import StreamingNotSupported
 from tradingbot.service.supervisor import BotConfig, BotSupervisor
 
 _TOKEN = "test-token"
@@ -733,6 +734,32 @@ class TestTrades:
         assert response.status_code == 200
         row = response.json()["items"][0]
         assert row["action"] == "sell" and row["ok"] is False and row["order_id"] is None
+
+
+class TestUnsupportedVenue:
+    def test_starting_on_a_venue_that_cannot_stream_returns_a_readable_error(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A venue that cannot stream must fail with a reason, not a bare 500.
+
+        The operator has to learn the venue is the problem; #170 saw this
+        surface as "Internal Server Error".
+        """
+        bot_id = TestBotLifecycle()._create(client)["id"]
+
+        def _boom(*_args, **_kwargs):
+            raise StreamingNotSupported(
+                "coinbase does not support watchOHLCV, so it cannot stream candles."
+            )
+
+        monkeypatch.setattr("tradingbot.service.supervisor.build_venue", _boom)
+        _login(client)
+        response = client.post(f"/api/bots/{bot_id}/start", headers=_csrf(client))
+
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "watchOHLCV" in detail
+        assert "coinbase" in detail
 
 
 class TestTradePagination:

@@ -127,3 +127,6 @@ class BotView(BaseModel):
 
     degraded_reason: str | None = None
     """Why the bot is degraded, or ``None`` when healthy."""
+
+    degraded_permanent: bool = False
+    """Whether the degradation is a venue limitation a restart cannot fix."""

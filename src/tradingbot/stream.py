@@ -23,6 +23,46 @@ class StreamingFeed(Protocol):
     def stop(self) -> None: ...
 
 
+class StreamingNotSupported(RuntimeError):
+    """Raised when a venue's client cannot stream candles at all.
+
+    Distinct from a dropped connection: this is a permanent capability gap, so
+    retrying or restarting the bot can never help. Callers surface it as a
+    start failure rather than letting a bot run without data (#170).
+    """
+
+
+def _require_ohlcv_streaming(exchange: Any) -> None:
+    """Refuse an exchange client that cannot stream candles.
+
+    The whole feed is built on ``watch_ohlcv``. A venue that does not implement
+    it (coinbase, for one) still warms up happily over REST, so the bot starts,
+    reports ``running`` and then never receives a bar. Failing here turns that
+    silent dead end into an explicit start failure.
+
+    Clients that do not advertise capabilities at all — test doubles, non-ccxt
+    feeds — are left alone.
+
+    Args:
+        exchange: ccxt.pro-style client to check.
+
+    Raises:
+        StreamingNotSupported: If the client declares no ``watchOHLCV`` support.
+    """
+    capabilities = getattr(exchange, "has", None)
+    if not isinstance(capabilities, dict) or "watchOHLCV" not in capabilities:
+        return
+    if capabilities.get("watchOHLCV"):
+        return
+    name = getattr(exchange, "id", None) or type(exchange).__name__
+    raise StreamingNotSupported(
+        f"{name} does not support watchOHLCV, so it cannot stream candles. "
+        "This is a venue limitation, not a connection problem — restarting the "
+        "bot will not help. Use a venue with streaming support, or see issue "
+        "#171 for adding trade-aggregated candles."
+    )
+
+
 class CcxtStreamFeed:
     """Event-driven push feed backed by ccxt.pro's async ``watch_ohlcv``.
 
@@ -44,6 +84,7 @@ class CcxtStreamFeed:
     ) -> None:
         if exchange is None:
             raise ValueError("CcxtStreamFeed requires an exchange or use from_exchange(...)")
+        _require_ohlcv_streaming(exchange)
         self._ex = exchange
         self._warmup_feed = warmup_feed
         self._timeframe = timeframe

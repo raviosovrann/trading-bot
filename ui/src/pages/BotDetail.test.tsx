@@ -120,6 +120,49 @@ describe('BotDetail', () => {
     expect(screen.queryByRole('button', { name: /load older trades/i })).not.toBeInTheDocument()
   })
 
+  it('does not suggest a restart when the venue simply cannot stream', async () => {
+    const { emit } = setup(bot({ status: 'running' }))
+    expect(await screen.findByText('running')).toBeInTheDocument()
+
+    emit({
+      type: 'state',
+      bot_id: 'b1',
+      seq: 1,
+      status: 'running',
+      position: null,
+      pnl: 0,
+      last_decision: null,
+      degraded: true,
+      degraded_reason: 'NotSupported: coinbase watchOHLCV() is not supported yet',
+      degraded_permanent: true,
+    })
+
+    const banner = await screen.findByRole('status')
+    expect(banner).toHaveTextContent(/restarting will not help/i)
+    expect(banner).not.toHaveTextContent(/Stop and start it to re-establish/i)
+  })
+
+  it('still suggests a restart for a transient stream drop', async () => {
+    const { emit } = setup(bot({ status: 'running' }))
+    expect(await screen.findByText('running')).toBeInTheDocument()
+
+    emit({
+      type: 'state',
+      bot_id: 'b1',
+      seq: 1,
+      status: 'running',
+      position: null,
+      pnl: 0,
+      last_decision: null,
+      degraded: true,
+      degraded_reason: 'ConnectionResetError: peer went away',
+      degraded_permanent: false,
+    })
+
+    const banner = await screen.findByRole('status')
+    expect(banner).toHaveTextContent(/Stop and start it to re-establish/i)
+  })
+
   it('refetches when the server reports dropped events', async () => {
     const { client, emit } = setup(bot({ status: 'running' }), [trade()])
     expect(await screen.findByText('running')).toBeInTheDocument()
@@ -149,6 +192,7 @@ describe('BotDetail', () => {
       last_decision: null,
       degraded: false,
       degraded_reason: null,
+      degraded_permanent: false,
     })
 
     expect(await screen.findByText(/-7\.25/)).toBeInTheDocument()
@@ -170,6 +214,7 @@ describe('BotDetail', () => {
       last_decision: null,
       degraded: false,
       degraded_reason: null,
+      degraded_permanent: false,
     })
     expect(await screen.findByText(/short 3 @ 25/)).toBeInTheDocument()
   })
@@ -188,6 +233,7 @@ describe('BotDetail', () => {
       last_decision: null,
       degraded: true,
       degraded_reason: 'ConnectionResetError: peer went away',
+      degraded_permanent: false,
     })
     expect(await screen.findByText(/peer went away/)).toBeInTheDocument()
 
@@ -201,6 +247,7 @@ describe('BotDetail', () => {
       last_decision: null,
       degraded: false,
       degraded_reason: null,
+      degraded_permanent: false,
     })
     expect(await screen.findByText('failed')).toBeInTheDocument()
   })
@@ -218,6 +265,7 @@ describe('BotDetail', () => {
       last_decision: null,
       degraded: false,
       degraded_reason: null,
+      degraded_permanent: false,
     })
     expect(screen.getByText('running')).toBeInTheDocument()
   })

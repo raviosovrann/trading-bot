@@ -177,6 +177,25 @@ underlying error.
 **To recover: stop the bot and start it again.** That rebuilds the stream and
 clears the flag. Nothing reconnects automatically today.
 
+#### Permanent failures are different
+
+Some venues cannot stream candles at all — coinbase's ccxt client reports
+`watchOHLCV: false`, so `watch_ohlcv` raises `NotSupported` on the first call.
+Warmup still succeeds (that is REST `fetchOHLCV`), so before #170 such a bot
+started, reported `running`, and then silently never saw a bar while advising a
+restart that could not possibly help.
+
+Now:
+
+- **A bot on a venue that cannot stream fails to start**, with a message naming
+  the venue and the missing capability, instead of running uselessly.
+- If a stream does die from a missing capability at runtime, the degradation is
+  flagged **permanent** and the console says so rather than suggesting a
+  restart.
+
+Streaming support for these venues (trade-aggregated or polled candles) is
+tracked in #171.
+
 ### Live state updates
 
 The operator console does not poll. Every lifecycle transition, position

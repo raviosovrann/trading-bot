@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from tradingbot.models import Candle
-from tradingbot.stream import CcxtStreamFeed
+from tradingbot.stream import CcxtStreamFeed, StreamingNotSupported
 
 
 def _row(ts, close=1.0):
@@ -224,3 +224,45 @@ async def test_stop_only_affects_the_named_symbol() -> None:
 
     assert exchange.closed
     assert exchange.close_calls == 1, "client closed more than once"
+
+
+class _NoWatchExchange:
+    """ccxt.pro-like client for a venue that cannot stream candles."""
+
+    def __init__(self) -> None:
+        self.has = {"watchOHLCV": False, "watchTrades": True, "fetchOHLCV": True}
+        self.id = "coinbase"
+
+
+class _CanWatchExchange:
+    def __init__(self) -> None:
+        self.has = {"watchOHLCV": True}
+        self.id = "binance"
+
+
+def test_construction_rejects_a_venue_that_cannot_stream_candles():
+    """A venue without watchOHLCV can never deliver bars — refuse it up front.
+
+    Coinbase reports watchOHLCV=False, so a bot built on it warms up over REST,
+    starts, and then silently never sees a bar (#170).
+    """
+    with pytest.raises(StreamingNotSupported) as excinfo:
+        CcxtStreamFeed(exchange=_NoWatchExchange(), warmup_feed=_WarmupStub())
+
+    message = str(excinfo.value)
+    assert "coinbase" in message
+    assert "watchOHLCV" in message
+    # The operator needs to know a restart will not help.
+    assert "not" in message.lower()
+
+
+def test_construction_accepts_a_venue_that_can_stream():
+    """A capable venue is unaffected."""
+    feed = CcxtStreamFeed(exchange=_CanWatchExchange(), warmup_feed=_WarmupStub())
+    assert feed is not None
+
+
+def test_construction_allows_a_client_that_does_not_declare_capabilities():
+    """Test doubles and non-ccxt clients without ``has`` still work."""
+    feed = CcxtStreamFeed(exchange=_FakeProExchange([[]]), warmup_feed=_WarmupStub())
+    assert feed is not None

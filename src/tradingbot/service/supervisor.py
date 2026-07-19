@@ -113,6 +113,9 @@ class BotInstance:
     degraded_reason: str | None = None
     """Why the bot is degraded, shown to the operator."""
 
+    degraded_permanent: bool = False
+    """Whether the degradation is a venue limitation a restart cannot fix."""
+
     state_seq: int = 0
     """Monotonic counter stamped on every published state event."""
 
@@ -333,6 +336,7 @@ class BotSupervisor:
         # A fresh run starts from a clean data-health slate.
         bot.degraded = False
         bot.degraded_reason = None
+        bot.degraded_permanent = False
         self._publish_state(bot)
         try:
             hub = self._hub_factory(bot.config)
@@ -573,13 +577,16 @@ class BotSupervisor:
         if not callable(register):
             return
 
-        def _on_stream_exit(symbol: str, timeframe: str, reason: str) -> None:
+        def _on_stream_exit(
+            symbol: str, timeframe: str, reason: str, permanent: bool = False
+        ) -> None:
             if symbol != bot.config.symbol or timeframe != bot.config.timeframe:
                 return
             if bot.status not in ("running", "starting"):
                 return
             bot.degraded = True
             bot.degraded_reason = reason
+            bot.degraded_permanent = permanent
             self._publish_state(bot)
 
         bot.stream_listener = _on_stream_exit
@@ -618,6 +625,7 @@ class BotSupervisor:
             bot.last_decision,
             bot.degraded,
             bot.degraded_reason,
+            bot.degraded_permanent,
         )
 
     def _publish_state(self, bot: BotInstance) -> None:
@@ -638,6 +646,7 @@ class BotSupervisor:
                 last_decision=bot.last_decision,
                 degraded=bot.degraded,
                 degraded_reason=bot.degraded_reason,
+                degraded_permanent=bot.degraded_permanent,
             )
         )
 

@@ -93,6 +93,7 @@ describe('Dashboard', () => {
       last_decision: 'BUY signal',
       degraded: false,
       degraded_reason: null,
+      degraded_permanent: false,
     })
 
     expect(await screen.findByText('running')).toBeInTheDocument()
@@ -116,6 +117,7 @@ describe('Dashboard', () => {
       last_decision: null,
       degraded: false,
       degraded_reason: null,
+      degraded_permanent: false,
     })
     expect(await screen.findByText('failed')).toBeInTheDocument()
   })
@@ -133,6 +135,7 @@ describe('Dashboard', () => {
       last_decision: null,
       degraded: true,
       degraded_reason: 'stream ended without an unsubscribe',
+      degraded_permanent: false,
     })
     expect(await screen.findByText(/no data/i)).toBeInTheDocument()
     expect(screen.getByText('running')).toBeInTheDocument()
@@ -149,6 +152,7 @@ describe('Dashboard', () => {
       last_decision: null,
       degraded: false,
       degraded_reason: null,
+      degraded_permanent: false,
     }
     emit({ ...snapshot, seq: 5, status: 'running' })
     expect(await screen.findByText('running')).toBeInTheDocument()
@@ -168,6 +172,7 @@ describe('Dashboard', () => {
       last_decision: null,
       degraded: false,
       degraded_reason: null,
+      degraded_permanent: false,
     }
     emit({ ...snapshot, seq: 9, status: 'running' })
     expect(await screen.findByText('running')).toBeInTheDocument()

@@ -45,9 +45,11 @@ class _FakeHub:
         if listener in self.listeners:
             self.listeners.remove(listener)
 
-    def fire_stream_exit(self, symbol: str, timeframe: str, reason: str) -> None:
+    def fire_stream_exit(
+        self, symbol: str, timeframe: str, reason: str, permanent: bool = False
+    ) -> None:
         for listener in tuple(self.listeners):
-            listener(symbol, timeframe, reason)
+            listener(symbol, timeframe, reason, permanent)
 
 
 class _FakeVenue:
@@ -333,4 +335,44 @@ async def test_restart_clears_degradation_and_unregisters_listener(monkeypatch) 
     await supervisor.start("bot-1")
     assert bot.degraded is False
     assert bot.degraded_reason is None
+    await supervisor.stop("bot-1")
+
+
+@pytest.mark.asyncio
+async def test_a_permanent_stream_failure_is_marked_as_such(monkeypatch) -> None:
+    """Verify a capability failure is distinguished from a dropped connection.
+
+    Restarting recovers a dropped socket but can never fix a venue that does
+    not implement streaming, so the two must not look the same (#170).
+    """
+    hub, venue = _FakeHub(), _FakeVenue()
+    supervisor = _supervisor(monkeypatch, hub=hub, venue=venue)
+    bot = supervisor.create(_config())
+    await supervisor.start("bot-1")
+    queue = supervisor.event_bus.subscribe()
+
+    hub.fire_stream_exit("BTC/USD", "1m", "coinbase cannot stream", permanent=True)
+
+    events = [e for e in await _drain(queue) if e.degraded]
+    assert events
+    assert events[0].degraded_permanent is True
+    assert bot.degraded_permanent is True
+    await supervisor.stop("bot-1")
+
+
+@pytest.mark.asyncio
+async def test_a_transient_stream_failure_is_not_permanent(monkeypatch) -> None:
+    """Verify an ordinary disconnect stays recoverable-by-restart."""
+    hub, venue = _FakeHub(), _FakeVenue()
+    supervisor = _supervisor(monkeypatch, hub=hub, venue=venue)
+    bot = supervisor.create(_config())
+    await supervisor.start("bot-1")
+    queue = supervisor.event_bus.subscribe()
+
+    hub.fire_stream_exit("BTC/USD", "1m", "connection reset")
+
+    events = [e for e in await _drain(queue) if e.degraded]
+    assert events
+    assert events[0].degraded_permanent is False
+    assert bot.degraded_permanent is False
     await supervisor.stop("bot-1")

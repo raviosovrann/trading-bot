@@ -263,8 +263,12 @@ async def test_unexpected_stream_exit_notifies_listeners() -> None:
         candle_feed=_FakeCandleFeed(),
         limiter=RateLimiter(1000, 1000),
     )
-    seen: list[tuple[str, str, str]] = []
-    hub.add_stream_listener(lambda symbol, timeframe, reason: seen.append((symbol, timeframe, reason)))
+    seen: list[tuple[str, str, str, bool]] = []
+    hub.add_stream_listener(
+        lambda symbol, timeframe, reason, permanent: seen.append(
+            (symbol, timeframe, reason, permanent)
+        )
+    )
 
     hub.subscribe("BTC/USD", "1m", lambda candle: None)
     await asyncio.sleep(0)
@@ -273,7 +277,7 @@ async def test_unexpected_stream_exit_notifies_listeners() -> None:
     await asyncio.sleep(0)
     await asyncio.sleep(0)
 
-    assert [(s, t) for s, t, _ in seen] == [("BTC/USD", "1m")]
+    assert [(s, t) for s, t, _, _ in seen] == [("BTC/USD", "1m")]
 
 
 @pytest.mark.asyncio
@@ -290,8 +294,12 @@ async def test_stream_error_notifies_listeners_with_the_reason() -> None:
         candle_feed=_FakeCandleFeed(),
         limiter=RateLimiter(1000, 1000),
     )
-    seen: list[tuple[str, str, str]] = []
-    hub.add_stream_listener(lambda symbol, timeframe, reason: seen.append((symbol, timeframe, reason)))
+    seen: list[tuple[str, str, str, bool]] = []
+    hub.add_stream_listener(
+        lambda symbol, timeframe, reason, permanent: seen.append(
+            (symbol, timeframe, reason, permanent)
+        )
+    )
 
     hub.subscribe("BTC/USD", "1m", lambda candle: None)
     await asyncio.sleep(0)
@@ -299,6 +307,7 @@ async def test_stream_error_notifies_listeners_with_the_reason() -> None:
 
     assert len(seen) == 1
     assert "socket exploded" in seen[0][2]
+    assert seen[0][3] is False, "a crashed socket is retryable, not permanent"
 
 
 @pytest.mark.asyncio
@@ -310,8 +319,10 @@ async def test_cancelled_stream_does_not_notify_listeners() -> None:
         candle_feed=_FakeCandleFeed(),
         limiter=RateLimiter(1000, 1000),
     )
-    seen: list[tuple[str, str, str]] = []
-    listener = lambda symbol, timeframe, reason: seen.append((symbol, timeframe, reason))
+    seen: list[tuple[str, str, str, bool]] = []
+    listener = lambda symbol, timeframe, reason, permanent: seen.append(
+        (symbol, timeframe, reason, permanent)
+    )
     hub.add_stream_listener(listener)
 
     handler = lambda candle: None
@@ -323,3 +334,42 @@ async def test_cancelled_stream_does_not_notify_listeners() -> None:
 
     assert seen == []
     hub.remove_stream_listener(listener)
+
+
+@pytest.mark.asyncio
+async def test_an_unsupported_capability_is_reported_as_permanent() -> None:
+    """Verify a venue that cannot stream is distinguished from a broken one.
+
+    Restarting recovers a dropped socket but can never add a capability the
+    exchange does not implement (#170).
+    """
+
+    class _NotSupported(Exception):
+        pass
+
+    _NotSupported.__name__ = "NotSupported"  # ccxt's marker for missing features
+
+    class _UnsupportedStream(_FakeStream):
+        async def run_async(self, *symbols: str) -> None:
+            del symbols
+            raise _NotSupported("coinbase watchOHLCV() is not supported yet")
+
+    hub = MarketDataHub(
+        stream_feed=_UnsupportedStream(),
+        candle_feed=_FakeCandleFeed(),
+        limiter=RateLimiter(1000, 1000),
+    )
+    seen: list[tuple[str, str, str, bool]] = []
+    hub.add_stream_listener(
+        lambda symbol, timeframe, reason, permanent: seen.append(
+            (symbol, timeframe, reason, permanent)
+        )
+    )
+
+    hub.subscribe("BTC/USD", "1m", lambda candle: None)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert len(seen) == 1
+    assert seen[0][3] is True
+    assert "not supported" in seen[0][2]
