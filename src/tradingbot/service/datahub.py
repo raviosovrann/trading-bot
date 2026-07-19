@@ -89,6 +89,28 @@ class MarketDataHub:
         self._latest_prices: dict[_Key, float] = {}
         self._exit_listeners: list[_ExitListener] = []
         self._workers = workers if workers is not None else BlockingCalls("market-data")
+        self._register_gap_reporting()
+
+    def _register_gap_reporting(self) -> None:
+        """Route a feed's message-gap reports into the degradation signal.
+
+        A gap is not a stream exit: the socket is alive and still delivering,
+        but messages went missing, so the candles built from them are quietly
+        incomplete. Feeds that can detect this (the native Coinbase feed, via
+        ``sequence_num``) expose ``on_gap``; older feeds simply never report.
+        """
+        register = getattr(self._stream_feed, "on_gap", None)
+        if not callable(register):
+            return
+
+        def _on_gap(detail: str) -> None:
+            symbol = detail.split(":", 1)[0].strip() if ":" in detail else ""
+            for key in tuple(self._handlers):
+                if not symbol or key[0] == symbol:
+                    # Recoverable: the stream is running and may catch up.
+                    self._notify_stream_exit(key, detail, permanent=False)
+
+        register(_on_gap)
 
     def add_stream_listener(self, listener: _ExitListener) -> None:
         """Register ``listener`` to be told when a stream exits unexpectedly.

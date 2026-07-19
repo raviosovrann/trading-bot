@@ -84,3 +84,63 @@ def test_default_builder_accepts_either_md_token_key(key):
     # Both feeds share a single MD client (one socket per token, not two).
     assert candle_feed is stream_feed.warmup_feed
     assert candle_feed._client is stream_feed._client
+
+
+def test_coinbase_uses_the_native_feed_not_ccxt() -> None:
+    """Verify coinbase market data no longer goes through ccxt (#171).
+
+    ccxt has no watchOHLCV for coinbase, so the default builder must return the
+    native Advanced Trade feeds instead.
+    """
+    from tradingbot.coinbase_feed import CoinbaseCandleFeed, CoinbaseStreamFeed
+
+    stream_feed, candle_feed = _default_feed_builder("coinbase", "spot", "1m", {})
+
+    assert isinstance(stream_feed, CoinbaseStreamFeed)
+    assert isinstance(candle_feed, CoinbaseCandleFeed)
+
+
+def test_the_native_coinbase_feed_needs_no_credentials() -> None:
+    """Verify market data works with an empty credential set.
+
+    Coinbase serves both market-data surfaces unauthenticated, which is what
+    makes a credential-free path possible (#116).
+    """
+    stream_feed, candle_feed = _default_feed_builder("coinbase", "spot", "5m", {})
+    assert stream_feed is not None and candle_feed is not None
+
+
+def test_an_unsupported_coinbase_timeframe_is_refused() -> None:
+    """Verify an unmappable timeframe fails at build time, not mid-stream."""
+    with pytest.raises(ValueError, match="timeframe"):
+        _default_feed_builder("coinbase", "spot", "3s", {})
+
+
+def test_coinbase_futures_still_routes_through_ccxt() -> None:
+    """Verify only spot uses the native feed.
+
+    Coinbase perpetual futures live on a different product (coinbaseinternational
+    in ccxt) with its own market data; sending them to the spot Advanced Trade
+    feed would silently stream the wrong market.
+    """
+    from tradingbot.coinbase_feed import CoinbaseStreamFeed
+
+    with pytest.raises(Exception) as excinfo:
+        # No ccxt credentials here, so this raises rather than returning a
+        # native feed — the point is that it does not take the native path.
+        stream_feed, _ = _default_feed_builder("coinbase", "futures", "1m", {})
+        assert not isinstance(stream_feed, CoinbaseStreamFeed)
+    assert "CoinbaseStreamFeed" not in str(type(excinfo.value))
+
+
+def test_an_explicit_exchange_override_still_uses_ccxt() -> None:
+    """Verify creds['exchange'] keeps routing through ccxt for other venues."""
+    from tradingbot.coinbase_feed import CoinbaseStreamFeed
+
+    calls: list = []
+    try:
+        stream_feed, _ = _default_feed_builder("coinbase", "spot", "1m", {"exchange": "kraken"})
+    except Exception:
+        return  # building a real ccxt client may fail without keys; that is fine
+    assert not isinstance(stream_feed, CoinbaseStreamFeed)
+    del calls

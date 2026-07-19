@@ -179,6 +179,10 @@ clears the flag. Nothing reconnects automatically today.
 
 #### Permanent failures are different
 
+**Coinbase no longer has this problem** — since #171 its market data comes from
+a native Advanced Trade client, not ccxt (see below). The rest of this section
+applies to venues still reached through ccxt.
+
 For some venues the market-data client cannot stream candles at all. ccxt
 reports `watchOHLCV: false` for coinbase, so `watch_ohlcv` raises `NotSupported`
 on the first call. Warmup still succeeds (that is REST `fetchOHLCV`), so before
@@ -230,6 +234,60 @@ Any drop sends the client an `overflow` event carrying the number of events
 dropped. The console treats it as "my live view is now incomplete" and refetches
 the bot list and trade history rather than carrying on with a partial picture.
 **Overflow is therefore always visible, never silent.**
+
+### Coinbase market data is native, not ccxt
+
+Coinbase spot market data talks to Coinbase's Advanced Trade API directly:
+
+| | |
+|---|---|
+| Warmup candles | `GET https://api.coinbase.com/api/v3/brokerage/market/products/{id}/candles` |
+| Live candles | `wss://advanced-trade-ws.coinbase.com`, `market_trades` channel |
+| Liveness | `heartbeats` channel + per-message `sequence_num` |
+
+**Neither surface needs credentials.** Coinbase serves market data
+unauthenticated, so a bot can warm up and stream without any key configured.
+
+**Candles are aggregated from trades, not taken from a candles channel.** ccxt
+has no `watch_ohlcv` for coinbase, and Coinbase's own `candles` channel is fixed
+at five-minute buckets — neither can serve a 1m bot. Bucketing `market_trades`
+works at any supported timeframe: `1m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`,
+`6h`, `1d`.
+
+To be clear about where the five-minute limit does and does not apply: it is a
+property of Coinbase's pre-computed `candles` channel, which **we do not use**.
+`market_trades` carries individual fills, so the bucketing is ours and the
+interval is ours to choose. The supported set above is bounded by the *REST
+warmup* granularities Coinbase accepts — verified against the live API — not by
+the WebSocket. `3m`, for example, is unavailable because Coinbase's REST API
+rejects it, and it is refused at build time rather than silently mis-bucketed.
+
+One request returns at most **350 candles** (351 is a `400`), so warmup windows
+are clamped to that. The default 220-bar warmup is well inside it.
+
+Two behaviours worth knowing:
+
+- **An interval with no trades produces no candle.** Quiet intervals are skipped
+  rather than filled with a synthetic flat bar. Inventing bars would fabricate
+  market activity that never happened, which on an illiquid pair could mislead a
+  strategy badly. Expect gaps in thin markets.
+- **Bars close on the clock, not on the next trade.** A separate ticker flushes
+  elapsed intervals, so a quiet market still produces timely candles instead of
+  waiting for the next fill to reveal that the previous bar ended.
+
+A candle is emitted exactly once, when its interval closes; the forming interval
+is never delivered. A trade arriving after its interval has been published is
+dropped rather than re-opening the bar, since re-emitting a bar the strategy
+already acted on would let it trade the same interval twice.
+
+**Gap detection.** Every message carries a `sequence_num`. A skipped number
+means the socket is alive but messages went missing — trades never seen, and so
+candles quietly wrong. That is reported through the same **degraded** signal
+described above, flagged as recoverable rather than permanent. This failure was
+undetectable through ccxt.
+
+Coinbase **futures** and any venue reached via a `creds["exchange"]` override
+still go through ccxt. Execution for every venue remains on ccxt; see #174.
 
 ### Rotating venue credentials
 

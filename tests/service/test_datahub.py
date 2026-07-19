@@ -373,3 +373,47 @@ async def test_an_unsupported_capability_is_reported_as_permanent() -> None:
     assert len(seen) == 1
     assert seen[0][3] is True
     assert "not supported" in seen[0][2]
+
+
+@pytest.mark.asyncio
+async def test_a_feed_reporting_a_gap_degrades_the_bot() -> None:
+    """Verify a lossy-but-alive stream reaches the degraded signal (#171).
+
+    A sequence gap is not a stream exit — the socket is fine and still
+    delivering. Without routing it here the operator would see a healthy bot
+    silently trading on incomplete candles.
+    """
+
+    class _GapStream(_FakeStream):
+        def __init__(self) -> None:
+            super().__init__()
+            self._gap_handlers: list = []
+
+        def on_gap(self, handler) -> None:
+            self._gap_handlers.append(handler)
+
+        def fire_gap(self, detail: str) -> None:
+            for handler in tuple(self._gap_handlers):
+                handler(detail)
+
+    stream = _GapStream()
+    hub = MarketDataHub(
+        stream_feed=stream,
+        candle_feed=_FakeCandleFeed(),
+        limiter=RateLimiter(1000, 1000),
+    )
+    seen: list[tuple[str, str, str, bool]] = []
+    hub.add_stream_listener(
+        lambda symbol, timeframe, reason, permanent: seen.append(
+            (symbol, timeframe, reason, permanent)
+        )
+    )
+
+    hub.subscribe("BTC/USD", "1m", lambda candle: None)
+    await asyncio.sleep(0)
+    stream.fire_gap("BTC/USD: missed 5 Coinbase message(s) (sequence 1 -> 7)")
+
+    assert len(seen) == 1
+    assert seen[0][0] == "BTC/USD"
+    assert "missed 5" in seen[0][2]
+    assert seen[0][3] is False, "a gap is recoverable, not a permanent limitation"

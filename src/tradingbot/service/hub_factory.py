@@ -15,6 +15,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from ..coinbase_feed import CoinbaseCandleFeed, CoinbaseStreamFeed
 from ..datafeed import CcxtCandleFeed
 from ..stream import CcxtStreamFeed
 from ..tradovate_feed import TradovateStreamFeed
@@ -63,6 +64,22 @@ def _default_feed_builder(venue: str, market_type: str, timeframe: str, creds: d
         # reuse it as the hub's candle feed rather than opening a second socket.
         stream_feed = TradovateStreamFeed.from_credentials(md_token, timeframe=timeframe)
         candle_feed = stream_feed.warmup_feed
+        return stream_feed, candle_feed
+
+    if (
+        venue == "coinbase"
+        and market_type == "spot"
+        and not str(creds.get("exchange") or "").strip()
+    ):
+        # Native Advanced Trade feeds (#171). ccxt has no watchOHLCV for
+        # coinbase, and Coinbase's own candles channel is fixed at 5m, so
+        # candles are aggregated from market_trades instead. Neither surface
+        # needs credentials. Spot only: coinbase perpetual futures are a
+        # different product (coinbaseinternational in ccxt) with their own
+        # market data, and an explicit creds["exchange"] override still routes
+        # through ccxt, which is how other exchanges are reached.
+        candle_feed = CoinbaseCandleFeed()
+        stream_feed = CoinbaseStreamFeed(timeframe=timeframe, warmup_feed=candle_feed)
         return stream_feed, candle_feed
 
     exchange_id = str(creds.get("exchange") or venue)
