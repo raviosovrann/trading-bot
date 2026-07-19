@@ -253,6 +253,11 @@ class BotSupervisor:
         self._last_snapshots: dict[str, tuple[Any, ...]] = {}
 
     @property
+    def hub_factory(self) -> Callable[[BotConfig], Any]:
+        """Return the market-data hub factory backing this supervisor."""
+        return self._hub_factory
+
+    @property
     def event_bus(self) -> EventBus:
         """Return the shared event bus."""
         return self._event_bus

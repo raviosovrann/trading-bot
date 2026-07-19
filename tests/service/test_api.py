@@ -736,6 +736,95 @@ class TestTrades:
         assert row["action"] == "sell" and row["ok"] is False and row["order_id"] is None
 
 
+class TestCredentialRotation:
+    def _bot(self, client: TestClient) -> str:
+        return TestBotLifecycle()._create(client)["id"]
+
+    def test_rotation_is_refused_while_a_bot_on_that_account_runs(
+        self, client: TestClient
+    ) -> None:
+        """Rotating under a running bot cannot half-apply, so it is refused.
+
+        Same policy as #109: the venue client is built once at start, so a
+        rotation mid-flight would leave the API advertising credentials the
+        running bot is not using.
+        """
+        bot_id = self._bot(client)
+        _login(client)
+        client.post(f"/api/bots/{bot_id}/start", headers=_csrf(client))
+
+        response = client.put(
+            "/api/venues/coinbase/spot/secrets",
+            json={"api_key": "new", "api_secret": "new"},
+            headers=_csrf(client),
+        )
+
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert bot_id in detail, "the operator needs to know which bot blocks it"
+
+    def test_rotation_succeeds_once_the_bot_is_stopped(self, client: TestClient) -> None:
+        """Verify the documented stop -> rotate -> start flow works."""
+        bot_id = self._bot(client)
+        _login(client)
+        client.post(f"/api/bots/{bot_id}/start", headers=_csrf(client))
+        client.post(f"/api/bots/{bot_id}/stop", headers=_csrf(client))
+
+        response = client.put(
+            "/api/venues/coinbase/spot/secrets",
+            json={"api_key": "new", "api_secret": "new"},
+            headers=_csrf(client),
+        )
+
+        assert response.status_code == 204
+        store = cast(FastAPI, client.app).state.store
+        assert store.load_secrets()["coinbase"]["spot"]["api_key"] == "new"
+
+    def test_a_bot_on_another_account_does_not_block_rotation(
+        self, client: TestClient
+    ) -> None:
+        """Verify only the affected venue/market blocks its own rotation."""
+        bot_id = self._bot(client)
+        _login(client)
+        client.post(f"/api/bots/{bot_id}/start", headers=_csrf(client))
+
+        response = client.put(
+            "/api/venues/tradovate/futures/secrets",
+            json={"api_key": "t", "api_secret": "t"},
+            headers=_csrf(client),
+        )
+
+        assert response.status_code == 204
+
+    def test_rotation_invalidates_the_cached_clients(self, client: TestClient) -> None:
+        """Verify the endpoint eagerly drops superseded clients.
+
+        Lazily rebuilding on the next start would leave the old socket
+        reconnecting on a key the operator believes they revoked.
+        """
+        app = cast(FastAPI, client.app)
+        invalidated: list[tuple[str, str]] = []
+
+        class _Factory:
+            def __call__(self, cfg):  # pragma: no cover - not exercised here
+                raise AssertionError("not used in this test")
+
+            def invalidate(self, venue: str, market_type: str) -> None:
+                invalidated.append((venue, market_type))
+
+        app.state.supervisor._hub_factory = _Factory()
+        _login(client)
+
+        response = client.put(
+            "/api/venues/coinbase/spot/secrets",
+            json={"api_key": "new", "api_secret": "new"},
+            headers=_csrf(client),
+        )
+
+        assert response.status_code == 204
+        assert invalidated == [("coinbase", "spot")]
+
+
 class TestUnsupportedVenue:
     def test_starting_on_a_venue_that_cannot_stream_returns_a_readable_error(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch

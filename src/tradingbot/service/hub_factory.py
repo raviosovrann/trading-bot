@@ -9,6 +9,9 @@ not bot count. Feeds are built lazily so tests can inject fakes (no network).
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -19,6 +22,24 @@ from .blocking import WorkerPools
 from .datahub import MarketDataHub
 from .ratelimit import RateLimiter
 from .supervisor import BotConfig
+
+_log = logging.getLogger(__name__)
+
+
+def _fingerprint(creds: dict) -> str:
+    """Return a stable, non-reversible fingerprint of a credential set.
+
+    Used to notice rotation without keeping secret material around to compare:
+    only this digest is retained, never the credentials themselves.
+
+    Args:
+        creds: Credential mapping (may be empty).
+
+    Returns:
+        Hex digest identifying this exact credential set.
+    """
+    canonical = json.dumps(creds, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 # (venue, market_type, timeframe, creds) -> (stream_feed, candle_feed)
 FeedBuilder = Callable[[str, str, str, dict], tuple[Any, Any]]
@@ -81,20 +102,32 @@ class HubFactory:
         self._mtf_cache_seconds = mtf_cache_seconds
         self._hubs: dict[tuple[str, str, str], MarketDataHub] = {}
         self._limiters: dict[tuple[str, str], RateLimiter] = {}
+        # Fingerprint of the credentials each hub was built from, so rotation
+        # is noticed without retaining the secrets themselves (#137).
+        self._fingerprints: dict[tuple[str, str, str], str] = {}
+        self._streams: dict[tuple[str, str, str], Any] = {}
 
     def __call__(self, cfg: BotConfig) -> MarketDataHub:
         venue = cfg.venue.strip().lower()
         market_type = cfg.market_type.strip().lower()
         timeframe = cfg.timeframe
         hub_key = (venue, market_type, timeframe)
+        creds = self._creds(venue, market_type)
+        fingerprint = _fingerprint(creds)
 
         hub = self._hubs.get(hub_key)
         if hub is not None:
-            return hub
+            if self._fingerprints.get(hub_key) == fingerprint:
+                return hub
+            # Credentials rotated. The cached hub holds clients built with the
+            # superseded set; returning it would mean rotation silently does
+            # nothing, and the old sockets would keep reconnecting on a key the
+            # operator believes they replaced.
+            _log.info("credentials rotated for %s/%s — rebuilding hubs", venue, market_type)
+            self.invalidate(venue, market_type)
 
         # One rate limiter per account (venue+market_type), shared across timeframes.
         limiter = self._limiters.setdefault((venue, market_type), RateLimiter(self._rate_per_sec, self._burst))
-        creds = self._creds(venue, market_type)
         stream_feed, candle_feed = self._feed_builder(venue, market_type, timeframe, creds)
         hub = MarketDataHub(
             stream_feed=stream_feed,
@@ -104,7 +137,34 @@ class HubFactory:
             workers=self._workers.for_name(f"{venue}:{market_type}"),
         )
         self._hubs[hub_key] = hub
+        self._fingerprints[hub_key] = fingerprint
+        self._streams[hub_key] = stream_feed
         return hub
+
+    def invalidate(self, venue: str, market_type: str) -> None:
+        """Drop and close every cached hub for one venue account.
+
+        Credentials are per account but hubs are cached per timeframe, so a
+        rotation must clear all of that account's timeframes — a stale hub on
+        another timeframe would keep the superseded key alive. Other venues are
+        untouched.
+
+        Args:
+            venue: Venue identifier (already normalized to lowercase).
+            market_type: Market type identifier.
+        """
+        venue = venue.strip().lower()
+        market_type = market_type.strip().lower()
+        for key in [k for k in self._hubs if k[0] == venue and k[1] == market_type]:
+            self._hubs.pop(key, None)
+            self._fingerprints.pop(key, None)
+            stream = self._streams.pop(key, None)
+            stop = getattr(stream, "stop", None)
+            if callable(stop):
+                try:
+                    stop()
+                except Exception:  # noqa: BLE001 - a bad client must not block rotation
+                    _log.exception("failed to stop superseded stream for %s/%s", venue, market_type)
 
     def _creds(self, venue: str, market_type: str) -> dict:
         secrets = self._store.load_secrets()

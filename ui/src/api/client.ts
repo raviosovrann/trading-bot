@@ -1,6 +1,22 @@
 import type { BotView, CreateBot, PatchBot, SessionInfo, TradePage, VenueOption } from '../types'
 
 /** Thrown on a 401 so callers can centrally clear auth and redirect to login. */
+/**
+ * Pull the human-readable message out of an API error body.
+ *
+ * FastAPI puts the explanation in `detail`; rendering the encoded envelope
+ * instead buries the one sentence the operator actually needs.
+ */
+function describeError(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown }
+    if (typeof parsed.detail === 'string' && parsed.detail) return parsed.detail
+  } catch {
+    // Not JSON — fall through and show whatever the server sent.
+  }
+  return body
+}
+
 export class UnauthorizedError extends Error {
   constructor() {
     super('Unauthorized')
@@ -40,7 +56,7 @@ export function makeClient(onUnauthorized?: () => void) {
       if (path !== '/session') onUnauthorized?.()
       throw new UnauthorizedError()
     }
-    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`)
+    if (!res.ok) throw new Error(`${res.status} ${describeError(await res.text())}`)
     return res.status === 204 ? (undefined as T) : ((await res.json()) as T)
   }
 
