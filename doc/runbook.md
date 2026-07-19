@@ -179,11 +179,17 @@ clears the flag. Nothing reconnects automatically today.
 
 #### Permanent failures are different
 
-Some venues cannot stream candles at all — coinbase's ccxt client reports
-`watchOHLCV: false`, so `watch_ohlcv` raises `NotSupported` on the first call.
-Warmup still succeeds (that is REST `fetchOHLCV`), so before #170 such a bot
-started, reported `running`, and then silently never saw a bar while advising a
-restart that could not possibly help.
+For some venues the market-data client cannot stream candles at all. ccxt
+reports `watchOHLCV: false` for coinbase, so `watch_ohlcv` raises `NotSupported`
+on the first call. Warmup still succeeds (that is REST `fetchOHLCV`), so before
+#170 such a bot started, reported `running`, and then silently never saw a bar
+while advising a restart that could not possibly help.
+
+**This is a client-library gap, not a broken venue.** Coinbase's own Advanced
+Trade WebSocket carries a `candles` channel (five-minute buckets) and a
+`market_trades` channel, and ccxt streams coinbase trades, ticker and order book
+happily — it just has no `watch_ohlcv` implementation for it. Closing that gap
+is #171.
 
 Now:
 
@@ -193,7 +199,7 @@ Now:
   flagged **permanent** and the console says so rather than suggesting a
   restart.
 
-Streaming support for these venues (trade-aggregated or polled candles) is
+Streaming support for these venues (candles built from the trade stream) is
 tracked in #171.
 
 ### Live state updates

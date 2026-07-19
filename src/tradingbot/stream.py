@@ -24,21 +24,26 @@ class StreamingFeed(Protocol):
 
 
 class StreamingNotSupported(RuntimeError):
-    """Raised when a venue's client cannot stream candles at all.
+    """Raised when the ccxt client cannot stream candles for this venue.
 
-    Distinct from a dropped connection: this is a permanent capability gap, so
+    Distinct from a dropped connection: this is a missing capability, so
     retrying or restarting the bot can never help. Callers surface it as a
     start failure rather than letting a bot run without data (#170).
+
+    Note this is usually a *client library* gap rather than a venue one.
+    Coinbase's own WebSocket carries a ``candles`` channel and ccxt happily
+    streams its trades and order book — ccxt simply has not implemented
+    ``watch_ohlcv`` for it. See #171.
     """
 
 
 def _require_ohlcv_streaming(exchange: Any) -> None:
     """Refuse an exchange client that cannot stream candles.
 
-    The whole feed is built on ``watch_ohlcv``. A venue that does not implement
-    it (coinbase, for one) still warms up happily over REST, so the bot starts,
-    reports ``running`` and then never receives a bar. Failing here turns that
-    silent dead end into an explicit start failure.
+    The whole feed is built on ``watch_ohlcv``. Where ccxt has not implemented
+    it (coinbase, for one) the warmup still succeeds over REST, so the bot
+    starts, reports ``running`` and then never receives a bar. Failing here
+    turns that silent dead end into an explicit start failure.
 
     Clients that do not advertise capabilities at all — test doubles, non-ccxt
     feeds — are left alone.
@@ -56,10 +61,12 @@ def _require_ohlcv_streaming(exchange: Any) -> None:
         return
     name = getattr(exchange, "id", None) or type(exchange).__name__
     raise StreamingNotSupported(
-        f"{name} does not support watchOHLCV, so it cannot stream candles. "
-        "This is a venue limitation, not a connection problem — restarting the "
-        "bot will not help. Use a venue with streaming support, or see issue "
-        "#171 for adding trade-aggregated candles."
+        f"ccxt does not implement watchOHLCV for {name}, so this bot cannot "
+        "receive streaming candles. The venue's own WebSocket may well work — "
+        "ccxt just has no OHLCV mapping for it — so this is a missing "
+        "capability, not a connection problem, and restarting will not help. "
+        "Use a venue ccxt streams candles for (binance, kraken), or see issue "
+        "#171 for building candles from the trade stream."
     )
 
 

@@ -188,7 +188,7 @@ export function BotDetail() {
               No market data is arriving — the bot is still running but is not seeing new bars.
               {bot.degraded_reason ? ` (${bot.degraded_reason})` : ''}{' '}
               {bot.degraded_permanent
-                ? 'This venue cannot stream this market, so restarting will not help — use a venue that supports streaming.'
+                ? 'Streaming candles are not available for this venue through our market-data client, so restarting will not help.'
                 : 'Stop and start it to re-establish the stream.'}
             </p>
           )}
