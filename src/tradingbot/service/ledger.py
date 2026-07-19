@@ -597,3 +597,46 @@ def events_from_result(
         events.append({"kind": "canceled", "client_order_id": client_order_id, "ts": ts})
 
     return events
+
+
+def events_from_payload(payload: dict[str, Any], *, bot_id: str) -> list[dict[str, Any]]:
+    """Translate a runtime order payload into ledger lifecycle events.
+
+    The runtime emits order outcomes as JSON across a process boundary, so the
+    supervisor sees mappings rather than model objects. This rebuilds the pair
+    and defers to ``events_from_result``.
+
+    Returns an empty list rather than raising for anything it cannot read:
+
+    - **A close.** ``close_position()`` constructs no order and therefore has
+      no idempotency key to record against; its position effect is picked up by
+      the position refresh instead.
+    - **A legacy payload.** Events emitted before this change carry only the
+      flat summary fields. Inventing fill evidence from them is exactly the bug
+      #135 exists to fix.
+    - **A malformed payload.** A corrupt record must not take a running bot
+      down -- the same principle as #108's config isolation.
+
+    Args:
+        payload: Decoded ``type: "order"`` event from the runtime.
+        bot_id: Bot the order belongs to.
+
+    Returns:
+        Lifecycle events to persist and fold, oldest first.
+    """
+    from ..models import Order, OrderResult
+
+    raw_order = payload.get("order")
+    raw_result = payload.get("result")
+    if not isinstance(raw_order, dict) or not isinstance(raw_result, dict):
+        return []
+
+    try:
+        order = Order.model_validate(raw_order)
+        result = OrderResult.model_validate(raw_result)
+    except Exception:
+        return []
+
+    return events_from_result(
+        order, result, bot_id=bot_id, ts=int(_coerce_float(payload.get("ts")) or 0)
+    )

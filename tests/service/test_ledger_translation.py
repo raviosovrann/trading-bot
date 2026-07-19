@@ -11,7 +11,12 @@ from __future__ import annotations
 import pytest
 
 from tradingbot.models import Order, OrderResult, OrderType, Side
-from tradingbot.service.ledger import OrderLedger, OrderState, events_from_result
+from tradingbot.service.ledger import (
+    OrderLedger,
+    OrderState,
+    events_from_payload,
+    events_from_result,
+)
 
 
 def _order(qty: float = 2.0, *, coid: str = "c1", side: Side = Side.buy) -> Order:
@@ -255,3 +260,86 @@ class TestEventShape:
         order = _fold(events * 3).order("c1")
         assert order is not None
         assert order.filled_qty == 1.0
+
+
+class TestPayloadTranslation:
+    """The supervisor receives runtime events as JSON, not as model objects."""
+
+    def _payload(self, *, order: dict | None, result: dict, ts: int = 7) -> dict:
+        return {"type": "order", "ts": ts, "order": order, "result": result}
+
+    def test_payload_round_trips_into_lifecycle_events(self) -> None:
+        payload = self._payload(
+            order={
+                "symbol": "BTC/USD",
+                "side": "buy",
+                "order_type": "market",
+                "qty": 2.0,
+                "price": None,
+                "reduce_only": False,
+                "client_order_id": "c1",
+            },
+            result={
+                "ok": True,
+                "order_id": "v1",
+                "status": "closed",
+                "filled_qty": 2.0,
+                "raw": {"average": 150.0},
+                "error": None,
+            },
+        )
+
+        events = events_from_payload(payload, bot_id="bot-a")
+        order = _fold(events).order("c1")
+        assert order is not None
+        assert order.state is OrderState.filled
+        assert order.filled_qty == 2.0
+        assert order.avg_price == pytest.approx(150.0)
+        assert order.bot_id == "bot-a"
+
+    def test_a_close_carries_no_order_and_yields_no_events(self) -> None:
+        # close_position() constructs no Order, so there is no idempotency key
+        # to record against. Position effects are picked up by the refresh.
+        payload = self._payload(
+            order=None,
+            result={
+                "ok": True,
+                "order_id": "v9",
+                "status": "closed",
+                "filled_qty": 1.0,
+                "raw": {},
+                "error": None,
+            },
+        )
+
+        assert events_from_payload(payload, bot_id="bot-a") == []
+
+    def test_a_legacy_payload_without_order_or_result_yields_no_events(self) -> None:
+        # Events emitted before this change carry only the flat fields. They
+        # must not crash the supervisor or invent fill evidence.
+        assert events_from_payload({"type": "order", "status": "filled"}, bot_id="b") == []
+
+    def test_a_malformed_payload_yields_no_events(self) -> None:
+        payload = self._payload(order={"nonsense": True}, result={"also": "nonsense"})
+        assert events_from_payload(payload, bot_id="bot-a") == []
+
+    def test_payload_timestamp_is_carried_onto_the_events(self) -> None:
+        payload = self._payload(
+            order={
+                "symbol": "BTC/USD",
+                "side": "buy",
+                "order_type": "market",
+                "qty": 1.0,
+                "price": None,
+                "reduce_only": False,
+                "client_order_id": "c1",
+            },
+            result={
+                "ok": True, "order_id": "v1", "status": "open",
+                "filled_qty": 0.0, "raw": {}, "error": None,
+            },
+            ts=1_700_000_000,
+        )
+
+        (submitted,) = events_from_payload(payload, bot_id="bot-a")
+        assert submitted["ts"] == 1_700_000_000

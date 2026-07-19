@@ -15,6 +15,7 @@ from ..strategies import StrategyContext
 from ..stream import StreamingFeed
 from .blocking import BlockingCalls, BlockingCallTimeout, WorkerPools
 from .events import BotStateEvent, DecisionEvent, EventBus, OrderEvent
+from .ledger import events_from_payload
 from .registry import build_strategy, build_venue
 from .risk import GlobalExposure
 
@@ -749,31 +750,51 @@ class BotSupervisor:
         self._publish_state(bot)
 
     def _persist_trade(self, bot: BotInstance, payload: dict[str, Any], event: OrderEvent) -> None:
-        """Append an order event to the store's trade log, if a store is set.
+        """Append this order's lifecycle events to the store's log.
+
+        Writes ledger events -- ``submitted``, ``order_status``, ``dry_run``,
+        ``rejected``, ``canceled`` -- rather than the single flat summary row
+        this used to write. That row named every outcome a "trade", including
+        dry runs and orders the venue had merely acknowledged, which is the
+        misrepresentation #135 exists to remove.
+
+        The events share the existing trade log rather than opening a second
+        one, so segment rotation, #122's paging and #163's archive-on-delete
+        all keep working unchanged. Records are told apart by ``kind``; rows
+        written before this change have none and are read as legacy history.
+
+        A payload carrying no order -- a close, or a legacy event -- yields no
+        ledger events. The flat summary row is still written for those so the
+        operator's history keeps a trace of what happened.
 
         Persistence failures are logged and swallowed so a disk error never
         crashes a running bot.
 
         Args:
             bot: Bot that produced the order.
-            payload: Raw runtime order payload (carries symbol/ts).
+            payload: Raw runtime order payload (carries the order and result).
             event: Structured order event published to the bus.
         """
         if self._store is None:
             return
-        record = {
-            "bot_id": bot.config.id,
-            "action": event.action,
-            "status": event.status,
-            "ok": event.ok,
-            "order_id": event.order_id,
-            "symbol": str(payload.get("symbol", bot.config.symbol)),
-            "ts": int(payload.get("ts", 0)),
-        }
-        try:
-            self._store.append_trade(bot.config.id, record)
-        except Exception:  # pragma: no cover - defensive; disk errors shouldn't kill the bot
-            _log.exception("failed to persist trade for bot %s", bot.config.id)
+
+        records = events_from_payload(payload, bot_id=bot.config.id)
+        if not records:
+            records = [{
+                "bot_id": bot.config.id,
+                "action": event.action,
+                "status": event.status,
+                "ok": event.ok,
+                "order_id": event.order_id,
+                "symbol": str(payload.get("symbol", bot.config.symbol)),
+                "ts": int(payload.get("ts", 0)),
+            }]
+
+        for record in records:
+            try:
+                self._store.append_trade(bot.config.id, record)
+            except Exception:  # pragma: no cover - defensive; disk errors shouldn't kill the bot
+                _log.exception("failed to persist trade for bot %s", bot.config.id)
 
     def _handle_event(self, bot: BotInstance, raw: str) -> None:
         """Parse a runtime event and publish it to the event bus.
