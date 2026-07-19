@@ -8,15 +8,21 @@ function positionText(bot: BotView): string {
   return `${pos.side} ${pos.size} @ ${pos.entry_price}`
 }
 
+/** Statuses where the bot is mid-transition and must not be acted on again. */
+const TRANSITIONAL = new Set(['starting', 'stopping'])
+
 /** Live table of all bots; row actions delegate confirmation to the parent. */
 export function BotTable({
   bots,
   onStart,
   onStop,
+  busyIds = [],
 }: {
   bots: BotView[]
   onStart: (bot: BotView) => void
   onStop: (bot: BotView) => void
+  /** Bots with a lifecycle request already in flight from this client. */
+  busyIds?: string[]
 }) {
   if (bots.length === 0) {
     return <p className="muted">No bots yet — create one to get started.</p>
@@ -56,11 +62,21 @@ export function BotTable({
             </td>
             <td className="muted">{bot.last_decision ?? '—'}</td>
             <td>
-              {bot.status === 'running' ? (
-                <button onClick={() => onStop(bot)}>Stop</button>
-              ) : (
-                <button onClick={() => onStart(bot)}>Start</button>
-              )}
+              {(() => {
+                // Busy either because this client has a request in flight, or
+                // because the server reports the bot mid-transition (another
+                // operator, or a reload mid-start).
+                const busy = busyIds.includes(bot.id) || TRANSITIONAL.has(bot.status)
+                return bot.status === 'running' ? (
+                  <button disabled={busy} onClick={() => onStop(bot)}>
+                    Stop
+                  </button>
+                ) : (
+                  <button disabled={busy} onClick={() => onStart(bot)}>
+                    {bot.status === 'starting' ? 'Starting…' : 'Start'}
+                  </button>
+                )
+              })()}
             </td>
           </tr>
         ))}

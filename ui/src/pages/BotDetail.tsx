@@ -78,6 +78,14 @@ export function BotDetail() {
     if (Number.isFinite(cap) && cap >= 0) patchBot.mutate({ per_bot_cap: cap })
   }
 
+  // Busy either because this client has a lifecycle request in flight, or
+  // because the server reports the bot mid-transition.
+  const busy =
+    startBot.isPending ||
+    stopBot.isPending ||
+    bot.status === 'starting' ||
+    bot.status === 'stopping'
+
   return (
     <main className="page">
       <header className="topbar">
@@ -90,6 +98,7 @@ export function BotDetail() {
           </Link>
           {bot.status === 'running' ? (
             <button
+              disabled={busy}
               onClick={() =>
                 setPending({ message: `Stop ${bot.symbol}?`, run: () => stopBot.mutate(bot.id) })
               }
@@ -98,6 +107,7 @@ export function BotDetail() {
             </button>
           ) : (
             <button
+              disabled={busy}
               onClick={() =>
                 setPending({
                   message: `Start ${bot.symbol} (${bot.live ? 'LIVE' : 'dry-run'})?`,
@@ -105,7 +115,7 @@ export function BotDetail() {
                 })
               }
             >
-              Start
+              {bot.status === 'starting' ? 'Starting…' : 'Start'}
             </button>
           )}
         </nav>

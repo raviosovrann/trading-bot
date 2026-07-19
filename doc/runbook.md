@@ -119,6 +119,11 @@ All of this is available in the UI after signing in:
    in **dry-run** mode.
 2. **Start / stop** — from the dashboard or the bot detail page. Starting loads
    the stored credentials and attaches the bot to the shared market-data hub.
+   Start and stop are **idempotent**: a repeat of either returns `200` and the
+   current view rather than an error, and concurrent requests for one bot are
+   serialized, so a double-click or a retry cannot create two runtimes or two
+   market subscriptions. A failed start releases everything it had partially
+   built and can be retried directly.
 3. **Switch mode** — toggle `LIVE` on the bot detail page. This always requires
    an explicit confirmation, because it is the switch from logged-only orders to
    **real orders that move real money**.
@@ -130,6 +135,22 @@ All of this is available in the UI after signing in:
 
 Equivalent REST endpoints (`POST /api/bots`, `/start`, `/stop`, `PATCH
 /api/bots/{id}`, `GET /api/bots/{id}/trades`) are listed in the root README.
+
+### Bot statuses
+
+| Status | Meaning |
+|--------|---------|
+| `created` | Configured, never started. |
+| `starting` | Startup in progress. Lifecycle actions are disabled in the UI and `PATCH` returns `409`. |
+| `running` | Trading (or dry-running) against live market data. |
+| `stopping` | Shutdown in progress. Same restrictions as `starting`. |
+| `stopped` | Cleanly stopped, or restored from disk after a restart. |
+| `failed` | Startup or the run loop raised. Partially built resources have been released; start again to retry. |
+
+`starting` and `stopping` are transient. While a bot is in one of them a
+configuration change would half-apply — the venue, risk guard and strategy are
+built from the config at start — so `PATCH /api/bots/{id}` is rejected with
+`409` and the caller should retry once the transition settles.
 
 Every sensitive action — login success/failure, logout, credential changes, bot
 create/start/stop/update, live-mode toggles, cap changes, user management — is

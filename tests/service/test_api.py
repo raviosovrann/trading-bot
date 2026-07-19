@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -907,3 +908,100 @@ class TestGracefulShutdown:
 
         assert bot.status == "stopped"
         assert bot.task is None or bot.task.done()
+
+
+class TestLifecycleConcurrency:
+    """Concurrent lifecycle requests over the real ASGI app (issue #126)."""
+
+    def _app_and_supervisor(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """Build an app whose bots all share one hub, so duplicate runtimes show up."""
+        store = _store(tmp_path)
+        monkeypatch.setattr("tradingbot.service.supervisor.build_venue", lambda *a, **k: _FakeVenue())
+        monkeypatch.setattr(
+            "tradingbot.service.supervisor.build_strategy", lambda *a, **k: _SignalStrategy()
+        )
+        hub = _FakeHub()
+        supervisor = BotSupervisor(
+            hub_factory=lambda cfg: hub,
+            event_bus=EventBus(),
+            global_exposure=GlobalExposure(),
+            store=store,
+        )
+        return create_app(store=store, supervisor=supervisor), supervisor, hub
+
+    def test_concurrent_start_requests_start_one_runtime(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two simultaneous POST /start calls must not build two runtimes."""
+        app, supervisor, hub = self._app_and_supervisor(tmp_path, monkeypatch)
+        with TestClient(app) as client:
+            bot_id = client.post("/api/bots", json=_BOT_PAYLOAD, headers=_auth()).json()["id"]
+
+        async def hammer() -> tuple[list[int], str, int, int]:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+                results = await asyncio.gather(
+                    ac.post(f"/api/bots/{bot_id}/start", headers=_auth()),
+                    ac.post(f"/api/bots/{bot_id}/start", headers=_auth()),
+                )
+                bot = supervisor.get(bot_id)
+                assert bot is not None
+                # Observed inside the loop: closing it would cancel the task and
+                # flip the status to stopped.
+                observed = (
+                    [r.status_code for r in results],
+                    bot.status,
+                    hub.warmups,
+                    len(hub.handlers.get(("BTC/USD", "1m"), [])),
+                )
+                await supervisor.stop(bot_id)
+                return observed
+
+        codes, bot_status, warmups, subscriptions = asyncio.run(hammer())
+
+        assert codes == [200, 200], "a repeated start must be idempotent, not an error"
+        assert bot_status == "running"
+        assert warmups == 1, "second start rebuilt the runtime"
+        assert subscriptions == 1, "duplicate market subscription"
+
+    def test_concurrent_stop_requests_are_idempotent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Simultaneous stops both succeed and leave the bot stopped once."""
+        app, supervisor, _hub = self._app_and_supervisor(tmp_path, monkeypatch)
+        with TestClient(app) as client:
+            bot_id = client.post("/api/bots", json=_BOT_PAYLOAD, headers=_auth()).json()["id"]
+            client.post(f"/api/bots/{bot_id}/start", headers=_auth())
+
+        async def hammer() -> list[int]:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+                results = await asyncio.gather(
+                    ac.post(f"/api/bots/{bot_id}/stop", headers=_auth()),
+                    ac.post(f"/api/bots/{bot_id}/stop", headers=_auth()),
+                )
+                return [r.status_code for r in results]
+
+        assert asyncio.run(hammer()) == [200, 200]
+        bot = supervisor.get(bot_id)
+        assert bot is not None and bot.status == "stopped"
+        assert bot.task is None
+
+    def test_patch_during_a_transition_is_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A patch racing a start gets 409 instead of silently half-applying."""
+        app, supervisor, _hub = self._app_and_supervisor(tmp_path, monkeypatch)
+        with TestClient(app) as client:
+            bot_id = client.post("/api/bots", json=_BOT_PAYLOAD, headers=_auth()).json()["id"]
+        bot = supervisor.get(bot_id)
+        assert bot is not None
+        bot.status = "starting"
+
+        with TestClient(app) as client:
+            response = client.patch(
+                f"/api/bots/{bot_id}", json={"per_bot_cap": 5.0}, headers=_auth()
+            )
+
+        assert response.status_code == 409
+        assert bot.config.per_bot_cap == 1_000.0, "patch applied despite the 409"

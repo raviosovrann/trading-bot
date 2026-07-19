@@ -195,6 +195,7 @@ class BotSupervisor:
         self._global_exposure = global_exposure
         self._store = store
         self._bots: dict[str, BotInstance] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
 
     @property
     def event_bus(self) -> EventBus:
@@ -257,8 +258,23 @@ class BotSupervisor:
             Exception: Any error from venue, strategy or runtime construction.
         """
         bot = self._require(bot_id)
+        async with self._lock_for(bot_id):
+            await self._start_locked(bot)
+
+    async def _start_locked(self, bot: BotInstance) -> None:
+        """Build and start ``bot``. The caller must hold its lifecycle lock.
+
+        Args:
+            bot: Bot to start.
+
+        Raises:
+            Exception: Any error from venue, strategy or runtime construction.
+        """
         if bot.status == "running":
             return
+        # Claim the bot before the first await, so a concurrent caller that
+        # takes the lock afterwards sees a bot that is already under way.
+        bot.status = "starting"
         try:
             hub = self._hub_factory(bot.config)
             warmup = await hub.warmup(bot.config.symbol, bot.config.timeframe, _WARMUP_BARS)
@@ -309,11 +325,16 @@ class BotSupervisor:
             bot.task = asyncio.create_task(bot.runtime.start_async(install_signals=False))
             bot.task.add_done_callback(lambda task: self._task_done(bot, task))
         except Exception:
+            self._release_partial(bot)
             bot.status = "failed"
             raise
 
     async def stop(self, bot_id: str) -> None:
         """Stop the bot identified by ``bot_id``.
+
+        Idempotent: stopping an already-stopped or never-started bot is a
+        no-op, and concurrent stops clean up exactly once because they
+        serialize on the bot's lifecycle lock.
 
         Args:
             bot_id: UUID of the bot to stop.
@@ -322,15 +343,62 @@ class BotSupervisor:
             KeyError: If the bot does not exist.
         """
         bot = self._require(bot_id)
-        if bot.runtime is not None:
-            bot.runtime.stop()
-        if bot.task is not None and not bot.task.done():
-            bot.task.cancel()
+        async with self._lock_for(bot_id):
+            if bot.status in ("created", "stopped", "failed"):
+                bot.status = "stopped"
+                return
+            bot.status = "stopping"
+            if bot.runtime is not None:
+                bot.runtime.stop()
+            task = bot.task
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            bot.task = None
+            bot.runtime = None
+            bot.status = "stopped"
+
+    def _lock_for(self, bot_id: str) -> asyncio.Lock:
+        """Return the lifecycle lock for ``bot_id``, creating it on first use.
+
+        Every start/stop for one bot serializes on this lock, so concurrent
+        requests cannot build two runtimes or cancel a half-built one.
+
+        Args:
+            bot_id: UUID of the bot.
+
+        Returns:
+            The bot's lifecycle lock.
+        """
+        lock = self._locks.get(bot_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[bot_id] = lock
+        return lock
+
+    def _release_partial(self, bot: BotInstance) -> None:
+        """Drop everything a failed start had attached to ``bot``.
+
+        Without this a failed start leaves a venue and hub bound to the
+        instance, so the next retry reuses half-built state.
+
+        Args:
+            bot: Bot whose partially built runtime should be released.
+        """
+        runtime = bot.runtime
+        if runtime is not None:
             try:
-                await bot.task
-            except asyncio.CancelledError:
-                pass
-        bot.status = "stopped"
+                runtime.stop()
+            except Exception:  # noqa: BLE001 - cleanup must not mask the original error
+                _log.exception("failed to stop partially built runtime for bot %s", bot.config.id)
+        bot.runtime = None
+        bot.task = None
+        bot.venue = None
+        bot.hub = None
+        bot.multiplier = 1.0
 
     def list(self) -> list[BotInstance]:
         """Return all managed bot instances."""
@@ -371,7 +439,8 @@ class BotSupervisor:
             bot: Bot whose task completed.
             task: Completed async task.
         """
-        if bot.task is not task or bot.status == "stopped":
+        # A deliberate stop already owns the outcome; don't overwrite it.
+        if bot.task is not task or bot.status in ("stopped", "stopping"):
             return
         if task.cancelled():
             bot.status = "stopped"
