@@ -78,6 +78,10 @@ export function BotDetail() {
     if (Number.isFinite(cap) && cap >= 0) patchBot.mutate({ per_bot_cap: cap })
   }
 
+  // The server refuses configuration changes unless the bot is stopped (#109),
+  // because the venue, risk guard and strategy are built once at start.
+  const configurable = !['running', 'starting', 'stopping'].includes(bot.status)
+
   // Busy either because this client has a lifecycle request in flight, or
   // because the server reports the bot mid-transition.
   const busy =
@@ -150,11 +154,23 @@ export function BotDetail() {
           </dl>
 
           <h2>Controls</h2>
+          {!configurable && (
+            <p className="muted">
+              Stop the bot to change its mode, caps or parameters. The venue, risk guard and
+              strategy are built when the bot starts, so a change now would not reach them.
+            </p>
+          )}
+          {patchBot.error && (
+            <p role="alert" className="error">
+              {String(patchBot.error)}
+            </p>
+          )}
           <div className="control-row">
             <input
               type="checkbox"
               id="live-toggle"
               checked={bot.live}
+              disabled={!configurable}
               onChange={(e) => onLiveToggle(e.target.checked)}
             />
             <label htmlFor="live-toggle">LIVE trading (unchecked = dry-run)</label>
@@ -164,6 +180,7 @@ export function BotDetail() {
             <input
               id="per-bot-cap"
               inputMode="decimal"
+              disabled={!configurable}
               placeholder={String(bot.per_bot_cap)}
               value={capInput}
               onChange={(e) => setCapInput(e.target.value)}

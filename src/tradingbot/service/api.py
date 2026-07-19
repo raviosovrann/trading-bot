@@ -744,14 +744,20 @@ def create_app(
         bot = supervisor.get(bot_id)
         if bot is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="bot not found")
-        # A bot mid-transition is about to build or tear down its venue, risk
-        # guard and strategy from this config. Patching now would half-apply,
-        # so reject and let the caller retry once the transition settles.
-        # (Patching a *running* bot is a separate, larger question — issue #109.)
-        if bot.status in ("starting", "stopping"):
+        # Every field here is runtime-affecting: the venue (live vs dry-run),
+        # the risk guard (caps) and the strategy (params) are all constructed
+        # once in BotSupervisor.start() from this config. Mutating it while the
+        # bot is running or mid-transition would change only the advertised
+        # value while the live objects kept their original behaviour — a LIVE
+        # toggle that does nothing is the most dangerous form of that. So the
+        # config is immutable unless the bot is stopped: stop, edit, start.
+        if bot.status in ("running", "starting", "stopping"):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"bot is {bot.status}; retry when the transition completes",
+                detail=(
+                    f"bot is {bot.status}; configuration can only be changed while stopped. "
+                    "Stop the bot, apply the change, then start it again."
+                ),
             )
         before = {
             "live": bot.config.live,

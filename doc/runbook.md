@@ -129,6 +129,15 @@ All of this is available in the UI after signing in:
    **real orders that move real money**.
 4. **Set caps** — adjust per-bot and global notional caps on the detail page;
    the risk guard rejects signals that would exceed them.
+
+> **Configuration is immutable while a bot is running.** Mode, caps and strategy
+> parameters can only be changed while the bot is **stopped**; `PATCH
+> /api/bots/{id}` returns `409` otherwise, and the UI disables those controls
+> and says why. The venue, risk guard and strategy are constructed once when the
+> bot starts, so a change applied to a running bot would alter only the value
+> the API reports, not what actually executes — a `LIVE` toggle that appears to
+> work but doesn't is the most dangerous version of that. The supported flow is
+> **stop → edit → start**.
 5. **Inspect** — the detail page shows position, PnL, the live decision log, and
    trade history. Events also stream live over the WebSocket.
 6. **Sign out** — *Sign out* revokes the session server-side.

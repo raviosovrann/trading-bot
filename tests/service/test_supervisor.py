@@ -9,6 +9,7 @@ import pytest
 
 from tradingbot.models import Action, Candle, Order, OrderResult, OrderType, Position, PositionSide, Signal
 from tradingbot.service.events import EventBus, OrderEvent
+from tradingbot.router import SignalRouter
 from tradingbot.service.risk import GlobalExposure
 from tradingbot.service.supervisor import BotConfig, BotSupervisor
 
@@ -514,3 +515,127 @@ async def test_stop_during_start_waits_and_leaves_the_bot_stopped(monkeypatch) -
     assert bot.status == "stopped"
     assert bot.task is None or bot.task.done()
     assert hub.handlers[("BTC/USD", "1m")] == []
+
+
+class _LiveAwareVenue(_FakeVenue):
+    """Venue that remembers whether it was built for live trading."""
+
+    def __init__(self, live: bool) -> None:
+        self.live = live
+
+
+def _recording_supervisor(monkeypatch, seen: dict) -> BotSupervisor:
+    """Supervisor whose venue/risk/strategy construction is recorded."""
+
+    def record_venue(venue, market_type, *, creds, live):
+        del venue, market_type, creds
+        seen["venue_live"] = live
+        return _LiveAwareVenue(live)
+
+    def record_strategy(name, context):
+        del name
+        seen["params"] = context.params
+        seen["quantity"] = context.quantity
+        return _SignalStrategy()
+
+    real_guard = SignalRouter.with_risk_guard
+
+    def record_guard(venue, **kwargs):
+        seen["per_bot_cap"] = kwargs.get("per_bot_cap")
+        seen["global_cap"] = kwargs.get("global_cap")
+        return real_guard(venue, **kwargs)
+
+    monkeypatch.setattr("tradingbot.service.supervisor.build_venue", record_venue)
+    monkeypatch.setattr("tradingbot.service.supervisor.build_strategy", record_strategy)
+    monkeypatch.setattr(
+        "tradingbot.service.supervisor.SignalRouter.with_risk_guard", staticmethod(record_guard)
+    )
+    return BotSupervisor(
+        hub_factory=lambda cfg: _FakeHub(),
+        event_bus=EventBus(),
+        global_exposure=GlobalExposure(),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("live", [True, False])
+async def test_live_flag_reaches_the_venue_at_start(monkeypatch, live: bool) -> None:
+    """The venue is built live or dry-run to match the config, both ways."""
+    seen: dict = {}
+    supervisor = _recording_supervisor(monkeypatch, seen)
+    cfg = _config("one")
+    cfg.live = live
+    supervisor.create(cfg)
+
+    await supervisor.start("one")
+
+    assert seen["venue_live"] is live
+    bot = supervisor.get("one")
+    assert bot is not None and bot.venue is not None
+    assert bot.venue.live is live, "the active venue disagrees with the config"
+    await supervisor.stop("one")
+
+
+@pytest.mark.asyncio
+async def test_caps_and_params_reach_the_risk_guard_and_strategy_at_start(monkeypatch) -> None:
+    """Risk caps and strategy params are taken from the config when starting."""
+    seen: dict = {}
+    supervisor = _recording_supervisor(monkeypatch, seen)
+    cfg = _config("one")
+    cfg.per_bot_cap = 250.0
+    cfg.global_cap = 2_500.0
+    cfg.params = {"fast": 5}
+    supervisor.create(cfg)
+
+    await supervisor.start("one")
+
+    assert seen["per_bot_cap"] == 250.0
+    assert seen["global_cap"] == 2_500.0
+    assert seen["params"] == {"fast": 5}
+    await supervisor.stop("one")
+
+
+@pytest.mark.asyncio
+async def test_mutating_config_while_running_does_not_reach_the_venue(monkeypatch) -> None:
+    """The hazard the API's 409 exists to prevent, pinned as a regression.
+
+    The venue, risk guard and strategy are constructed once at start. Flipping
+    ``config.live`` afterwards changes only the advertised value — the live
+    venue keeps its original mode. This is why a patch on a running bot must be
+    refused rather than silently accepted.
+    """
+    seen: dict = {}
+    supervisor = _recording_supervisor(monkeypatch, seen)
+    cfg = _config("one")
+    cfg.live = False
+    supervisor.create(cfg)
+    await supervisor.start("one")
+    bot = supervisor.get("one")
+    assert bot is not None and bot.venue is not None
+
+    bot.config.live = True  # what an unguarded PATCH used to do
+
+    assert bot.venue.live is False, "venue silently changed mode"
+    await supervisor.stop("one")
+
+
+@pytest.mark.asyncio
+async def test_config_change_takes_effect_after_a_restart(monkeypatch) -> None:
+    """Stop, edit, start is the supported path and genuinely rebuilds."""
+    seen: dict = {}
+    supervisor = _recording_supervisor(monkeypatch, seen)
+    cfg = _config("one")
+    cfg.live = False
+    supervisor.create(cfg)
+    await supervisor.start("one")
+    await supervisor.stop("one")
+
+    cfg.live = True
+    cfg.per_bot_cap = 42.0
+    await supervisor.start("one")
+
+    assert seen["venue_live"] is True
+    assert seen["per_bot_cap"] == 42.0
+    bot = supervisor.get("one")
+    assert bot is not None and bot.venue is not None and bot.venue.live is True
+    await supervisor.stop("one")

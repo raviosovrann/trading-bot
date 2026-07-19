@@ -1005,3 +1005,76 @@ class TestLifecycleConcurrency:
 
         assert response.status_code == 409
         assert bot.config.per_bot_cap == 1_000.0, "patch applied despite the 409"
+
+
+class TestPatchWhileRunning:
+    """A running bot's config is immutable (issue #109)."""
+
+    def test_patch_while_running_is_rejected(self, client: TestClient) -> None:
+        """Turning LIVE on for a running bot must not be silently accepted."""
+        bot = client.post("/api/bots", json=_BOT_PAYLOAD, headers=_auth()).json()
+        bot_id = bot["id"]
+        client.post(f"/api/bots/{bot_id}/start", headers=_auth())
+
+        response = client.patch(f"/api/bots/{bot_id}", json={"live": True}, headers=_auth())
+
+        assert response.status_code == 409
+        assert "running" in response.json()["detail"]
+
+    def test_rejected_patch_leaves_the_advertised_config_unchanged(
+        self, client: TestClient
+    ) -> None:
+        """The API never advertises a config the running bot is not executing."""
+        bot_id = client.post("/api/bots", json=_BOT_PAYLOAD, headers=_auth()).json()["id"]
+        client.post(f"/api/bots/{bot_id}/start", headers=_auth())
+
+        client.patch(
+            f"/api/bots/{bot_id}",
+            json={"live": True, "per_bot_cap": 5.0, "global_cap": 7.0, "params": {"x": 1}},
+            headers=_auth(),
+        )
+
+        view = client.get(f"/api/bots/{bot_id}", headers=_auth()).json()
+        assert view["live"] is False
+        assert view["per_bot_cap"] == 1_000.0
+        assert view["global_cap"] == 10_000.0
+        assert view["params"] == {}
+
+    def test_turning_live_off_is_also_rejected_while_running(self, client: TestClient) -> None:
+        """Even the risk-reducing direction is refused; stopping is the safe path.
+
+        Accepting it would leave the already-built live venue able to send real
+        orders while the UI showed dry-run — the worse of the two failures.
+        """
+        bot_id = client.post(
+            "/api/bots", json={**_BOT_PAYLOAD, "live": True}, headers=_auth()
+        ).json()["id"]
+        client.patch(f"/api/bots/{bot_id}", json={"live": True}, headers=_auth())
+        client.post(f"/api/bots/{bot_id}/start", headers=_auth())
+
+        response = client.patch(f"/api/bots/{bot_id}", json={"live": False}, headers=_auth())
+
+        assert response.status_code == 409
+
+    def test_patch_applies_once_the_bot_is_stopped(self, client: TestClient) -> None:
+        """Stop, edit, start is the supported flow and works end to end."""
+        bot_id = client.post("/api/bots", json=_BOT_PAYLOAD, headers=_auth()).json()["id"]
+        client.post(f"/api/bots/{bot_id}/start", headers=_auth())
+        client.post(f"/api/bots/{bot_id}/stop", headers=_auth())
+
+        response = client.patch(
+            f"/api/bots/{bot_id}", json={"live": True, "per_bot_cap": 42.0}, headers=_auth()
+        )
+
+        assert response.status_code == 200
+        assert response.json()["live"] is True
+        assert response.json()["per_bot_cap"] == 42.0
+
+    def test_patch_on_a_never_started_bot_still_works(self, client: TestClient) -> None:
+        """The common case — configuring before the first start — is unaffected."""
+        bot_id = client.post("/api/bots", json=_BOT_PAYLOAD, headers=_auth()).json()["id"]
+
+        response = client.patch(f"/api/bots/{bot_id}", json={"per_bot_cap": 7.0}, headers=_auth())
+
+        assert response.status_code == 200
+        assert response.json()["per_bot_cap"] == 7.0
