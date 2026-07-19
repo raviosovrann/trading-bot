@@ -25,7 +25,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@v4
         with:
           languages: python
           build-mode: none
@@ -33,7 +33,7 @@ jobs:
       # from the workflow path, which is what main's baseline already carries;
       # renaming it would leave every PR unable to diff against main until the
       # rename itself landed there.
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@v4
 
   analyze-javascript-typescript:
     name: Analyze (javascript-typescript)
@@ -44,10 +44,10 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@v4
         with:
           languages: javascript-typescript
           build-mode: none
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@v4
         with:
           category: '/language:javascript-typescript'
