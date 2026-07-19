@@ -4,7 +4,7 @@ The React + TypeScript SPA for the Trading Console. It talks to the FastAPI
 service under `/api` and streams live bot events over `/ws`.
 
 **Operator and developer documentation lives in
-[`../docs/runbook.md`](../docs/runbook.md)** — setup, login/session behaviour,
+[`../doc/runbook.md`](../doc/runbook.md)** — setup, login/session behaviour,
 running bots, environment variables, and current limitations. Start there.
 
 ## Quick start

@@ -1,7 +1,7 @@
 # Dependency vulnerability scanning. Both jobs are BLOCKING: a new advisory in a
 # Python or npm dependency fails CI. Known, currently-unfixable transitive/tooling
 # advisories are suppressed by explicit id below (never a blanket ignore); each is
-# tracked by Dependabot and documented in docs/ci.md with an expiry/review owner.
+# tracked by Dependabot and documented in doc/ci.md with an expiry/review owner.
 name: Security
 
 on:

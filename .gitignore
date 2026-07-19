@@ -13,3 +13,6 @@ htmlcov/
 
 # local planning ledger (briefs/reports)
 .plan/
+
+# local agent/editor configuration
+.claude/
