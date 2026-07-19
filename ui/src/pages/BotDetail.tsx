@@ -10,8 +10,11 @@ import { useBotEvents } from '../hooks/useBotEvents'
 import type { BotView } from '../types'
 
 interface PendingAction {
+  /** Short action name; becomes the dialog's accessible name. */
+  title: string
   message: string
-  run: () => void
+  /** Returns the request so the dialog can hold Confirm until it settles. */
+  run: () => Promise<unknown>
 }
 
 /** Bot detail: config, live toggle (confirmed), start/stop, log, trades, PnL. */
@@ -91,8 +94,9 @@ export function BotDetail() {
     if (!bot) return
     if (checked) {
       setPending({
-        message: `Enable LIVE trading for ${bot.symbol}? Real orders will be sent to ${bot.venue}.`,
-        run: () => patchBot.mutate({ live: true }),
+        title: `Enable LIVE trading for ${bot.symbol}`,
+        message: `Real orders will be sent to ${bot.venue} and can move real money.`,
+        run: () => patchBot.mutateAsync({ live: true }),
       })
     } else {
       // Turning LIVE off reduces risk — no confirmation needed.
@@ -136,7 +140,11 @@ export function BotDetail() {
             <button
               disabled={busy}
               onClick={() =>
-                setPending({ message: `Stop ${bot.symbol}?`, run: () => stopBot.mutate(bot.id) })
+                setPending({
+                  title: `Stop ${bot.symbol}`,
+                  message: `The bot stops trading. Any open position is left as it is.`,
+                  run: () => stopBot.mutateAsync(bot.id),
+                })
               }
             >
               Stop
@@ -146,8 +154,11 @@ export function BotDetail() {
               disabled={busy}
               onClick={() =>
                 setPending({
-                  message: `Start ${bot.symbol} (${bot.live ? 'LIVE' : 'dry-run'})?`,
-                  run: () => startBot.mutate(bot.id),
+                  title: `Start ${bot.symbol} in ${bot.live ? 'LIVE' : 'dry-run'} mode`,
+                  message: bot.live
+                    ? `Real orders will be sent to ${bot.venue} and can move real money.`
+                    : 'Orders are logged only; nothing is sent to the venue.',
+                  run: () => startBot.mutateAsync(bot.id),
                 })
               }
             >
@@ -159,10 +170,11 @@ export function BotDetail() {
             disabled={!configurable || deleteBot.isPending}
             onClick={() =>
               setPending({
+                title: `Delete ${bot.symbol}`,
                 message:
-                  `Delete ${bot.symbol} (${bot.venue})? Its configuration is removed permanently. ` +
+                  `Its configuration is removed permanently from ${bot.venue}. ` +
                   'Recorded trades are archived, not deleted.',
-                run: () => deleteBot.mutate(bot.id, { onSuccess: () => navigate('/') }),
+                run: () => deleteBot.mutateAsync(bot.id).then(() => navigate('/')),
               })
             }
           >
@@ -219,11 +231,6 @@ export function BotDetail() {
           {patchBot.error && (
             <p role="alert" className="error">
               {String(patchBot.error)}
-            </p>
-          )}
-          {deleteBot.error && (
-            <p role="alert" className="error">
-              {String(deleteBot.error)}
             </p>
           )}
           <div className="control-row">
@@ -297,9 +304,12 @@ export function BotDetail() {
 
       <ConfirmDialog
         open={pending !== null}
+        title={pending?.title ?? 'Confirm action'}
         message={pending?.message ?? ''}
-        onConfirm={() => {
-          pending?.run()
+        onConfirm={async () => {
+          // Awaited so the dialog can disable Confirm for the whole request —
+          // the single in-flight guard #126 relies on.
+          await pending?.run()
           setPending(null)
         }}
         onCancel={() => setPending(null)}

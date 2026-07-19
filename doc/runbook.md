@@ -127,6 +127,14 @@ All of this is available in the UI after signing in:
 3. **Switch mode** — toggle `LIVE` on the bot detail page. This always requires
    an explicit confirmation, because it is the switch from logged-only orders to
    **real orders that move real money**.
+
+   Every confirmation is a proper modal: focus moves into it and cannot Tab
+   out, **Cancel is the default** so a reflex Enter does nothing, Escape
+   cancels, and the rest of the page is inert while it is open. Confirm is
+   disabled for the whole request, so a double-click cannot submit twice — the
+   client-side half of the guard the server enforces for lifecycle actions. If
+   the request fails, the reason appears **inside** the dialog and Confirm
+   re-enables so it can be retried.
 4. **Set caps** — adjust per-bot and global notional caps on the detail page;
    the risk guard rejects signals that would exceed them.
 

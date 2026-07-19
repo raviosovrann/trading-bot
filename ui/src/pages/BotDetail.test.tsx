@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -157,7 +157,10 @@ describe('BotDetail delete (#163)', () => {
     await userEvent.click(screen.getByRole('button', { name: /delete/i }))
     await userEvent.click(screen.getByRole('button', { name: /^confirm$/i }))
 
-    expect(await screen.findByText(/stop it before deleting/i)).toBeInTheDocument()
+    // Reported inside the dialog: the page behind is inert while it is open,
+    // so an error rendered out there would be unreachable (#132).
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(/stop it before deleting/i)
   })
 })
 

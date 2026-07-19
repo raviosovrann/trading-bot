@@ -9,8 +9,11 @@ import { useBotEvents } from '../hooks/useBotEvents'
 import type { BotView } from '../types'
 
 interface PendingAction {
+  /** Short action name; becomes the dialog's accessible name. */
+  title: string
   message: string
-  run: () => void
+  /** Returns the request so the dialog can hold Confirm until it settles. */
+  run: () => Promise<unknown>
 }
 
 /** Live table of all bots, updated over the WebSocket. */
@@ -82,14 +85,18 @@ export function Dashboard() {
           ].filter((id): id is string => typeof id === 'string')}
           onStart={(bot) =>
             setPending({
-              message: `Start ${bot.symbol} (${bot.live ? 'LIVE' : 'dry-run'})?`,
-              run: () => startBot.mutate(bot.id),
+              title: `Start ${bot.symbol} in ${bot.live ? 'LIVE' : 'dry-run'} mode`,
+              message: bot.live
+                ? `Real orders will be sent to ${bot.venue} and can move real money.`
+                : 'Orders are logged only; nothing is sent to the venue.',
+              run: () => startBot.mutateAsync(bot.id),
             })
           }
           onStop={(bot) =>
             setPending({
-              message: `Stop ${bot.symbol}?`,
-              run: () => stopBot.mutate(bot.id),
+              title: `Stop ${bot.symbol}`,
+              message: 'The bot stops trading. Any open position is left as it is.',
+              run: () => stopBot.mutateAsync(bot.id),
             })
           }
         />
@@ -97,9 +104,12 @@ export function Dashboard() {
 
       <ConfirmDialog
         open={pending !== null}
+        title={pending?.title ?? 'Confirm action'}
         message={pending?.message ?? ''}
-        onConfirm={() => {
-          pending?.run()
+        onConfirm={async () => {
+          // Awaited so the dialog can disable Confirm for the whole request —
+          // the single in-flight guard #126 relies on.
+          await pending?.run()
           setPending(null)
         }}
         onCancel={() => setPending(null)}
