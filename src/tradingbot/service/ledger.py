@@ -162,12 +162,32 @@ class _MutableOrder:
     venue_order_id: str | None = None
     submitted_seen: bool = False
     terminal: OrderState | None = None
-    filled_qty: float = 0.0
-    notional: float = 0.0
+    fills_qty: float = 0.0
+    """Quantity summed from discrete execution events."""
+    fills_notional: float = 0.0
+    """Quantity-weighted notional of the discrete executions."""
+    snapshot_qty: float = 0.0
+    """Cumulative filled quantity last reported by an order-status snapshot."""
+    snapshot_avg: float = 0.0
+    """Average fill price reported alongside ``snapshot_qty``."""
     fees: float = 0.0
     created_ts: int = 0
     updated_ts: int = 0
     error: str | None = None
+
+    @property
+    def filled_qty(self) -> float:
+        """Filled quantity, reconciled across both reporting styles.
+
+        Venues report progress two ways and some do both: discrete executions
+        pushed as they happen, and cumulative snapshots on the submission
+        response or an order-status poll. Summing them double-counts the same
+        quantity. Taking the greater believes whichever source is further
+        ahead, which errs toward overstating what is at risk -- the safe
+        direction, since the alternative is releasing exposure for a position
+        that is still open.
+        """
+        return max(self.fills_qty, self.snapshot_qty)
 
     @property
     def qty_known(self) -> bool:
@@ -189,9 +209,21 @@ class _MutableOrder:
             return OrderState.partially_filled
         return OrderState.submitted
 
+    def avg_price(self) -> float:
+        """Average fill price, from whichever source is further ahead.
+
+        Discrete executions carry exact per-fill prices, so they are preferred
+        when they account for at least as much quantity as the snapshot does.
+        A venue's snapshot average is rounded and, when the snapshot leads, is
+        the only evidence available for the quantity the fills have not
+        covered yet.
+        """
+        if self.fills_qty > _QTY_EPSILON and self.fills_qty >= self.snapshot_qty:
+            return self.fills_notional / self.fills_qty
+        return self.snapshot_avg if self.snapshot_qty > _QTY_EPSILON else 0.0
+
     def snapshot(self) -> OrderRecord:
         """Build the immutable record for this order's current state."""
-        avg_price = self.notional / self.filled_qty if self.filled_qty > _QTY_EPSILON else 0.0
         return OrderRecord(
             client_order_id=self.client_order_id,
             bot_id=self.bot_id,
@@ -203,7 +235,7 @@ class _MutableOrder:
             venue_order_id=self.venue_order_id,
             state=self.state(),
             filled_qty=self.filled_qty,
-            avg_price=avg_price,
+            avg_price=self.avg_price(),
             fees=self.fees,
             created_ts=self.created_ts,
             updated_ts=self.updated_ts,
@@ -270,6 +302,8 @@ class OrderLedger:
 
         if kind == "fill":
             return self._apply_fill(client_order_id, event)
+        if kind == "order_status":
+            return self._apply_status(client_order_id, event)
         if kind == "submitted":
             return self._apply_submitted(client_order_id, event)
         if kind in _EXPLICIT_TERMINAL_KINDS:
@@ -389,6 +423,36 @@ class OrderLedger:
         order.updated_ts = max(order.updated_ts, ts)
         return True
 
+    def _apply_status(self, client_order_id: str, event: dict[str, Any]) -> bool:
+        """Apply a cumulative order-status snapshot.
+
+        Applied as a monotonic set rather than an increment: the venue is
+        reporting the total filled so far, so a repeated poll of an unchanged
+        order carries no new information and a snapshot that has gone backwards
+        is stale. Believing a stale snapshot would resurrect a completed order
+        and re-reserve exposure against it.
+        """
+        filled_qty = _coerce_float(event.get("filled_qty"))
+        if filled_qty is None or filled_qty < 0:
+            return False
+
+        order = self._order_for(client_order_id)
+        if filled_qty <= order.snapshot_qty + _QTY_EPSILON:
+            return False
+
+        order.snapshot_qty = filled_qty
+        avg_price = _coerce_float(event.get("avg_price"))
+        if avg_price is not None and avg_price > 0:
+            order.snapshot_avg = avg_price
+        fees = _coerce_float(event.get("fees"))
+        if fees is not None and fees >= 0:
+            # Snapshot fees are cumulative for the order, like the quantity.
+            order.fees = max(order.fees, fees)
+        ts = int(_coerce_float(event.get("ts")) or 0)
+        order.created_ts = order.created_ts or ts
+        order.updated_ts = max(order.updated_ts, ts)
+        return True
+
     def _apply_fill(self, client_order_id: str, event: dict[str, Any]) -> bool:
         """Record a fill, deduplicating on the venue execution id.
 
@@ -422,8 +486,8 @@ class OrderLedger:
         ))
 
         order = self._order_for(client_order_id)
-        order.filled_qty += qty
-        order.notional += qty * price
+        order.fills_qty += qty
+        order.fills_notional += qty * price
         order.fees += fee
         order.created_ts = order.created_ts or ts
         order.updated_ts = max(order.updated_ts, ts)

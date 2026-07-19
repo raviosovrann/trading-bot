@@ -65,6 +65,27 @@ def _fill(
     }
 
 
+def _status(
+    coid: str = "c1",
+    *,
+    filled_qty: float,
+    avg_price: float,
+    fees: float | None = None,
+    ts: int = 1_100,
+) -> dict:
+    """A cumulative order-status snapshot, as ccxt and order-status polls report."""
+    event: dict = {
+        "kind": "order_status",
+        "client_order_id": coid,
+        "filled_qty": filled_qty,
+        "avg_price": avg_price,
+        "ts": ts,
+    }
+    if fees is not None:
+        event["fees"] = fees
+    return event
+
+
 class TestSubmissionIsNotAFill:
     """The headline acceptance criterion: no fill evidence, no filled trade."""
 
@@ -338,6 +359,117 @@ class TestMalformedEvents:
         order = ledger.order("c1")
         assert order is not None
         assert order.filled_qty == 0.0
+
+
+class TestCumulativeStatusSnapshots:
+    """Most venues report cumulative filled quantity, not per-fill deltas.
+
+    ccxt returns ``filled``/``average`` for the whole order on both the
+    submission response and ``fetch_order``. Applying those as increments would
+    double-count the moment the commit-3 poller re-reads an order it has
+    already seen, so they are applied as a monotonic set instead.
+    """
+
+    def test_snapshot_sets_filled_quantity(self) -> None:
+        ledger = OrderLedger()
+        ledger.apply(_submitted(qty=2.0))
+        ledger.apply(_status("c1", filled_qty=1.0, avg_price=100.0))
+
+        order = ledger.order("c1")
+        assert order is not None
+        assert order.filled_qty == 1.0
+        assert order.avg_price == pytest.approx(100.0)
+        assert order.state is OrderState.partially_filled
+
+    def test_repeated_identical_snapshot_does_not_accumulate(self) -> None:
+        ledger = OrderLedger()
+        ledger.apply(_submitted(qty=2.0))
+        assert ledger.apply(_status("c1", filled_qty=1.0, avg_price=100.0)) is True
+        assert ledger.apply(_status("c1", filled_qty=1.0, avg_price=100.0)) is False
+
+        order = ledger.order("c1")
+        assert order is not None
+        assert order.filled_qty == 1.0
+
+    def test_snapshot_advances_monotonically(self) -> None:
+        ledger = OrderLedger()
+        ledger.apply(_submitted(qty=2.0))
+        ledger.apply(_status("c1", filled_qty=1.0, avg_price=100.0))
+        ledger.apply(_status("c1", filled_qty=2.0, avg_price=150.0))
+
+        order = ledger.order("c1")
+        assert order is not None
+        assert order.filled_qty == 2.0
+        assert order.state is OrderState.filled
+
+    def test_stale_snapshot_never_walks_progress_backward(self) -> None:
+        # An out-of-order poll response is older than what we already know.
+        # Believing it would resurrect a filled order and re-reserve exposure.
+        ledger = OrderLedger()
+        ledger.apply(_submitted(qty=2.0))
+        ledger.apply(_status("c1", filled_qty=2.0, avg_price=150.0))
+        assert ledger.apply(_status("c1", filled_qty=0.0, avg_price=0.0)) is False
+
+        order = ledger.order("c1")
+        assert order is not None
+        assert order.filled_qty == 2.0
+        assert order.state is OrderState.filled
+
+
+class TestSnapshotAndFillsTogether:
+    """A venue may push discrete executions AND answer status polls.
+
+    Summing both sources double-counts. Taking the greater of the two believes
+    whichever source is further ahead, which is the safe direction: it never
+    understates a position, and never releases exposure that is still at risk.
+    """
+
+    def test_snapshot_and_fills_are_not_summed(self) -> None:
+        ledger = OrderLedger()
+        ledger.apply(_submitted(qty=2.0))
+        ledger.apply(_fill("e1", qty=1.0, price=100.0))
+        ledger.apply(_status("c1", filled_qty=1.0, avg_price=100.0))
+
+        order = ledger.order("c1")
+        assert order is not None
+        assert order.filled_qty == 1.0
+
+    def test_fills_ahead_of_the_snapshot_win(self) -> None:
+        ledger = OrderLedger()
+        ledger.apply(_submitted(qty=2.0))
+        ledger.apply(_fill("e1", qty=1.0, price=100.0))
+        ledger.apply(_fill("e2", qty=0.5, price=100.0))
+        ledger.apply(_status("c1", filled_qty=1.0, avg_price=100.0))
+
+        order = ledger.order("c1")
+        assert order is not None
+        assert order.filled_qty == 1.5
+
+    def test_snapshot_ahead_of_the_fills_wins(self) -> None:
+        # Fills for the rest of the quantity have not reached us yet.
+        ledger = OrderLedger()
+        ledger.apply(_submitted(qty=2.0))
+        ledger.apply(_fill("e1", qty=0.5, price=100.0))
+        ledger.apply(_status("c1", filled_qty=2.0, avg_price=120.0))
+
+        order = ledger.order("c1")
+        assert order is not None
+        assert order.filled_qty == 2.0
+        assert order.state is OrderState.filled
+
+    def test_fill_derived_average_is_preferred_when_fills_lead(self) -> None:
+        # Fills carry exact per-execution prices; a snapshot average is
+        # rounded by the venue. Trust the finer-grained source when it is the
+        # one that is ahead.
+        ledger = OrderLedger()
+        ledger.apply(_submitted(qty=2.0))
+        ledger.apply(_fill("e1", qty=1.0, price=100.0))
+        ledger.apply(_fill("e2", qty=1.0, price=200.0))
+        ledger.apply(_status("c1", filled_qty=1.0, avg_price=999.0))
+
+        order = ledger.order("c1")
+        assert order is not None
+        assert order.avg_price == pytest.approx(150.0)
 
 
 class TestRecordTypes:
