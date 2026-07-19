@@ -167,6 +167,56 @@ class BotStore:
             records.append(record)
         self._save_text_unlocked(self._bots_file, json.dumps(records, indent=2))
 
+    def delete_config(self, bot_id: str) -> None:
+        """Remove one bot's persisted config, leaving the others untouched.
+
+        Deleting an id that is not present is a no-op, so a repeated delete is
+        safe.
+
+        Args:
+            bot_id: Bot identifier to remove.
+
+        Raises:
+            ValueError: If ``bot_id`` is not a safe identifier.
+        """
+        _validate_bot_id(bot_id)
+        with self._transaction():
+            configs = [cfg for cfg in self._load_configs() if cfg.id != bot_id]
+            self._save_configs(configs)
+
+    def archive_trades(self, bot_id: str) -> Path | None:
+        """Move a bot's trade history aside instead of destroying it.
+
+        The retention policy is rotate-never-delete (#122), and a bot being
+        deleted must not become a back door that erases executed-trade records.
+        Every segment is moved — history is multi-file — into
+        ``trades/archive/<bot_id>/`` under the store transaction.
+
+        Args:
+            bot_id: Bot whose history should be archived.
+
+        Returns:
+            The archive directory, or ``None`` when the bot had no history.
+
+        Raises:
+            ValueError: If ``bot_id`` is not a safe identifier.
+        """
+        _validate_bot_id(bot_id)
+        with self._transaction():
+            segments = self._trade_segments(bot_id)
+            if not segments:
+                return None
+            destination = self._trades_dir / "archive" / bot_id
+            destination.mkdir(parents=True, exist_ok=True)
+            self._secure_directory(destination.parent)
+            self._secure_directory(destination)
+            for path in segments:
+                path.replace(destination / path.name)
+            self._fsync_directory(self._trades_dir)
+            self._next_trade_seq.pop(bot_id, None)
+            self._active_segment.pop(bot_id, None)
+            return destination
+
     def _trade_segments(self, bot_id: str) -> list[Path]:
         """Return this bot's trade log segments, oldest first.
 

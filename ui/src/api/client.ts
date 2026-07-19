@@ -76,6 +76,7 @@ export function makeClient(onUnauthorized?: () => void) {
       req<BotView>(`/bots/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
     startBot: (id: string) => req<BotView>(`/bots/${id}/start`, { method: 'POST' }),
     stopBot: (id: string) => req<BotView>(`/bots/${id}/stop`, { method: 'POST' }),
+    deleteBot: (id: string) => req<void>(`/bots/${id}`, { method: 'DELETE' }),
     getTrades: (id: string, opts: { limit?: number; before?: number | null } = {}) => {
       const params = new URLSearchParams({ limit: String(opts.limit ?? 50) })
       if (opts.before != null) params.set('before', String(opts.before))

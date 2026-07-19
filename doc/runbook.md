@@ -161,6 +161,29 @@ configuration change would half-apply — the venue, risk guard and strategy are
 built from the config at start — so `PATCH /api/bots/{id}` is rejected with
 `409` and the caller should retry once the transition settles.
 
+### Deleting a bot
+
+`DELETE /api/bots/{id}`, or the **Delete** button on the bot detail page.
+
+**Refused with `409` while the bot is running, starting or stopping**, the same
+policy as configuration changes. A running bot may hold an open position, and
+deleting it would strand that position with nothing left to manage it. Stop it
+first.
+
+**Recorded trades are archived, never purged.** The retention policy is
+rotate-never-delete, and a bot going away must not become a back door that
+erases executed-trade records. Every segment of its history moves to:
+
+```
+data/trades/archive/<bot-id>/<bot-id>.<ordinal>.jsonl
+```
+
+The bot's *configuration* is removed permanently, and it does not come back on
+restart. The deletion is written to the audit trail with the bot's symbol and
+venue, and with the archive path so the history can be found later. The UI
+confirmation names the bot and states that trades are archived rather than
+deleted, because that is the part an operator would otherwise have to assume.
+
 ### Degraded: running but starved of data
 
 A bot also carries a `degraded` flag with a `degraded_reason`, shown in the UI

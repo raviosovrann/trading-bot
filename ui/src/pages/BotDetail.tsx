@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { useBot, usePatchBot, useStartBot, useStopBot, useTrades } from '../api/hooks'
+import { useBot, useDeleteBot, usePatchBot, useStartBot, useStopBot, useTrades } from '../api/hooks'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { DecisionLog } from '../components/DecisionLog'
 import { LiveBadge } from '../components/LiveBadge'
@@ -22,6 +22,8 @@ export function BotDetail() {
   const patchBot = usePatchBot(id)
   const startBot = useStartBot()
   const stopBot = useStopBot()
+  const deleteBot = useDeleteBot()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [pending, setPending] = useState<PendingAction | null>(null)
   const [capInput, setCapInput] = useState<string>('')
@@ -152,6 +154,20 @@ export function BotDetail() {
               {bot.status === 'starting' ? 'Starting…' : 'Start'}
             </button>
           )}
+          <button
+            className="danger"
+            disabled={!configurable || deleteBot.isPending}
+            onClick={() =>
+              setPending({
+                message:
+                  `Delete ${bot.symbol} (${bot.venue})? Its configuration is removed permanently. ` +
+                  'Recorded trades are archived, not deleted.',
+                run: () => deleteBot.mutate(bot.id, { onSuccess: () => navigate('/') }),
+              })
+            }
+          >
+            Delete
+          </button>
         </nav>
       </header>
 
@@ -203,6 +219,11 @@ export function BotDetail() {
           {patchBot.error && (
             <p role="alert" className="error">
               {String(patchBot.error)}
+            </p>
+          )}
+          {deleteBot.error && (
+            <p role="alert" className="error">
+              {String(deleteBot.error)}
             </p>
           )}
           <div className="control-row">

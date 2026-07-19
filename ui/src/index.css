@@ -142,6 +142,17 @@ label {
   color: var(--warning);
 }
 
+/* Destructive actions read differently from ordinary ones (#163). */
+button.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+button.danger:disabled {
+  border-color: var(--border);
+  color: var(--muted);
+}
+
 .bot-table {
   width: 100%;
   border-collapse: collapse;

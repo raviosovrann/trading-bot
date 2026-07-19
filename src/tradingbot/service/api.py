@@ -892,6 +892,63 @@ def create_app(
         )
         return _to_view(bot)
 
+    @api_router.delete(
+        "/bots/{bot_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        response_class=Response,
+        response_model=None,
+    )
+    async def delete_bot(
+        bot_id: str,
+        http_request: Request,
+        principal: Principal = Depends(require_auth_csrf),
+    ) -> None:
+        """Delete the bot identified by ``bot_id``.
+
+        Refused while the bot is running or mid-transition, consistent with the
+        configuration policy from #109: a running bot may hold an open
+        position, and deleting it would strand that position with nothing left
+        to manage it.
+
+        The bot's trade history is **archived, not purged** — the retention
+        policy is rotate-never-delete (#122), so deleting a bot must not become
+        a back door that erases executed-trade records.
+
+        Args:
+            bot_id: UUID of the bot.
+            http_request: The incoming request (for audit correlation).
+
+        Raises:
+            HTTPException: 404 if the bot does not exist, 409 if it is running.
+        """
+        try:
+            removed = await supervisor.remove(bot_id)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="bot not found"
+            ) from exc
+        except ValueError as exc:
+            _audit(
+                http_request, principal, "bot.delete", f"bot:{bot_id}", "denied",
+                after={"reason": str(exc)},
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+            ) from exc
+
+        archived: str | None = None
+        try:
+            destination = store.archive_trades(bot_id)
+            archived = str(destination) if destination is not None else None
+            store.delete_config(bot_id)
+        except Exception:  # noqa: BLE001 - the bot is already gone from the runtime
+            _log.exception("failed to clean up persisted state for bot %s", bot_id)
+        _audit(
+            http_request, principal, "bot.delete", f"bot:{bot_id}", "success",
+            before={"symbol": removed.config.symbol, "venue": removed.config.venue},
+            after={"trades_archived": archived},
+        )
+
     @api_router.post("/bots/{bot_id}/stop")
     async def stop_bot(
         bot_id: str,

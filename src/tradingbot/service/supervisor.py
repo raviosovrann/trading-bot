@@ -665,6 +665,38 @@ class BotSupervisor:
             return
         self._publish_state(bot)
 
+    async def remove(self, bot_id: str) -> BotInstance:
+        """Drop a bot from the supervisor.
+
+        Serialized on the bot's lifecycle lock so a delete cannot interleave
+        with a start (#126): without it a delete could land between a start's
+        checks and its task creation, leaving a running runtime with no bot to
+        own it.
+
+        Args:
+            bot_id: UUID of the bot to remove.
+
+        Returns:
+            The removed bot instance.
+
+        Raises:
+            KeyError: If the bot does not exist.
+            ValueError: If the bot is running or mid-transition. It may hold an
+                open position, and deleting it would strand that position with
+                nothing left to manage it.
+        """
+        bot = self._require(bot_id)
+        async with self._lock_for(bot_id):
+            if bot.status not in ("created", "stopped", "failed"):
+                raise ValueError(
+                    f"bot {bot_id} is {bot.status}; stop it before deleting"
+                )
+            self._release_partial(bot)
+            self._bots.pop(bot_id, None)
+            self._last_snapshots.pop(bot_id, None)
+        self._locks.pop(bot_id, None)
+        return bot
+
     def list(self) -> list[BotInstance]:
         """Return all managed bot instances."""
         return list(self._bots.values())
