@@ -115,3 +115,47 @@ describe('BotDetail', () => {
     expect(await screen.findByText('ord-42')).toBeInTheDocument()
   })
 })
+
+describe('BotDetail config is immutable while running (#109)', () => {
+  it('disables the LIVE toggle while the bot is running', async () => {
+    setup(bot({ status: 'running' }))
+    await screen.findByText('BTC/USD')
+
+    expect(screen.getByRole('checkbox', { name: /live/i })).toBeDisabled()
+  })
+
+  it('disables the cap form while the bot is running', async () => {
+    setup(bot({ status: 'running' }))
+    await screen.findByText('BTC/USD')
+
+    expect(screen.getByLabelText(/per-bot cap/i)).toBeDisabled()
+  })
+
+  it('explains why the controls are unavailable while running', async () => {
+    setup(bot({ status: 'running' }))
+    await screen.findByText('BTC/USD')
+
+    expect(screen.getByText(/stop the bot to change/i)).toBeInTheDocument()
+  })
+
+  it('leaves the controls usable while the bot is stopped', async () => {
+    setup(bot({ status: 'stopped' }))
+    await screen.findByText('BTC/USD')
+
+    expect(screen.getByRole('checkbox', { name: /live/i })).toBeEnabled()
+    expect(screen.getByLabelText(/per-bot cap/i)).toBeEnabled()
+  })
+
+  it('surfaces a rejected configuration change to the operator', async () => {
+    const { client } = setup(bot({ status: 'stopped' }))
+    vi.mocked(client.patchBot).mockRejectedValueOnce(
+      new Error('bot is running; configuration can only be changed while stopped.'),
+    )
+    await screen.findByText('BTC/USD')
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /live/i }))
+    await userEvent.click(screen.getByRole('button', { name: /confirm/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/configuration can only be changed/i)
+  })
+})
