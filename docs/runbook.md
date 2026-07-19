@@ -216,9 +216,10 @@ Read these before trusting the system with money:
 - **Starting a bot requires stored venue credentials even in dry-run**, because
   the venue client is constructed before the run loop. Store credentials first;
   in dry-run no orders are sent — the intended order is logged instead.
-- **Persisted bots are not rehydrated into the supervisor on restart.** Bot
-  configs survive in `bots.json`, but after a service restart they must be
-  recreated in the supervisor before they can be started again.
+- **A restart never resumes trading.** Persisted bots are restored from
+  `bots.json` on startup, but deliberately come back **stopped** — restart the
+  ones you want running. A bot record that cannot be parsed is skipped with a
+  warning in the log rather than hiding the rest.
 - **Single-host only.** The file store serializes writers on one POSIX host via
   `flock` and refuses to start where POSIX locking is unavailable. Run **one**
   replica on a persistent volume; replace the store with shared transactional

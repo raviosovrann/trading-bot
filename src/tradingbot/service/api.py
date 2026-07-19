@@ -423,12 +423,20 @@ def create_app(
     """
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        """Stop every running bot before the process exits.
+        """Restore persisted bots on startup and stop them all on the way out.
+
+        Bots are adopted from the store in a non-running state, so a restart
+        never silently resumes trading — the operator sees their bots again and
+        starts the ones they want.
 
         SIGTERM reaches uvicorn, which runs this shutdown phase, so bots and
         their market-data streams are closed cleanly instead of being killed
         mid-order.
         """
+        try:
+            supervisor.restore()
+        except Exception:  # noqa: BLE001 - a bad store must not stop the service booting
+            _log.exception("failed to restore persisted bots")
         yield
         for bot in supervisor.list():
             try:

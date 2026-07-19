@@ -324,3 +324,19 @@ def test_load_json_returns_empty_on_missing_or_invalid(tmp_path: Path) -> None:
 
     (tmp_path / "users.json").write_text("null", encoding="utf-8")
     assert store.load_users() == {}
+
+
+def test_load_configs_isolates_malformed_records(tmp_path: Path) -> None:
+    """A malformed record is skipped without discarding the valid ones."""
+    store = BotStore(tmp_path)
+    good = _config("good")
+    store.save_config(good)
+    raw = json.loads((tmp_path / "bots.json").read_text(encoding="utf-8"))
+    # A record missing required fields, one with a wrong field type, and a
+    # non-object entry: none of them should cost us the valid config.
+    raw.extend([{"id": "missing-fields"}, {"id": 5, "venue": "coinbase"}, "not-an-object"])
+    (tmp_path / "bots.json").write_text(json.dumps(raw), encoding="utf-8")
+
+    configs = store.load_configs()
+
+    assert [cfg.id for cfg in configs] == ["good"]
