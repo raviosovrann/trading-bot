@@ -365,6 +365,30 @@ class BotStore:
             self._next_trade_seq[bot_id] = seq + 1
             return record
 
+    def replay_trades(self, bot_id: str) -> Iterator[dict[str, Any]]:
+        """Yield a bot's whole log oldest-first, for rebuilding the ledger.
+
+        Deliberately separate from ``read_trades``, which pages newest-first
+        for display. Replay needs the opposite: the full history in the order
+        it happened, so folding it reproduces the state the process had when
+        it stopped (#135).
+
+        Yields lazily, one segment at a time, so replaying a long history does
+        not require holding all of it in memory at once.
+
+        Args:
+            bot_id: Bot identifier used as the log filename.
+
+        Yields:
+            Stored records, oldest first.
+
+        Raises:
+            ValueError: If ``bot_id`` is not a safe identifier.
+        """
+        _validate_bot_id(bot_id)
+        for segment in self._trade_segments(bot_id):
+            yield from self._read_segment(segment)
+
     def read_trades(
         self, bot_id: str, *, limit: int = 50, before_seq: int | None = None
     ) -> tuple[list[dict[str, Any]], int | None]:

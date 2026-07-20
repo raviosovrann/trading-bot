@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
+from collections.abc import Iterable
 from typing import Any, Callable, cast
 
 from ..models import Candle, OrderResult, Position, PositionSide
@@ -312,6 +313,7 @@ class BotSupervisor:
             if cfg.id in self._bots:
                 continue
             instance = BotInstance(config=cfg, status="stopped")
+            self._rebuild_ledger(instance)
             self._bots[cfg.id] = instance
             self._publish_state(instance)
             restored += 1
@@ -853,6 +855,43 @@ class BotSupervisor:
                 self._store.append_trade(bot.config.id, record)
             except Exception:  # pragma: no cover - defensive; the next poll re-derives it
                 _log.exception("failed to persist polled event for bot %s", bot.config.id)
+
+    def _rebuild_ledger(self, bot: BotInstance) -> None:
+        """Rebuild ``bot``'s order ledger by replaying its persisted log.
+
+        The log is the source of truth and the ledger is a projection of it, so
+        recovery after a restart is simply replay -- which is the property
+        event sourcing was chosen for. Orders that were still live when the
+        process died come back non-terminal, which puts them straight back on
+        the reconciliation worklist.
+
+        Nothing is written here. Folding a log is a read, and appending to it
+        during replay would grow the history on every boot.
+
+        A replay that fails, or a record that will not fold, is logged and
+        skipped rather than raised: a corrupt row must cost that row, not the
+        bot and not the service's ability to boot (#108's isolation applied to
+        the trade log).
+
+        Args:
+            bot: Bot whose ledger to rebuild.
+        """
+        replay = getattr(self._store, "replay_trades", None)
+        if not callable(replay):
+            return
+        try:
+            records = list(cast(Iterable[dict[str, Any]], replay(bot.config.id)))
+        except Exception:  # noqa: BLE001 - a bad log must not stop the service booting
+            _log.exception("failed to replay order log for bot %s", bot.config.id)
+            return
+
+        ledger = OrderLedger()
+        for record in records:
+            try:
+                ledger.apply(record)
+            except Exception:  # noqa: BLE001 - one bad row must not cost the history
+                _log.exception("skipping malformed order record for bot %s", bot.config.id)
+        bot.ledger = ledger
 
     async def reconcile_open_orders(self, bot: BotInstance) -> None:
         """Ask the venue about every order that is not yet terminal.

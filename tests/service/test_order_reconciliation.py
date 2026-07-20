@@ -266,3 +266,114 @@ async def test_a_cancelled_order_records_its_partial_fill(monkeypatch) -> None:
     assert order.filled_qty == pytest.approx(0.04)
 
     await supervisor.stop("one")
+
+
+class _ReplayStore:
+    """Store double holding a pre-existing lifecycle log."""
+
+    def __init__(self, events: list[dict], configs: list[BotConfig] | None = None) -> None:
+        self.events = list(events)
+        self.configs = configs or [_config()]
+        self.appended: list[tuple[str, dict]] = []
+
+    def load_configs(self) -> list[BotConfig]:
+        return list(self.configs)
+
+    def replay_trades(self, bot_id: str):
+        del bot_id
+        return iter(self.events)
+
+    def append_trade(self, bot_id: str, record: dict) -> None:
+        self.appended.append((bot_id, record))
+
+
+def _supervisor(store) -> BotSupervisor:
+    return BotSupervisor(
+        hub_factory=lambda cfg: _Hub(),
+        event_bus=EventBus(),
+        global_exposure=GlobalExposure(),
+        store=store,
+    )
+
+
+def _submitted(coid: str, *, venue_order_id: str | None = "v1", qty: float = 2.0) -> dict:
+    return {
+        "kind": "submitted", "client_order_id": coid, "bot_id": "one",
+        "symbol": "BTC/USD", "side": "buy", "order_type": "market",
+        "qty": qty, "price": None, "venue_order_id": venue_order_id, "ts": 1,
+    }
+
+
+def test_restore_rebuilds_the_ledger_from_the_log() -> None:
+    """A restart must not forget orders that were live when it happened."""
+    store = _ReplayStore([
+        _submitted("c1"),
+        {"kind": "order_status", "client_order_id": "c1", "filled_qty": 2.0,
+         "avg_price": 100.0, "ts": 2},
+        _submitted("c2", venue_order_id="v2"),
+    ])
+    supervisor = _supervisor(store)
+
+    assert supervisor.restore() == 1
+    bot = supervisor.get("one")
+    assert bot is not None
+
+    assert {o.client_order_id for o in bot.ledger.orders()} == {"c1", "c2"}
+    filled = bot.ledger.order("c1")
+    assert filled is not None
+    assert filled.state is OrderState.filled
+    # c2 was still live when the process died, so it must come back as work.
+    assert [o.client_order_id for o in bot.ledger.open_orders()] == ["c2"]
+
+
+def test_restore_survives_a_corrupt_log_row() -> None:
+    """One bad record must not cost the whole history -- #108's lesson."""
+    store = _ReplayStore([
+        _submitted("c1"),
+        {"kind": "nonsense"},
+        _submitted("c2", venue_order_id="v2"),
+    ])
+    supervisor = _supervisor(store)
+    supervisor.restore()
+    bot = supervisor.get("one")
+    assert bot is not None
+
+    assert {o.client_order_id for o in bot.ledger.orders()} == {"c1", "c2"}
+
+
+def test_restore_survives_a_store_that_cannot_replay() -> None:
+    """A replay failure must not stop the service booting."""
+    class _Broken(_ReplayStore):
+        def replay_trades(self, bot_id: str):
+            raise OSError("disk gone")
+
+    supervisor = _supervisor(_Broken([]))
+
+    assert supervisor.restore() == 1
+    bot = supervisor.get("one")
+    assert bot is not None
+    assert bot.ledger.orders() == []
+
+
+def test_restore_does_not_rewrite_the_log_it_just_read() -> None:
+    """Replay is a read. Folding it must not append anything."""
+    store = _ReplayStore([_submitted("c1")])
+    supervisor = _supervisor(store)
+    supervisor.restore()
+
+    assert store.appended == []
+
+
+def test_a_legacy_row_is_ignored_by_the_ledger_replay() -> None:
+    """Pre-#135 rows have no `kind` and carry no order identity."""
+    store = _ReplayStore([
+        {"bot_id": "one", "action": "buy", "status": "filled", "ok": True,
+         "order_id": "o1", "symbol": "BTC/USD", "ts": 1},
+        _submitted("c1"),
+    ])
+    supervisor = _supervisor(store)
+    supervisor.restore()
+    bot = supervisor.get("one")
+    assert bot is not None
+
+    assert [o.client_order_id for o in bot.ledger.orders()] == ["c1"]
