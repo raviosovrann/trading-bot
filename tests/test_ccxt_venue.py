@@ -247,3 +247,74 @@ def test_futures_get_position_infers_side_from_buy_sell_and_sign():
     neg = _FakeFuturesExchange([{"symbol": "S", "contracts": -2}])  # no side, signed
     p = CcxtVenue(neg, market_type="futures").get_position("S")
     assert p is not None and p.side is PositionSide.short and p.size == 2
+
+
+class _FetchExchange:
+    """Fake exposing only fetch_order, for order-status polling (#135)."""
+
+    def __init__(self, response=None, raises=False):
+        self._response = response
+        self._raises = raises
+        self.calls = []
+
+    def fetch_order(self, order_id, symbol):
+        self.calls.append((order_id, symbol))
+        if self._raises:
+            raise RuntimeError("exchange unreachable")
+        return self._response
+
+
+def test_fetch_order_reports_cumulative_fill_state():
+    """ccxt reports `filled` for the whole order, not per execution."""
+    exchange = _FetchExchange({"id": "v1", "status": "closed", "filled": 2.0,
+                               "average": 150.0})
+    venue = CcxtVenue(exchange, live=True)
+
+    result = venue.fetch_order("v1", "BTC/USD")
+
+    assert exchange.calls == [("v1", "BTC/USD")]
+    assert result.ok is True
+    assert result.status == "closed"
+    assert result.filled_qty == 2.0
+    assert result.raw["average"] == 150.0
+
+
+def test_fetch_order_reports_a_partial_fill():
+    exchange = _FetchExchange({"id": "v1", "status": "open", "filled": 0.5})
+    venue = CcxtVenue(exchange, live=True)
+
+    result = venue.fetch_order("v1", "BTC/USD")
+
+    assert result.ok is True
+    assert result.status == "open"
+    assert result.filled_qty == 0.5
+
+
+def test_fetch_order_treats_an_unreachable_exchange_as_unknown_not_failed():
+    """The caller must not read this as a rejection.
+
+    An exchange we cannot reach has told us nothing about the order. Marking
+    it dead here would cancel a live order in our books while it keeps
+    working at the venue.
+    """
+    venue = CcxtVenue(_FetchExchange(raises=True), live=True)
+
+    result = venue.fetch_order("v1", "BTC/USD")
+
+    assert result.ok is False
+    assert result.status == "error"
+    assert result.filled_qty == 0.0
+    assert result.error is not None
+
+
+def test_fetch_order_defaults_a_missing_status_to_open():
+    """An order with no status is still live until something says otherwise."""
+    venue = CcxtVenue(_FetchExchange({"id": "v1", "filled": 0.0}), live=True)
+
+    assert venue.fetch_order("v1", "BTC/USD").status == "open"
+
+
+def test_fetch_order_tolerates_a_missing_filled_field():
+    venue = CcxtVenue(_FetchExchange({"id": "v1", "status": "open"}), live=True)
+
+    assert venue.fetch_order("v1", "BTC/USD").filled_qty == 0.0

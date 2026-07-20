@@ -193,3 +193,40 @@ def test_empty_history_returns_no_cursor(tmp_path: Path) -> None:
     page, cursor = store.read_trades("bot-1", limit=10)
     assert page == []
     assert cursor is None
+
+
+def test_replay_trades_yields_the_whole_log_oldest_first(tmp_path: Path) -> None:
+    """Replay is the opposite order to display, and covers every segment.
+
+    read_trades pages newest-first for the UI. Rebuilding the ledger needs the
+    full history in the order it happened (#135), so this is a separate path
+    rather than a reversed page walk.
+    """
+    store = _store(tmp_path, trade_rotate_bytes=400)
+    for n in range(30):
+        store.append_trade("bot-1", _record(n))
+
+    replayed = list(store.replay_trades("bot-1"))
+
+    assert [r["seq"] for r in replayed] == list(range(1, 31))
+    assert len({r["order_id"] for r in replayed}) == 30
+
+
+def test_replay_trades_spans_rotated_segments(tmp_path: Path) -> None:
+    store = _store(tmp_path, trade_rotate_bytes=400)
+    for n in range(30):
+        store.append_trade("bot-1", _record(n))
+
+    segments = sorted(tmp_path.joinpath("trades").glob("bot-1*.jsonl"))
+    assert len(segments) > 1, "test needs rotation to have happened"
+    assert len(list(store.replay_trades("bot-1"))) == 30
+
+
+def test_replay_trades_is_empty_for_an_unknown_bot(tmp_path: Path) -> None:
+    assert list(_store(tmp_path).replay_trades("never-traded")) == []
+
+
+def test_replay_trades_rejects_an_unsafe_bot_id(tmp_path: Path) -> None:
+    """Path traversal must not be reachable through the replay path either."""
+    with pytest.raises(ValueError):
+        list(_store(tmp_path).replay_trades("../escape"))

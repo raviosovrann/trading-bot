@@ -87,6 +87,41 @@ class CcxtVenue:
                 ok=False, order_id=None, status="error", filled_qty=0.0, raw={}, error=str(exc)
             )
 
+    def fetch_order(self, venue_order_id: str, symbol: str) -> OrderResult:
+        """Re-read one order's current state from the exchange (#135).
+
+        ccxt reports ``filled`` and ``average`` cumulatively for the whole
+        order, which is why the caller folds this in as a status snapshot
+        rather than as an incremental fill.
+
+        A failure is returned as ``ok=False`` rather than raised, and the
+        caller treats that as "state unknown" rather than as a rejection --
+        an unreachable exchange says nothing about whether the order is live.
+
+        Args:
+            venue_order_id: The exchange's own order id.
+            symbol: Trading symbol the order belongs to; ccxt requires it.
+
+        Returns:
+            The order's current state, or a failed result if it cannot be read.
+        """
+        try:
+            resp = self._ex.fetch_order(venue_order_id, symbol)
+        except Exception as exc:
+            return OrderResult(
+                ok=False, order_id=venue_order_id, status="error",
+                filled_qty=0.0, raw={}, error=str(exc),
+            )
+        status = str(resp.get("status", "open")).lower()
+        return OrderResult(
+            ok=True,
+            order_id=str(resp.get("id") or venue_order_id),
+            status=status,
+            filled_qty=float(resp.get("filled") or 0.0),
+            raw=resp if isinstance(resp, dict) else {"value": resp},
+            error=None,
+        )
+
     def get_position(self, symbol: str) -> Position | None:
         if self._market_type == "futures":
             # Derivatives: read the signed position via fetch_positions (long/short).

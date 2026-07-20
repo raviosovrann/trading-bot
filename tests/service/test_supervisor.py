@@ -192,8 +192,20 @@ async def test_supervisor_persists_order_events(monkeypatch) -> None:
     assert store.trades, "expected the order event to be persisted"
     bot_id, record = store.trades[0]
     assert bot_id == "one"
-    assert record["action"] == "buy"
     assert record["bot_id"] == "one"
+    # Since #135 the store holds ledger lifecycle events rather than one flat
+    # summary row, so the first record is the submission, not a "trade".
+    assert record["kind"] == "submitted"
+    assert record["side"] == "buy"
+    assert record["client_order_id"]
+
+    # The venue reported a full fill, so a cumulative status snapshot follows
+    # it. That snapshot -- not the submission -- is the fill evidence.
+    kinds = [record["kind"] for _, record in store.trades]
+    assert kinds == ["submitted", "order_status"]
+    _, snapshot = store.trades[1]
+    assert snapshot["filled_qty"] == 0.1
+    assert snapshot["client_order_id"] == record["client_order_id"]
 
 
 class _PosVenue:

@@ -54,7 +54,14 @@ class PatchBotRequest(BaseModel):
 
 
 class TradeView(BaseModel):
-    """A persisted order event exposed by the trades endpoint."""
+    """One persisted order-lifecycle event exposed by the trades endpoint.
+
+    Since #135 the log holds discrete lifecycle events -- a submission, a fill
+    snapshot, a rejection -- rather than one flat row per order outcome. Rows
+    written before that change carry no ``kind`` and are surfaced as legacy
+    history rather than reinterpreted, since the information needed to
+    classify them honestly was never recorded.
+    """
 
     bot_id: str
     action: str
@@ -66,18 +73,46 @@ class TradeView(BaseModel):
     seq: int | None = None
     """Stable per-bot cursor, used to page backward through history."""
 
+    kind: str | None = None
+    """Lifecycle event kind; ``None`` for legacy rows predating #135."""
+
+    client_order_id: str | None = None
+    """Idempotency key tying this event to its order."""
+
+    side: str | None = None
+    qty: float | None = None
+    """Quantity requested, on a submission or dry run."""
+
+    filled_qty: float | None = None
+    """Cumulative quantity actually traded, on a status snapshot."""
+
+    avg_price: float | None = None
+    reason: str | None = None
+    """Why an order was rejected."""
+
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> "TradeView":
-        """Build a view from a stored trade record, tolerating partial/legacy rows.
+        """Build a view from a stored record, tolerating partial/legacy rows.
 
         Args:
-            record: Raw trade dict read from the store.
+            record: Raw event dict read from the store.
 
         Returns:
-            A ``TradeView`` with missing fields filled by sensible defaults.
+            A ``TradeView`` with missing fields left as ``None`` rather than
+            guessed at. A legacy row has no ``kind``; a ledger event has no
+            ``action``. Neither is coerced into the other's shape.
         """
-        order_id = record.get("order_id")
-        symbol = record.get("symbol")
+        def _str(key: str) -> str | None:
+            value = record.get(key)
+            return str(value) if value is not None else None
+
+        def _num(key: str) -> float | None:
+            value = record.get(key)
+            try:
+                return float(value)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return None
+
         ts = record.get("ts")
         seq = record.get("seq")
         return cls(
@@ -85,10 +120,17 @@ class TradeView(BaseModel):
             action=str(record.get("action", "")),
             status=str(record.get("status", "")),
             ok=bool(record.get("ok", False)),
-            order_id=str(order_id) if order_id is not None else None,
-            symbol=str(symbol) if symbol is not None else None,
+            order_id=_str("order_id") or _str("venue_order_id"),
+            symbol=_str("symbol"),
             ts=int(ts) if ts is not None else None,
             seq=int(seq) if seq is not None else None,
+            kind=_str("kind"),
+            client_order_id=_str("client_order_id"),
+            side=_str("side"),
+            qty=_num("qty"),
+            filled_qty=_num("filled_qty"),
+            avg_price=_num("avg_price"),
+            reason=_str("reason"),
         )
 
 

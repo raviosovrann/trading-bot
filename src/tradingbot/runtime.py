@@ -84,7 +84,8 @@ class CandleProcessor:
             })
             return None
 
-        result = self._router.route(signal)
+        outcome = self._router.route_detailed(signal)
+        result = outcome.result
         if result.status == "dry_run":
             label = "DRY-RUN (not sent)"
         elif result.ok:
@@ -104,6 +105,12 @@ class CandleProcessor:
             "order_id": result.order_id,
             "symbol": signal.symbol,
             "ts": self._candles[-1].timestamp,
+            # The order as submitted and the result in full, so the supervisor
+            # can record durable ledger events rather than reconstructing a
+            # trade from the handful of fields above (#135). A close carries no
+            # order, since it goes through close_position().
+            "order": outcome.order.model_dump(mode="json") if outcome.order else None,
+            "result": result.model_dump(mode="json"),
         })
         return result
 

@@ -40,6 +40,15 @@ function trade(overrides: Partial<Trade> = {}): Trade {
     symbol: 'BTC/USD',
     ts: 1700000000000,
     seq: 1,
+    // Lifecycle fields (#135). Defaulting `kind` to null makes this a legacy
+    // row, which is what these existing tests were written against.
+    kind: null,
+    client_order_id: null,
+    side: null,
+    qty: null,
+    filled_qty: null,
+    avg_price: null,
+    reason: null,
     ...overrides,
   }
 }

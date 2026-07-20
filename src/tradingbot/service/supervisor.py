@@ -6,15 +6,17 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
+from collections.abc import Iterable
 from typing import Any, Callable, cast
 
-from ..models import Candle, Position, PositionSide
+from ..models import Candle, OrderResult, Position, PositionSide
 from ..router import SignalRouter
 from ..runtime import StreamRuntime
 from ..strategies import StrategyContext
 from ..stream import StreamingFeed
 from .blocking import BlockingCalls, BlockingCallTimeout, WorkerPools
 from .events import BotStateEvent, DecisionEvent, EventBus, OrderEvent
+from .ledger import OrderLedger, events_from_payload, events_from_status
 from .registry import build_strategy, build_venue
 from .risk import GlobalExposure
 
@@ -127,6 +129,13 @@ class BotInstance:
 
     lane: Any | None = None
     """Single-worker pool serializing this bot's blocking strategy/order work."""
+
+    ledger: OrderLedger = field(default_factory=OrderLedger)
+    """Projected order state, folded from this bot's persisted lifecycle log.
+
+    In-memory view of durable history (#135). Rebuilt by replaying the log on
+    restore, so it is a cache of the log rather than a second source of truth.
+    """
 
 
 class _HubFeed:
@@ -304,6 +313,7 @@ class BotSupervisor:
             if cfg.id in self._bots:
                 continue
             instance = BotInstance(config=cfg, status="stopped")
+            self._rebuild_ledger(instance)
             self._bots[cfg.id] = instance
             self._publish_state(instance)
             restored += 1
@@ -557,6 +567,10 @@ class BotSupervisor:
         while True:
             await asyncio.sleep(self._state_poll_seconds)
             try:
+                # Chase outstanding orders before reading the position, so a
+                # fill discovered here is reflected in the same pass rather
+                # than a cadence later (#135).
+                await self.reconcile_open_orders(bot)
                 # get_position() is a blocking exchange call; run it on the
                 # venue's pool so a slow venue cannot stall the loop.
                 await self._venue_workers(bot).run(self._refresh_position, bot)
@@ -749,31 +763,191 @@ class BotSupervisor:
         self._publish_state(bot)
 
     def _persist_trade(self, bot: BotInstance, payload: dict[str, Any], event: OrderEvent) -> None:
-        """Append an order event to the store's trade log, if a store is set.
+        """Append this order's lifecycle events to the store's log.
+
+        Writes ledger events -- ``submitted``, ``order_status``, ``dry_run``,
+        ``rejected``, ``canceled`` -- rather than the single flat summary row
+        this used to write. That row named every outcome a "trade", including
+        dry runs and orders the venue had merely acknowledged, which is the
+        misrepresentation #135 exists to remove.
+
+        The events share the existing trade log rather than opening a second
+        one, so segment rotation, #122's paging and #163's archive-on-delete
+        all keep working unchanged. Records are told apart by ``kind``; rows
+        written before this change have none and are read as legacy history.
+
+        A payload carrying no order -- a close, or a legacy event -- yields no
+        ledger events. The flat summary row is still written for those so the
+        operator's history keeps a trace of what happened.
 
         Persistence failures are logged and swallowed so a disk error never
         crashes a running bot.
 
         Args:
             bot: Bot that produced the order.
-            payload: Raw runtime order payload (carries symbol/ts).
+            payload: Raw runtime order payload (carries the order and result).
             event: Structured order event published to the bus.
         """
         if self._store is None:
             return
-        record = {
-            "bot_id": bot.config.id,
-            "action": event.action,
-            "status": event.status,
-            "ok": event.ok,
-            "order_id": event.order_id,
-            "symbol": str(payload.get("symbol", bot.config.symbol)),
-            "ts": int(payload.get("ts", 0)),
-        }
+
+        records = events_from_payload(payload, bot_id=bot.config.id)
+        if not records:
+            records = [{
+                "bot_id": bot.config.id,
+                "action": event.action,
+                "status": event.status,
+                "ok": event.ok,
+                "order_id": event.order_id,
+                "symbol": str(payload.get("symbol", bot.config.symbol)),
+                "ts": int(payload.get("ts", 0)),
+            }]
+
+        self._write_events(bot, records)
+
+    def _write_events(self, bot: BotInstance, records: list[dict[str, Any]]) -> None:
+        """Persist lifecycle events, then fold them into the bot's ledger.
+
+        For events that exist only in the moment they happen -- a submission,
+        the venue's answer to it -- the log is the source of truth and the
+        ledger is a cache of it, so the write happens first. An event that
+        failed to persist must not be visible in the projection, or a restart
+        would silently lose it.
+
+        Args:
+            bot: Bot the events belong to.
+            records: Lifecycle events to write, oldest first.
+        """
+        if self._store is None:
+            return
+        for record in records:
+            try:
+                self._store.append_trade(bot.config.id, record)
+            except Exception:  # pragma: no cover - defensive; disk errors shouldn't kill the bot
+                _log.exception("failed to persist trade for bot %s", bot.config.id)
+                continue
+            bot.ledger.apply(record)
+
+    def _write_polled_events(self, bot: BotInstance, records: list[dict[str, Any]]) -> None:
+        """Fold polled events into the ledger, persisting only what changed.
+
+        The ordering here is deliberately the opposite of ``_write_events``,
+        for a reason specific to polling: a poll re-reads state the venue still
+        holds, so anything lost to a disk error is re-derived by the next poll.
+        That makes it safe to let the projection decide what is worth writing.
+
+        And it has to decide, because polls repeat. An order that sits open
+        answers every poll with the same cumulative snapshot; persisting each
+        one would append a redundant record every few seconds for as long as
+        the order lives, for no information at all. ``apply`` already reports
+        whether an event moved the projection, so that is the filter.
+
+        Args:
+            bot: Bot the events belong to.
+            records: Lifecycle events derived from a status poll, oldest first.
+        """
+        if self._store is None:
+            return
+        for record in records:
+            if not bot.ledger.apply(record):
+                continue
+            try:
+                self._store.append_trade(bot.config.id, record)
+            except Exception:  # pragma: no cover - defensive; the next poll re-derives it
+                _log.exception("failed to persist polled event for bot %s", bot.config.id)
+
+    def _rebuild_ledger(self, bot: BotInstance) -> None:
+        """Rebuild ``bot``'s order ledger by replaying its persisted log.
+
+        The log is the source of truth and the ledger is a projection of it, so
+        recovery after a restart is simply replay -- which is the property
+        event sourcing was chosen for. Orders that were still live when the
+        process died come back non-terminal, which puts them straight back on
+        the reconciliation worklist.
+
+        Nothing is written here. Folding a log is a read, and appending to it
+        during replay would grow the history on every boot.
+
+        A replay that fails, or a record that will not fold, is logged and
+        skipped rather than raised: a corrupt row must cost that row, not the
+        bot and not the service's ability to boot (#108's isolation applied to
+        the trade log).
+
+        Args:
+            bot: Bot whose ledger to rebuild.
+        """
+        replay = getattr(self._store, "replay_trades", None)
+        if not callable(replay):
+            return
         try:
-            self._store.append_trade(bot.config.id, record)
-        except Exception:  # pragma: no cover - defensive; disk errors shouldn't kill the bot
-            _log.exception("failed to persist trade for bot %s", bot.config.id)
+            records = list(cast(Iterable[dict[str, Any]], replay(bot.config.id)))
+        except Exception:  # noqa: BLE001 - a bad log must not stop the service booting
+            _log.exception("failed to replay order log for bot %s", bot.config.id)
+            return
+
+        ledger = OrderLedger()
+        for record in records:
+            try:
+                ledger.apply(record)
+            except Exception:  # noqa: BLE001 - one bad row must not cost the history
+                _log.exception("skipping malformed order record for bot %s", bot.config.id)
+        bot.ledger = ledger
+
+    async def reconcile_open_orders(self, bot: BotInstance) -> None:
+        """Ask the venue about every order that is not yet terminal.
+
+        Venues acknowledge before they fill -- Tradovate always, ccxt often --
+        so an order left alone stays ``submitted`` forever and the position it
+        will create stays invisible. This closes that gap by going back and
+        asking.
+
+        Only non-terminal orders are polled, so the cost is proportional to
+        what is actually outstanding rather than to history. Orders with no
+        venue id never reached the venue and cannot be asked about.
+
+        A venue that raises, or cannot answer at all, leaves its orders open.
+        That is deliberate: not knowing an order's state is different from
+        knowing it failed, and treating the two alike would mark a live order
+        dead in our books while it keeps working at the venue.
+
+        Args:
+            bot: Bot whose outstanding orders to reconcile.
+        """
+        venue = bot.venue
+        fetch = getattr(venue, "fetch_order", None)
+        if venue is None or not callable(fetch):
+            return
+
+        for order in bot.ledger.open_orders(bot_id=bot.config.id):
+            if not order.venue_order_id:
+                continue
+            try:
+                result = await self._venue_workers(bot).run(
+                    fetch, order.venue_order_id, order.symbol
+                )
+            except BlockingCallTimeout:
+                _log.warning(
+                    "order status poll timed out for bot %s order %s",
+                    bot.config.id, order.client_order_id,
+                )
+                continue
+            except Exception:  # noqa: BLE001 - an unreachable venue is not evidence
+                _log.exception(
+                    "order status poll failed for bot %s order %s",
+                    bot.config.id, order.client_order_id,
+                )
+                continue
+
+            self._write_polled_events(
+                bot,
+                events_from_status(
+                    order.client_order_id,
+                    # The worker pool is untyped, so the venue's OrderResult
+                    # comes back as `object`.
+                    cast(OrderResult, result),
+                    ts=order.updated_ts or order.created_ts,
+                ),
+            )
 
     def _handle_event(self, bot: BotInstance, raw: str) -> None:
         """Parse a runtime event and publish it to the event bus.

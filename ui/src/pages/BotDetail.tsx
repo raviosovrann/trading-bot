@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useBot, useDeleteBot, usePatchBot, useStartBot, useStopBot, useTrades } from '../api/hooks'
+import { describeTrade } from '../tradeEvent'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { DecisionLog } from '../components/DecisionLog'
 import { LiveBadge } from '../components/LiveBadge'
@@ -266,32 +267,35 @@ export function BotDetail() {
       </section>
 
       <section className="card">
-        <h2>Trade history</h2>
+        <h2>Order history</h2>
         {trades.length === 0 ? (
-          <p className="muted">No trades recorded yet.</p>
+          <p className="muted">No orders recorded yet.</p>
         ) : (
           <table className="bot-table">
             <thead>
               <tr>
                 <th>Time</th>
-                <th>Action</th>
-                <th>Status</th>
-                <th>OK</th>
+                <th>Event</th>
+                <th>Side</th>
+                <th>Detail</th>
                 <th>Order id</th>
                 <th>Symbol</th>
               </tr>
             </thead>
             <tbody>
-              {trades.map((t, i) => (
-                <tr key={`${t.order_id ?? i}-${t.ts ?? i}`}>
-                  <td>{t.ts ? new Date(t.ts).toLocaleString() : '—'}</td>
-                  <td>{t.action}</td>
-                  <td>{t.status}</td>
-                  <td>{t.ok ? 'yes' : 'no'}</td>
-                  <td>{t.order_id ?? '—'}</td>
-                  <td>{t.symbol ?? '—'}</td>
-                </tr>
-              ))}
+              {trades.map((t, i) => {
+                const event = describeTrade(t)
+                return (
+                  <tr key={`${t.seq ?? t.order_id ?? i}-${t.ts ?? i}`}>
+                    <td>{t.ts ? new Date(t.ts).toLocaleString() : '—'}</td>
+                    <td className={`trade-${event.tone}`}>{event.label}</td>
+                    <td>{t.side ?? t.action ?? '—'}</td>
+                    <td>{event.detail ?? '—'}</td>
+                    <td>{t.order_id ?? '—'}</td>
+                    <td>{t.symbol ?? '—'}</td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         )}

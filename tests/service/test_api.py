@@ -716,13 +716,48 @@ class TestTrades:
         })
         response = client.get(f"/api/bots/{bot_id}/trades", headers=_auth())
         assert response.status_code == 200
+        # A row with no `kind` predates #135. The ledger fields come back null
+        # rather than guessed at: the data needed to classify it honestly was
+        # never recorded, so inventing it would recreate the bug #135 fixes.
         assert response.json() == {
             "items": [{
                 "bot_id": bot_id, "action": "buy", "status": "submitted",
                 "ok": True, "order_id": "o1", "symbol": "BTC/USD", "ts": 42, "seq": 1,
+                "kind": None, "client_order_id": None, "side": None, "qty": None,
+                "filled_qty": None, "avg_price": None, "reason": None,
             }],
             "next_cursor": None,
         }
+
+    def test_get_trades_exposes_ledger_events(self, client: TestClient) -> None:
+        """A #135 lifecycle event is surfaced with its kind and quantities."""
+        bot = TestBotLifecycle()._create(client)
+        bot_id = bot["id"]
+        store = cast(FastAPI, client.app).state.store
+        store.append_trade(bot_id, {
+            "kind": "submitted", "bot_id": bot_id, "client_order_id": "c1",
+            "symbol": "BTC/USD", "side": "buy", "order_type": "market",
+            "qty": 2.0, "price": None, "venue_order_id": "v1", "ts": 42,
+        })
+        store.append_trade(bot_id, {
+            "kind": "order_status", "client_order_id": "c1",
+            "filled_qty": 2.0, "avg_price": 150.0, "ts": 43,
+        })
+
+        response = client.get(f"/api/bots/{bot_id}/trades", headers=_auth())
+        assert response.status_code == 200
+        items = response.json()["items"]
+
+        assert [item["kind"] for item in items] == ["order_status", "submitted"]
+        snapshot, submitted = items
+        assert snapshot["filled_qty"] == 2.0
+        assert snapshot["avg_price"] == 150.0
+        assert submitted["side"] == "buy"
+        assert submitted["qty"] == 2.0
+        # The submission carries no fill evidence, which is the whole point.
+        assert submitted["filled_qty"] is None
+        # venue_order_id surfaces through the existing order_id field.
+        assert submitted["order_id"] == "v1"
 
     def test_get_trades_tolerates_partial_records(self, client: TestClient) -> None:
         """A legacy/partial trade record is coerced, not 500'd."""

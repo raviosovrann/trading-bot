@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .models import Action, Order, OrderResult, Side, Signal
@@ -10,6 +12,20 @@ from .venues.base import ExecutionVenue
 
 if TYPE_CHECKING:
     from .service.risk import GlobalExposure
+
+
+@dataclass(frozen=True)
+class RouteOutcome:
+    """What a routed signal actually sent, and what came back.
+
+    The result alone is not enough to record an order durably: the ledger keys
+    on the client order id, which lives on the submitted ``Order``. A ``close``
+    action goes through ``close_position()`` and constructs no order, so
+    ``order`` is ``None`` there.
+    """
+
+    order: Order | None
+    result: OrderResult
 
 
 class SignalRouter:
@@ -76,8 +92,26 @@ class SignalRouter:
         Raises:
             ValueError: If the signal action is not supported.
         """
+        return self.route_detailed(signal).result
+
+    def route_detailed(self, signal: Signal) -> RouteOutcome:
+        """Route ``signal`` and report the submitted order alongside the result.
+
+        Callers that persist orders need both halves: the ledger records what
+        was sent, keyed on the client order id, and only then folds in what the
+        venue said about it.
+
+        Args:
+            signal: Strategy signal to execute.
+
+        Returns:
+            The submitted order (``None`` for a close) and the venue's result.
+
+        Raises:
+            ValueError: If the signal action is not supported.
+        """
         if signal.action is Action.close:
-            return self._venue.close_position(signal.symbol)
+            return RouteOutcome(None, self._venue.close_position(signal.symbol))
 
         if signal.action is Action.buy:
             side = Side.buy
@@ -92,5 +126,8 @@ class SignalRouter:
             order_type=signal.order_type,
             qty=signal.quantity,
             price=signal.price,
+            # Stamped here, before the venue is touched, so an order that is
+            # submitted but never acknowledged is still identifiable (#135).
+            client_order_id=uuid.uuid4().hex,
         )
-        return self._venue.place_order(order)
+        return RouteOutcome(order, self._venue.place_order(order))
