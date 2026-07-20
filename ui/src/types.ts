@@ -35,12 +35,7 @@ export interface BotView {
 // One order-lifecycle event (#135). The log holds discrete events -- a
 // submission, a fill snapshot, a rejection -- rather than one row per order
 // outcome, so a submitted-but-unfilled order is no longer shown as a trade.
-export type TradeKind =
-  | 'submitted'
-  | 'order_status'
-  | 'dry_run'
-  | 'rejected'
-  | 'canceled'
+export type TradeKind = 'submitted' | 'order_status' | 'dry_run' | 'rejected' | 'canceled'
 
 export interface Trade {
   bot_id: string
