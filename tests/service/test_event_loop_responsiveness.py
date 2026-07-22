@@ -22,7 +22,7 @@ from tradingbot.service.auth import hash_password
 from tradingbot.service.datahub import MarketDataHub
 from tradingbot.service.events import EventBus
 from tradingbot.service.ratelimit import RateLimiter
-from tradingbot.service.risk import GlobalExposure
+from tradingbot.service.exposure import ExposureTracker
 from tradingbot.service.store import BotStore
 from tradingbot.service.supervisor import BotSupervisor
 
@@ -200,7 +200,7 @@ def _build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, strategy=None, fe
     supervisor = BotSupervisor(
         hub_factory=lambda cfg: hub,
         event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
         state_poll_seconds=0.05,
     )
     store = _store(tmp_path)
@@ -287,7 +287,7 @@ async def test_a_slow_bot_does_not_delay_another_bots_start(
         # ETH is the "fast" market; everything else is the stuck one.
         hub_factory=lambda cfg: hubs["fast"] if cfg.symbol.startswith("ETH") else hubs["slow"],
         event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
     )
     app = create_app(store=_store(tmp_path), supervisor=supervisor)
 
@@ -387,7 +387,7 @@ async def test_order_placement_does_not_block_the_loop(
     supervisor = BotSupervisor(
         hub_factory=lambda cfg: hub,
         event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
     )
     app = create_app(store=_store(tmp_path), supervisor=supervisor)
 

@@ -10,7 +10,7 @@ import pytest
 
 from tradingbot.models import Candle, Order, OrderResult, Position
 from tradingbot.service.events import EventBus
-from tradingbot.service.risk import GlobalExposure
+from tradingbot.service.exposure import ExposureTracker
 from tradingbot.service.store import BotStore
 from tradingbot.service.supervisor import BotConfig, BotSupervisor
 
@@ -64,7 +64,7 @@ def _supervisor(monkeypatch, store=None) -> BotSupervisor:
     return BotSupervisor(
         hub_factory=lambda cfg: _FakeHub(),
         event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
         store=store,
     )
 

@@ -25,7 +25,7 @@ from tradingbot.service.events import (
     OrderEvent,
     OverflowEvent,
 )
-from tradingbot.service.risk import GlobalExposure
+from tradingbot.service.exposure import ExposureTracker
 from tradingbot.service.store import BotStore
 from tradingbot.stream import StreamingNotSupported
 from tradingbot.service.supervisor import BotConfig, BotSupervisor
@@ -129,7 +129,7 @@ def _supervisor(monkeypatch: pytest.MonkeyPatch) -> BotSupervisor:
     return BotSupervisor(
         hub_factory=lambda cfg: _FakeHub(),
         event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
     )
 
 
@@ -1253,7 +1253,7 @@ def _supervisor_with_store(monkeypatch: pytest.MonkeyPatch, store: BotStore) -> 
     return BotSupervisor(
         hub_factory=lambda cfg: _FakeHub(),
         event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
         store=store,
     )
 
@@ -1376,7 +1376,7 @@ class TestLifecycleConcurrency:
         supervisor = BotSupervisor(
             hub_factory=lambda cfg: hub,
             event_bus=EventBus(),
-            global_exposure=GlobalExposure(),
+            exposure=ExposureTracker(),
             store=store,
         )
         return create_app(store=store, supervisor=supervisor), supervisor, hub

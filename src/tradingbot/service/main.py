@@ -18,7 +18,7 @@ from .api import create_app
 from .events import EventBus
 from .health import validate_startup
 from .hub_factory import HubFactory
-from .risk import GlobalExposure
+from .exposure import ExposureTracker
 from .store import BotStore
 from .supervisor import BotSupervisor
 
@@ -44,7 +44,7 @@ def create_service_app() -> Any:
     supervisor = BotSupervisor(
         hub_factory=HubFactory(store),
         event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
         store=store,
     )
     # Serve the built SPA from ui/dist (repo root) when present; TRADINGBOT_UI_DIST

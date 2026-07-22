@@ -16,7 +16,7 @@ import pytest
 from tradingbot.models import Candle, Order, OrderResult, Position
 from tradingbot.service.events import EventBus
 from tradingbot.service.ledger import OrderState
-from tradingbot.service.risk import GlobalExposure
+from tradingbot.service.exposure import ExposureTracker
 from tradingbot.service.supervisor import BotConfig, BotSupervisor
 
 
@@ -108,7 +108,7 @@ def _config(bot_id: str = "one") -> BotConfig:
     )
 
 
-async def _started(monkeypatch, venue, store) -> BotSupervisor:
+async def _started(monkeypatch, venue, store, *, exposure=None) -> BotSupervisor:
     monkeypatch.setattr(
         "tradingbot.service.supervisor.build_venue", lambda *a, **k: venue
     )
@@ -118,7 +118,7 @@ async def _started(monkeypatch, venue, store) -> BotSupervisor:
     supervisor = BotSupervisor(
         hub_factory=lambda cfg: _Hub(),
         event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=exposure or ExposureTracker(),
         store=store,
     )
     supervisor.create(_config())
@@ -291,7 +291,7 @@ def _supervisor(store) -> BotSupervisor:
     return BotSupervisor(
         hub_factory=lambda cfg: _Hub(),
         event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
         store=store,
     )
 
@@ -377,3 +377,102 @@ def test_a_legacy_row_is_ignored_by_the_ledger_replay() -> None:
     assert bot is not None
 
     assert [o.client_order_id for o in bot.ledger.orders()] == ["c1"]
+
+
+class _ExposureVenue(_AckOnlyVenue):
+    """Accepts orders unfilled, so exposure starts as a pure reservation."""
+
+
+@pytest.mark.asyncio
+async def test_an_open_order_holds_its_reservation(monkeypatch) -> None:
+    """A submitted-but-unfilled order is real risk and keeps its budget."""
+    store = _Store()
+    tracker = ExposureTracker()
+    supervisor = await _started(
+        monkeypatch, _ExposureVenue(), store, exposure=tracker
+    )
+
+    assert tracker.used("one") > 0
+
+    await supervisor.stop("one")
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_unfilled_order_releases_its_exposure(monkeypatch) -> None:
+    """Nothing traded, so nothing is held -- discovered by the poller."""
+    store = _Store()
+    tracker = ExposureTracker()
+    venue = _ExposureVenue(
+        OrderResult(ok=True, order_id="v1", status="canceled",
+                    filled_qty=0.0, raw={})
+    )
+    supervisor = await _started(monkeypatch, venue, store, exposure=tracker)
+    bot = supervisor.get("one")
+    assert bot is not None
+    assert tracker.used("one") > 0
+
+    await supervisor.reconcile_open_orders(bot)
+
+    assert tracker.used("one") == 0.0
+
+    await supervisor.stop("one")
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_order_releases_its_exposure(monkeypatch) -> None:
+    store = _Store()
+    tracker = ExposureTracker()
+    venue = _ExposureVenue(
+        OrderResult(ok=True, order_id="v1", status="rejected",
+                    filled_qty=0.0, raw={}, error="margin")
+    )
+    supervisor = await _started(monkeypatch, venue, store, exposure=tracker)
+    bot = supervisor.get("one")
+    assert bot is not None
+
+    await supervisor.reconcile_open_orders(bot)
+
+    assert tracker.used("one") == 0.0
+
+    await supervisor.stop("one")
+
+
+@pytest.mark.asyncio
+async def test_a_filled_order_settles_to_its_actual_fill_value(monkeypatch) -> None:
+    """Reserved at the market price; settled at what it actually cost."""
+    store = _Store()
+    tracker = ExposureTracker()
+    venue = _ExposureVenue(
+        OrderResult(ok=True, order_id="v1", status="closed",
+                    filled_qty=0.1, raw={"average": 200.0})
+    )
+    supervisor = await _started(monkeypatch, venue, store, exposure=tracker)
+    bot = supervisor.get("one")
+    assert bot is not None
+
+    await supervisor.reconcile_open_orders(bot)
+
+    # 0.1 filled at 200 = 20, replacing the reservation made at 100.
+    assert tracker.used("one") == pytest.approx(20.0)
+
+    await supervisor.stop("one")
+
+
+@pytest.mark.asyncio
+async def test_settlement_is_idempotent_across_polls(monkeypatch) -> None:
+    store = _Store()
+    tracker = ExposureTracker()
+    venue = _ExposureVenue(
+        OrderResult(ok=True, order_id="v1", status="closed",
+                    filled_qty=0.1, raw={"average": 200.0})
+    )
+    supervisor = await _started(monkeypatch, venue, store, exposure=tracker)
+    bot = supervisor.get("one")
+    assert bot is not None
+
+    for _ in range(3):
+        await supervisor.reconcile_open_orders(bot)
+
+    assert tracker.used("one") == pytest.approx(20.0)
+
+    await supervisor.stop("one")

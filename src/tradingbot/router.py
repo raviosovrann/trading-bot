@@ -11,7 +11,7 @@ from .models import Action, Order, OrderResult, Side, Signal
 from .venues.base import ExecutionVenue
 
 if TYPE_CHECKING:
-    from .service.risk import GlobalExposure
+    from .service.exposure import ExposureTracker
     from .venues.contracts import ContractSpec
 
 
@@ -47,7 +47,8 @@ class SignalRouter:
         *,
         per_bot_cap: float,
         global_cap: float,
-        global_state: "GlobalExposure",
+        exposure: "ExposureTracker",
+        bot_id: str = "",
         price_source: Callable[[], float | None],
         contract: "ContractSpec | None" = None,
     ) -> "SignalRouter":
@@ -61,7 +62,8 @@ class SignalRouter:
             venue: Underlying execution venue.
             per_bot_cap: Maximum notional exposure allowed for one bot.
             global_cap: Maximum notional exposure allowed across all bots.
-            global_state: Shared exposure tracker.
+            exposure: Shared per-bot and global exposure tracker (#110).
+            bot_id: Bot the orders belong to, for per-bot attribution.
             price_source: Callable returning the latest price for notional checks.
             contract: Resolved contract metadata used to compute notional
                 (#124); linear and inverse contracts price differently.
@@ -76,7 +78,8 @@ class SignalRouter:
                 venue,
                 per_bot_cap=per_bot_cap,
                 global_cap=global_cap,
-                global_state=global_state,
+                exposure=exposure,
+                bot_id=bot_id,
                 price_source=price_source,
                 contract=contract,
             )

@@ -19,7 +19,7 @@ from .blocking import BlockingCalls, BlockingCallTimeout, WorkerPools
 from .events import BotStateEvent, DecisionEvent, EventBus, OrderEvent
 from .ledger import OrderLedger, events_from_payload, events_from_status
 from .registry import build_strategy, build_venue
-from .risk import GlobalExposure
+from .exposure import ExposureTracker
 
 _log = logging.getLogger(__name__)
 
@@ -255,7 +255,7 @@ class BotSupervisor:
         *,
         hub_factory: Callable[[BotConfig], Any],
         event_bus: EventBus,
-        global_exposure: GlobalExposure,
+        exposure: ExposureTracker,
         store: Any | None = None,
         state_poll_seconds: float = _STATE_POLL_SECONDS,
         workers: WorkerPools | None = None,
@@ -265,7 +265,7 @@ class BotSupervisor:
         Args:
             hub_factory: Callable that creates a market-data hub for a config.
             event_bus: In-memory event bus used to broadcast bot events.
-            global_exposure: Shared exposure tracker used by risk guards.
+            exposure: Shared per-bot and global exposure tracker (#110).
             store: Optional persistence layer; when set, order events are
                 appended to its trade log in addition to being published.
             state_poll_seconds: How often a running bot re-marks its position
@@ -281,7 +281,7 @@ class BotSupervisor:
             raise ValueError("state_poll_seconds must be positive")
         self._hub_factory = hub_factory
         self._event_bus = event_bus
-        self._global_exposure = global_exposure
+        self._exposure = exposure
         self._store = store
         self._state_poll_seconds = state_poll_seconds
         self._workers = workers if workers is not None else WorkerPools()
@@ -404,7 +404,8 @@ class BotSupervisor:
                 venue,
                 per_bot_cap=bot.config.per_bot_cap,
                 global_cap=bot.config.global_cap,
-                global_state=self._global_exposure,
+                exposure=self._exposure,
+                bot_id=bot.config.id,
                 price_source=lambda: hub.latest_price(bot.config.symbol, bot.config.timeframe),
                 contract=spec,
             )
@@ -852,6 +853,7 @@ class BotSupervisor:
                 _log.exception("failed to persist trade for bot %s", bot.config.id)
                 continue
             bot.ledger.apply(record)
+            self._settle_exposure(bot, record.get("client_order_id"))
 
     def _write_polled_events(self, bot: BotInstance, records: list[dict[str, Any]]) -> None:
         """Fold polled events into the ledger, persisting only what changed.
@@ -876,10 +878,46 @@ class BotSupervisor:
         for record in records:
             if not bot.ledger.apply(record):
                 continue
+            self._settle_exposure(bot, record.get("client_order_id"))
             try:
                 self._store.append_trade(bot.config.id, record)
             except Exception:  # pragma: no cover - defensive; the next poll re-derives it
                 _log.exception("failed to persist polled event for bot %s", bot.config.id)
+
+    def _settle_exposure(self, bot: BotInstance, client_order_id: Any) -> None:
+        """Revise an order's exposure from what the ledger now knows (#110).
+
+        The reservation taken at submission was a guess priced at the market;
+        once the order's fate is known it is replaced by what actually
+        happened. A terminal order with no fill releases its budget entirely,
+        and a filled one is re-priced at the average it actually traded at
+        rather than the price that happened to be showing when it was sent.
+
+        An order that is still open keeps its full reservation, including the
+        unfilled part of a partial fill. That slightly overstates what is
+        held, which is the safe direction: the remainder can still trade.
+
+        Args:
+            bot: Bot the order belongs to.
+            client_order_id: Order to revise; ignored when absent.
+        """
+        if not client_order_id:
+            return
+        order = bot.ledger.order(str(client_order_id))
+        if order is None or not order.is_terminal:
+            return
+
+        contract = bot.contract
+        if order.filled_qty <= 0 or order.avg_price <= 0 or contract is None:
+            # Terminal with nothing traded: dry run, rejection, or a cancel
+            # that beat every fill. Nothing is at risk.
+            self._exposure.settle(bot.config.id, str(client_order_id), 0.0)
+            return
+        try:
+            notional = contract.notional(order.filled_qty, order.avg_price)
+        except ContractMetadataError:
+            return
+        self._exposure.settle(bot.config.id, str(client_order_id), notional)
 
     def _resolve_contract(self, bot: BotInstance, venue: Any) -> ContractSpec:
         """Resolve the bot's contract metadata, failing closed for derivatives.
