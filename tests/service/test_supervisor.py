@@ -10,7 +10,7 @@ import pytest
 from tradingbot.models import Action, Candle, Order, OrderResult, OrderType, Position, PositionSide, Signal
 from tradingbot.service.events import EventBus, OrderEvent
 from tradingbot.router import SignalRouter
-from tradingbot.service.risk import GlobalExposure
+from tradingbot.service.exposure import ExposureTracker
 from tradingbot.service.supervisor import BotConfig, BotSupervisor
 
 
@@ -138,7 +138,7 @@ async def test_supervisor_start_stop_and_order_event(monkeypatch) -> None:
     supervisor = BotSupervisor(
         hub_factory=lambda cfg: hub,
         event_bus=bus,
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
     )
     supervisor.create(_config("one"))
     queue = bus.subscribe()
@@ -197,7 +197,7 @@ async def test_supervisor_persists_order_events(monkeypatch) -> None:
     supervisor = BotSupervisor(
         hub_factory=lambda cfg: _FakeHub(),
         event_bus=bus,
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
         store=store,
     )
     supervisor.create(_config("one"))
@@ -259,7 +259,7 @@ def _order_json() -> str:
 def test_order_event_refreshes_position_and_marks_long_pnl() -> None:
     """On an order event the supervisor reads the venue position and marks PnL."""
     supervisor = BotSupervisor(
-        hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(), global_exposure=GlobalExposure()
+        hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(), exposure=ExposureTracker()
     )
     bot = supervisor.create(_config("one"))
     bot.venue = _PosVenue(Position(symbol="BTC/USD", side=PositionSide.long, size=2.0, entry_price=100.0))
@@ -275,7 +275,7 @@ def test_order_event_refreshes_position_and_marks_long_pnl() -> None:
 def test_short_position_marks_inverse_pnl() -> None:
     """A short position profits when price falls below entry."""
     supervisor = BotSupervisor(
-        hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(), global_exposure=GlobalExposure()
+        hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(), exposure=ExposureTracker()
     )
     bot = supervisor.create(_config("one"))
     bot.venue = _PosVenue(Position(symbol="BTC/USD", side=PositionSide.short, size=2.0, entry_price=100.0))
@@ -290,7 +290,7 @@ def test_short_position_marks_inverse_pnl() -> None:
 def test_flat_position_zeroes_pnl() -> None:
     """When the venue reports no position, PnL resets to zero."""
     supervisor = BotSupervisor(
-        hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(), global_exposure=GlobalExposure()
+        hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(), exposure=ExposureTracker()
     )
     bot = supervisor.create(_config("one"))
     bot.pnl = 5.0
@@ -317,7 +317,7 @@ async def test_two_bots_run_concurrently(monkeypatch) -> None:
     supervisor = BotSupervisor(
         hub_factory=make_hub,
         event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
     )
     supervisor.create(_config("one"))
     supervisor.create(_config("two"))
@@ -343,7 +343,7 @@ def test_restore_loads_persisted_configs_into_supervisor() -> None:
     supervisor = BotSupervisor(
         hub_factory=lambda cfg: _FakeHub(),
         event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
         store=store,
     )
 
@@ -359,7 +359,7 @@ def test_restored_bots_are_not_running() -> None:
     supervisor = BotSupervisor(
         hub_factory=lambda cfg: _FakeHub(),
         event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
         store=store,
     )
 
@@ -378,7 +378,7 @@ def test_restore_does_not_clobber_existing_bots() -> None:
     supervisor = BotSupervisor(
         hub_factory=lambda cfg: _FakeHub(),
         event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
         store=store,
     )
     supervisor.restore()
@@ -394,7 +394,7 @@ def test_restore_without_store_is_a_no_op() -> None:
     supervisor = BotSupervisor(
         hub_factory=lambda cfg: _FakeHub(),
         event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
     )
 
     assert supervisor.restore() == 0
@@ -419,7 +419,7 @@ def _lifecycle_supervisor(monkeypatch, hub_factory) -> BotSupervisor:
     return BotSupervisor(
         hub_factory=hub_factory,
         event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
     )
 
 
@@ -519,7 +519,7 @@ async def test_failed_start_releases_resources_and_allows_retry(monkeypatch) -> 
     supervisor = BotSupervisor(
         hub_factory=lambda cfg: hub,
         event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
     )
     supervisor.create(_config("one"))
 
@@ -594,7 +594,7 @@ def _recording_supervisor(monkeypatch, seen: dict) -> BotSupervisor:
     return BotSupervisor(
         hub_factory=lambda cfg: _FakeHub(),
         event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
     )
 
 
@@ -727,7 +727,7 @@ async def test_a_derivative_without_metadata_refuses_to_start(monkeypatch) -> No
     )
     supervisor = BotSupervisor(
         hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
     )
     supervisor.create(_futures_config("one"))
 
@@ -752,7 +752,7 @@ async def test_a_derivative_venue_that_cannot_describe_contracts_refuses(monkeyp
     )
     supervisor = BotSupervisor(
         hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
     )
     supervisor.create(_futures_config("one"))
 
@@ -771,7 +771,7 @@ async def test_spot_starts_without_a_venue_lookup(monkeypatch) -> None:
     )
     supervisor = BotSupervisor(
         hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
     )
     supervisor.create(_config("one"))
 
@@ -795,7 +795,7 @@ async def test_the_resolved_contract_size_becomes_the_multiplier(monkeypatch) ->
     )
     supervisor = BotSupervisor(
         hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
     )
     supervisor.create(_futures_config("one"))
 

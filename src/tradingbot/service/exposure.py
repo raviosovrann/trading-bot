@@ -37,13 +37,13 @@ class ExposureTracker:
     remaining budget.
     """
 
-    def __init__(self, *, global_cap: float) -> None:
+    def __init__(self) -> None:
         """Initialize the tracker.
 
-        Args:
-            global_cap: Maximum notional exposure across all bots.
+        Holds no caps of its own. Limits are policy and live with the caller
+        -- each bot's configuration carries both its own cap and the global
+        one -- while this only tracks what is currently at risk.
         """
-        self._global_cap = global_cap
         self._lock = threading.Lock()
         self._orders: dict[str, dict[str, float]] = {}
         """bot id -> client order id -> notional currently attributed."""
@@ -55,6 +55,7 @@ class ExposureTracker:
         notional: float,
         *,
         per_bot_cap: float,
+        global_cap: float,
     ) -> bool:
         """Attempt to reserve ``notional`` for an order about to be submitted.
 
@@ -68,6 +69,7 @@ class ExposureTracker:
             client_order_id: The order's idempotency key.
             notional: Quote-currency exposure the order would add.
             per_bot_cap: This bot's cap.
+            global_cap: Cap across all bots.
 
         Returns:
             ``True`` if the reservation was made. ``False`` if it would breach
@@ -87,7 +89,7 @@ class ExposureTracker:
 
             if bot_used + notional > per_bot_cap:
                 return False
-            if global_used + notional > self._global_cap:
+            if global_used + notional > global_cap:
                 return False
 
             bot_orders[client_order_id] = notional
@@ -122,6 +124,41 @@ class ExposureTracker:
                 bot_orders.pop(client_order_id, None)
             else:
                 bot_orders[client_order_id] = amount
+
+    def reduce_bot(self, bot_id: str, notional: float) -> None:
+        """Reduce ``bot_id``'s exposure by ``notional``.
+
+        For a reduce-only fill, which shrinks a position rather than opening
+        one. Applied across the bot's attributed orders oldest first, since a
+        reduction is against the position as a whole and cannot be tied to the
+        order that originally opened it.
+
+        Floors at zero. A venue reporting more reduced than we believed was
+        held must not produce negative exposure, which would hand out budget
+        the bot never earned.
+
+        Args:
+            bot_id: Bot whose exposure to reduce.
+            notional: Quote-currency amount to release.
+        """
+        if not math.isfinite(notional) or notional <= 0:
+            return
+
+        with self._lock:
+            bot_orders = self._orders.get(bot_id)
+            if not bot_orders:
+                return
+            remaining = notional
+            for key in list(bot_orders):
+                if remaining <= 0:
+                    break
+                held = bot_orders[key]
+                applied = min(held, remaining)
+                remaining -= applied
+                if held - applied <= 0:
+                    del bot_orders[key]
+                else:
+                    bot_orders[key] = held - applied
 
     def release_bot(self, bot_id: str) -> None:
         """Drop all exposure attributed to ``bot_id``.

@@ -2,7 +2,7 @@
 
 from tradingbot.models import Action, OrderResult, OrderType, PositionSide, Side, Signal
 from tradingbot.router import SignalRouter
-from tradingbot.service.risk import GlobalExposure
+from tradingbot.service.exposure import ExposureTracker
 
 
 class StubVenue:
@@ -79,7 +79,7 @@ def test_router_with_risk_guard_blocks_orders_over_cap() -> None:
         venue,
         per_bot_cap=99.0,
         global_cap=100.0,
-        global_state=GlobalExposure(),
+        exposure=ExposureTracker(),
         price_source=lambda: 100.0,
     )
     signal = Signal(

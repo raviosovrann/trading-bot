@@ -19,7 +19,7 @@ from .blocking import BlockingCalls, BlockingCallTimeout, WorkerPools
 from .events import BotStateEvent, DecisionEvent, EventBus, OrderEvent
 from .ledger import OrderLedger, events_from_payload, events_from_status
 from .registry import build_strategy, build_venue
-from .risk import GlobalExposure
+from .exposure import ExposureTracker
 
 _log = logging.getLogger(__name__)
 
@@ -255,7 +255,7 @@ class BotSupervisor:
         *,
         hub_factory: Callable[[BotConfig], Any],
         event_bus: EventBus,
-        global_exposure: GlobalExposure,
+        exposure: ExposureTracker,
         store: Any | None = None,
         state_poll_seconds: float = _STATE_POLL_SECONDS,
         workers: WorkerPools | None = None,
@@ -265,7 +265,7 @@ class BotSupervisor:
         Args:
             hub_factory: Callable that creates a market-data hub for a config.
             event_bus: In-memory event bus used to broadcast bot events.
-            global_exposure: Shared exposure tracker used by risk guards.
+            exposure: Shared per-bot and global exposure tracker (#110).
             store: Optional persistence layer; when set, order events are
                 appended to its trade log in addition to being published.
             state_poll_seconds: How often a running bot re-marks its position
@@ -281,7 +281,7 @@ class BotSupervisor:
             raise ValueError("state_poll_seconds must be positive")
         self._hub_factory = hub_factory
         self._event_bus = event_bus
-        self._global_exposure = global_exposure
+        self._exposure = exposure
         self._store = store
         self._state_poll_seconds = state_poll_seconds
         self._workers = workers if workers is not None else WorkerPools()
@@ -404,7 +404,8 @@ class BotSupervisor:
                 venue,
                 per_bot_cap=bot.config.per_bot_cap,
                 global_cap=bot.config.global_cap,
-                global_state=self._global_exposure,
+                exposure=self._exposure,
+                bot_id=bot.config.id,
                 price_source=lambda: hub.latest_price(bot.config.symbol, bot.config.timeframe),
                 contract=spec,
             )

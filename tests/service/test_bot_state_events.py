@@ -8,7 +8,7 @@ import pytest
 
 from tradingbot.models import Action, Candle, Order, OrderResult, OrderType, Position, PositionSide, Signal
 from tradingbot.service.events import BotStateEvent, EventBus, EventSubscription
-from tradingbot.service.risk import GlobalExposure
+from tradingbot.service.exposure import ExposureTracker
 from tradingbot.service.supervisor import BotConfig, BotSupervisor
 
 
@@ -137,7 +137,7 @@ def _supervisor(
     return BotSupervisor(
         hub_factory=lambda cfg: hub,
         event_bus=EventBus(),
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
         state_poll_seconds=poll_seconds,
     )
 
@@ -149,7 +149,7 @@ async def test_create_publishes_initial_state() -> None:
     supervisor = BotSupervisor(
         hub_factory=lambda cfg: _FakeHub(),
         event_bus=bus,
-        global_exposure=GlobalExposure(),
+        exposure=ExposureTracker(),
     )
     queue = bus.subscribe()
 
