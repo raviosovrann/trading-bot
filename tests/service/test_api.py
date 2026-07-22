@@ -1530,3 +1530,74 @@ class TestPatchWhileRunning:
 
         assert response.status_code == 200
         assert response.json()["per_bot_cap"] == 7.0
+
+
+_BOT_BODY = {
+    "venue": "coinbase", "market_type": "spot", "strategy": "example",
+    "symbol": "BTC/USD", "timeframe": "1m", "quantity": 0.1,
+    "per_bot_cap": 1_000.0, "global_cap": 10_000.0, "params": {},
+}
+
+
+class TestCapabilityValidation:
+    """#125: an unsupported venue/strategy pair must be refused at create."""
+
+    def test_an_unsupported_venue_mapping_is_refused(self, client: TestClient) -> None:
+        payload = {**_BOT_BODY, "venue": "coinbase", "market_type": "nonsense"}
+
+        response = client.post("/api/bots", json=payload, headers=_auth())
+
+        assert response.status_code == 400
+        assert "nonsense" in response.json()["detail"]
+
+    def test_a_strategy_needing_short_is_refused_on_spot(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tradingbot.venues.capabilities import StrategyRequirements
+
+        monkeypatch.setattr(
+            "tradingbot.service.api.strategy_requirements",
+            lambda name: StrategyRequirements(requires_short=True),
+        )
+
+        response = client.post(
+            "/api/bots", json={**_BOT_BODY, "market_type": "spot"},
+            headers=_auth(),
+        )
+
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "short" in detail
+
+    def test_the_refusal_creates_no_bot(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rejected pairing must leave no orphan record."""
+        from tradingbot.venues.capabilities import StrategyRequirements
+
+        monkeypatch.setattr(
+            "tradingbot.service.api.strategy_requirements",
+            lambda name: StrategyRequirements(requires_short=True),
+        )
+        before = len(client.get("/api/bots", headers=_auth()).json())
+
+        client.post("/api/bots", json=_BOT_BODY, headers=_auth())
+
+        assert len(client.get("/api/bots", headers=_auth()).json()) == before
+
+    def test_a_compatible_pair_is_still_created(self, client: TestClient) -> None:
+        response = client.post("/api/bots", json=_BOT_BODY, headers=_auth())
+
+        assert response.status_code == 201
+
+    def test_venues_advertise_capabilities_so_the_ui_can_filter(
+        self, client: TestClient
+    ) -> None:
+        venues = client.get("/api/venues", headers=_auth()).json()
+
+        spot = next(
+            v for v in venues
+            if v["venue"] == "coinbase" and v["market_type"] == "spot"
+        )
+        assert spot["supports_short"] is False
+        assert "market" in spot["order_types"]

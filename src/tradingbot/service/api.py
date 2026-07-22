@@ -23,6 +23,8 @@ from fastapi.websockets import WebSocket, WebSocketDisconnect
 
 from ..models import Position
 from ..stream import StreamingNotSupported
+from ..strategies import strategy_requirements
+from ..venues.capabilities import CapabilityError, check_strategy
 from ..venues.contracts import ContractMetadataError
 from .audit import AuditLog
 from .auth import hash_password, needs_rehash, verify_password
@@ -40,7 +42,7 @@ from .events import BotStateEvent, DecisionEvent, OrderEvent, OverflowEvent
 from .health import readiness
 from .login_guard import LoginGuard, LoginLocked
 from .principal import Principal
-from .registry import available_strategies, available_venues
+from .registry import available_strategies, available_venues, venue_capabilities
 from .sessions import SessionStore
 from .store import BotStore
 from .venue_errors import classify_venue_error
@@ -692,8 +694,13 @@ def create_app(
         )
 
     @api_router.get("/venues")
-    async def list_venues(_: Principal = Depends(require_auth)) -> list[dict[str, str]]:
-        """List supported venue/market-type mappings."""
+    async def list_venues(_: Principal = Depends(require_auth)) -> list[dict[str, Any]]:
+        """List supported venue/market-type mappings and their capabilities.
+
+        Capabilities travel with the mapping so the UI can filter out pairings
+        the API would refuse, rather than offering them and failing on create
+        (#125).
+        """
         return available_venues()
 
     @api_router.get("/strategies")
@@ -719,6 +726,20 @@ def create_app(
         Raises:
             HTTPException: If the bot cannot be retrieved after creation.
         """
+        # Validate the pairing BEFORE anything is created or persisted, so a
+        # refusal leaves no orphan record behind (#125).
+        try:
+            capabilities = venue_capabilities(request.venue, request.market_type)
+            check_strategy(
+                request.strategy,
+                strategy_requirements(request.strategy),
+                capabilities,
+            )
+        except (ValueError, CapabilityError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+
         bot_id = str(uuid.uuid4())
         cfg = BotConfig(
             id=bot_id,

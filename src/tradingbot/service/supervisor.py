@@ -11,7 +11,9 @@ from typing import Any, Callable, cast
 
 from ..models import Candle, OrderResult, Position, PositionSide
 from ..router import SignalRouter
+from ..venues.capabilities import check_strategy
 from ..venues.contracts import ContractMetadataError, ContractSpec, spot_spec
+from ..strategies import strategy_requirements
 from ..runtime import StreamRuntime
 from ..strategies import StrategyContext
 from ..stream import StreamingFeed
@@ -19,7 +21,7 @@ from .blocking import BlockingCalls, BlockingCallTimeout, WorkerPools
 from .events import BotStateEvent, DecisionEvent, EventBus, OrderEvent
 from .ledger import OrderLedger, events_from_payload, events_from_status
 from .positions import spot_position
-from .registry import build_strategy, build_venue
+from .registry import build_strategy, build_venue, venue_capabilities
 from .exposure import ExposureTracker
 
 _log = logging.getLogger(__name__)
@@ -402,6 +404,17 @@ class BotSupervisor:
                 creds=bot.config.creds,
                 live=bot.config.live,
             )
+            capabilities = venue_capabilities(
+                bot.config.venue, bot.config.market_type
+            )
+            # Re-checked at start, not only at create (#125): a strategy can
+            # be redeployed with new requirements long after its bots were
+            # created, and create-time validation cannot be run again.
+            check_strategy(
+                bot.config.strategy,
+                strategy_requirements(bot.config.strategy),
+                capabilities,
+            )
             spec = self._resolve_contract(bot, venue)
             multiplier = spec.contract_size
             bot.venue = venue
@@ -424,6 +437,7 @@ class BotSupervisor:
                         bot.ledger.orders(bot_id=bot.config.id)
                     ).quantity
                 ),
+                capabilities=capabilities,
             )
             strategy = build_strategy(
                 bot.config.strategy,

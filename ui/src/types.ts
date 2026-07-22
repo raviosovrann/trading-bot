@@ -87,6 +87,11 @@ export interface PatchBot {
 export interface VenueOption {
   venue: string
   market_type: string
+  // What this pairing can actually do (#125). Carried with the mapping so the
+  // form can describe a choice rather than offering one the API will refuse.
+  supports_short: boolean
+  supports_reduce_only: boolean
+  order_types: string[]
 }
 
 // Returned by POST /api/login and GET /api/session. The browser session lives

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from ..strategies import (
     Strategy,
@@ -10,7 +11,9 @@ from ..strategies import (
     available_strategies as _available_strategies,
     build_strategy as _build_strategy,
 )
+from ..models import OrderType
 from ..venues.base import ExecutionVenue
+from ..venues.capabilities import VenueCapabilities
 from ..venues.ccxt import CcxtVenue
 from ..venues.tradovate import TradovateVenue
 
@@ -62,6 +65,31 @@ def _build_tradovate(creds: _Credentials, live: bool) -> ExecutionVenue:
         raise ValueError(f"Invalid Tradovate credentials: {exc}") from exc
 
 
+_SPOT_CAPABILITIES = dict(
+    supports_short=False,
+    # Spot has no position to reduce: a sell disposes of inventory, and no
+    # exchange-enforced reduce-only flag exists for it.
+    supports_reduce_only=False,
+    order_types=frozenset({OrderType.market, OrderType.limit}),
+)
+_DERIVATIVE_CAPABILITIES = dict(
+    supports_short=True,
+    supports_reduce_only=True,
+    order_types=frozenset({OrderType.market, OrderType.limit}),
+)
+
+_VENUE_CAPABILITIES: dict[tuple[str, str], dict] = {
+    ("coinbase", "spot"): _SPOT_CAPABILITIES,
+    ("coinbase", "futures"): _DERIVATIVE_CAPABILITIES,
+    ("tradovate", "futures"): _DERIVATIVE_CAPABILITIES,
+}
+"""What each supported pair can do (#125).
+
+Kept beside the builders so adding a venue without declaring its
+capabilities is immediately visible -- a test asserts every supported
+mapping has an entry.
+"""
+
 _VENUE_BUILDERS: dict[tuple[str, str], _VenueBuilder] = {
     ("coinbase", "spot"): _ccxt_builder("spot"),
     ("coinbase", "futures"): _ccxt_builder("futures"),
@@ -97,12 +125,43 @@ def build_venue(
     return builder(creds, live)
 
 
-def available_venues() -> list[dict[str, str]]:
-    """Return all supported venue/market-type mappings."""
-    return [
-        {"venue": venue, "market_type": market_type}
-        for venue, market_type in sorted(_VENUE_BUILDERS)
-    ]
+def venue_capabilities(venue: str, market_type: str) -> VenueCapabilities:
+    """Return what the given venue/market pair can do.
+
+    Args:
+        venue: Venue identifier.
+        market_type: Market type.
+
+    Returns:
+        The pair's declared capabilities.
+
+    Raises:
+        ValueError: If the mapping is not supported.
+    """
+    key = (venue.strip().lower(), market_type.strip().lower())
+    traits = _VENUE_CAPABILITIES.get(key)
+    if traits is None:
+        raise ValueError(f"Unsupported venue mapping: {venue!r}/{market_type!r}")
+    return VenueCapabilities(venue=key[0], market_type=key[1], **traits)
+
+
+def available_venues() -> list[dict[str, Any]]:
+    """Return all supported venue/market-type mappings and their capabilities.
+
+    Capabilities are included so the UI can filter incompatible choices rather
+    than offering a pairing the API will refuse (#125).
+    """
+    listing: list[dict[str, Any]] = []
+    for venue, market_type in sorted(_VENUE_BUILDERS):
+        caps = venue_capabilities(venue, market_type)
+        listing.append({
+            "venue": venue,
+            "market_type": market_type,
+            "supports_short": caps.supports_short,
+            "supports_reduce_only": caps.supports_reduce_only,
+            "order_types": sorted(t.value for t in caps.order_types),
+        })
+    return listing
 
 
 def build_strategy(name: str, ctx: StrategyContext) -> Strategy:

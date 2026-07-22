@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from .base import Strategy, StrategyContext
 
+if TYPE_CHECKING:  # pragma: no cover - import cycle guard
+    from ..venues.capabilities import StrategyRequirements
+
 _Factory = Callable[[StrategyContext], Strategy]
 _factories: dict[str, _Factory] = {}
+_candidates: dict[str, Any] = {}
+"""The registered class/factory itself, so its declared requirements can be read."""
 
 
 def strategy(name: str) -> Callable[[Any], Any]:
@@ -43,6 +48,7 @@ def strategy(name: str) -> Callable[[Any], Any]:
             return cast(Strategy, candidate(ctx))
 
         _factories[normalized_name] = factory
+        _candidates[normalized_name] = candidate
         return candidate
 
     return decorator
@@ -69,6 +75,28 @@ def build_strategy(name: str, ctx: StrategyContext) -> Strategy:
     except KeyError as exc:
         raise ValueError(f"Unknown strategy: {normalized_name}") from exc
     return factory(ctx)
+
+
+def strategy_requirements(name: str) -> "StrategyRequirements":
+    """Return what the strategy registered under ``name`` needs from a venue.
+
+    Requirements are opt-in: a strategy that declares nothing gets the empty
+    default and stays valid on every venue. Demanding a declaration would bar
+    every existing strategy from spot for no reason (#125).
+
+    Args:
+        name: Registered strategy name.
+
+    Returns:
+        The strategy's declared requirements, or the empty default.
+    """
+    from ..venues.capabilities import StrategyRequirements
+
+    candidate = _candidates.get(name.strip())
+    declared = getattr(candidate, "requirements", None)
+    if isinstance(declared, StrategyRequirements):
+        return declared
+    return StrategyRequirements()
 
 
 def available_strategies() -> list[str]:
