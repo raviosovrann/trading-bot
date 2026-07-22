@@ -40,6 +40,10 @@ def _ccxt_builder(market_type: str) -> _VenueBuilder:
             str(creds["api_password"]) if creds.get("api_password") else None,
             live=live,
             market_type=market_type,
+            # The venue needs its own limits to refuse a reduce-only order it
+            # cannot have enforced (#121). The exchange id is overridable, so
+            # capabilities are looked up by the declared venue name.
+            capabilities=venue_capabilities("coinbase", market_type),
         )
 
     return build

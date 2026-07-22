@@ -51,10 +51,12 @@ def test_coinbase_spot_builds_ccxt_venue(monkeypatch) -> None:
     )
 
     assert result is sentinel
-    assert calls == {
-        "args": ("coinbase", "key", "secret", "pass"),
-        "kwargs": {"live": True, "market_type": "spot"},
-    }
+    # Asserts the credentials and mode rather than the whole kwargs dict: the
+    # builder also passes capabilities now (#121), covered separately by
+    # TestVenueBuildersCarryCapabilities.
+    assert calls["args"] == ("coinbase", "key", "secret", "pass")
+    assert calls["kwargs"]["live"] is True
+    assert calls["kwargs"]["market_type"] == "spot"
 
 
 def test_coinbase_missing_credentials_raise_helpful_value_error() -> None:
@@ -237,3 +239,46 @@ class TestVenueCapabilities:
         )
 
         assert spot["supports_short"] is False
+
+
+class TestVenueBuildersCarryCapabilities:
+    """A venue must know its own limits to fail reduce-only closed (#121)."""
+
+    def _creds(self):
+        return {"api_key": "k", "api_secret": "s"}
+
+    def test_a_built_ccxt_venue_knows_its_capabilities(self, monkeypatch):
+        from tradingbot.service.registry import build_venue
+
+        built = {}
+
+        def _capture(cls, *args, **kwargs):
+            built.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(
+            "tradingbot.venues.ccxt.CcxtVenue.from_exchange",
+            classmethod(_capture),
+        )
+        build_venue("coinbase", "futures", creds=self._creds(), live=False)
+
+        caps = built.get("capabilities")
+        assert caps is not None, "the venue must be told what it can do"
+        assert caps.supports_reduce_only is True
+
+    def test_a_spot_venue_is_told_it_cannot_reduce_only(self, monkeypatch):
+        from tradingbot.service.registry import build_venue
+
+        built = {}
+
+        def _capture(cls, *args, **kwargs):
+            built.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(
+            "tradingbot.venues.ccxt.CcxtVenue.from_exchange",
+            classmethod(_capture),
+        )
+        build_venue("coinbase", "spot", creds=self._creds(), live=False)
+
+        assert built["capabilities"].supports_reduce_only is False

@@ -447,3 +447,165 @@ def test_close_position_without_an_owned_quantity_still_uses_the_balance():
     venue.close_position("BTC/USD")
 
     assert exchange.created[0]["amount"] == 10.0
+
+
+class _DerivExchange:
+    """Futures exchange recording the params it was called with (#121)."""
+
+    def __init__(self, position=None, reduce_only_supported=True):
+        self._position = position
+        self.reduce_only_supported = reduce_only_supported
+        self.calls = []
+
+    def fetch_positions(self, symbols=None):
+        del symbols
+        return [self._position] if self._position else []
+
+    def create_order(self, symbol, type, side, amount, price=None, params=None):
+        self.calls.append({
+            "symbol": symbol, "type": type, "side": side,
+            "amount": amount, "price": price, "params": params or {},
+        })
+        return {"id": "o1", "status": "closed", "filled": amount}
+
+
+def _long_pos(size=2.0):
+    return {"symbol": "BTC/USD:USD", "contracts": size, "side": "long",
+            "entryPrice": 100.0}
+
+
+def _short_pos(size=2.0):
+    return {"symbol": "BTC/USD:USD", "contracts": size, "side": "short",
+            "entryPrice": 100.0}
+
+
+def _deriv(exchange):
+    return CcxtVenue(exchange, live=True, market_type="futures")
+
+
+class TestCloseDirection:
+    """#121: closing a short with a sell increases the short."""
+
+    def test_a_long_closes_with_a_sell(self):
+        exchange = _DerivExchange(_long_pos())
+
+        _deriv(exchange).close_position("BTC/USD:USD")
+
+        assert exchange.calls[0]["side"] == "sell"
+
+    def test_a_short_closes_with_a_buy(self):
+        """The bug: this used to send a sell and double the short."""
+        exchange = _DerivExchange(_short_pos())
+
+        _deriv(exchange).close_position("BTC/USD:USD")
+
+        assert exchange.calls[0]["side"] == "buy"
+
+    def test_a_flat_position_sends_nothing(self):
+        exchange = _DerivExchange(None)
+
+        result = _deriv(exchange).close_position("BTC/USD:USD")
+
+        assert exchange.calls == []
+        assert result.status == "no position"
+
+    def test_the_full_position_size_is_closed(self):
+        exchange = _DerivExchange(_short_pos(3.5))
+
+        _deriv(exchange).close_position("BTC/USD:USD")
+
+        assert exchange.calls[0]["amount"] == 3.5
+
+    def test_a_dry_run_close_sends_nothing(self):
+        exchange = _DerivExchange(_short_pos())
+        venue = CcxtVenue(exchange, live=False, market_type="futures")
+
+        result = venue.close_position("BTC/USD:USD")
+
+        assert exchange.calls == []
+        assert result.status == "dry_run"
+        # The direction still has to be right in what it reports.
+        assert result.raw["side"] == "buy"
+
+    def test_an_exchange_rejection_is_reported(self):
+        class _Rejecting(_DerivExchange):
+            def create_order(self, *a, **k):
+                raise RuntimeError("insufficient margin")
+
+        result = _deriv(_Rejecting(_long_pos())).close_position("BTC/USD:USD")
+
+        assert result.ok is False
+        assert "margin" in (result.error or "")
+
+
+class TestReduceOnlyPropagation:
+    """The flag was set on the Order and then dropped before create_order."""
+
+    def test_a_derivative_close_sends_reduce_only(self):
+        exchange = _DerivExchange(_long_pos())
+
+        _deriv(exchange).close_position("BTC/USD:USD")
+
+        assert exchange.calls[0]["params"].get("reduceOnly") is True
+
+    def test_a_normal_derivative_order_does_not_send_reduce_only(self):
+        exchange = _DerivExchange()
+        order = Order(symbol="BTC/USD:USD", side=Side.buy,
+                      order_type=OrderType.market, qty=1.0)
+
+        _deriv(exchange).place_order(order)
+
+        assert "reduceOnly" not in exchange.calls[0]["params"]
+
+    def test_spot_never_sends_derivative_params(self):
+        """Spot exchanges reject unknown parameters."""
+        exchange = _DerivExchange()
+        order = Order(symbol="BTC/USD", side=Side.sell,
+                      order_type=OrderType.market, qty=1.0, reduce_only=True)
+
+        CcxtVenue(exchange, live=True, market_type="spot").place_order(order)
+
+        assert exchange.calls[0]["params"] == {}
+
+
+class TestReduceOnlyFailsClosed:
+    """A reduce-only order that cannot be guaranteed must not be sent."""
+
+    def test_a_derivative_that_cannot_guarantee_reduce_only_is_refused(self):
+        from tradingbot.venues.capabilities import VenueCapabilities
+
+        exchange = _DerivExchange(_long_pos())
+        venue = CcxtVenue(
+            exchange, live=True, market_type="futures",
+            capabilities=VenueCapabilities(
+                venue="x", market_type="futures", supports_short=True,
+                supports_reduce_only=False,
+                order_types=frozenset({OrderType.market}),
+            ),
+        )
+        order = Order(symbol="BTC/USD:USD", side=Side.sell,
+                      order_type=OrderType.market, qty=1.0, reduce_only=True)
+
+        result = venue.place_order(order)
+
+        assert result.ok is False
+        assert exchange.calls == [], "an unguaranteed reduce-only must not be sent"
+        assert "reduce-only" in (result.error or "").lower()
+
+    def test_a_non_reduce_only_order_is_unaffected(self):
+        from tradingbot.venues.capabilities import VenueCapabilities
+
+        exchange = _DerivExchange()
+        venue = CcxtVenue(
+            exchange, live=True, market_type="futures",
+            capabilities=VenueCapabilities(
+                venue="x", market_type="futures", supports_short=True,
+                supports_reduce_only=False,
+                order_types=frozenset({OrderType.market}),
+            ),
+        )
+        order = Order(symbol="BTC/USD:USD", side=Side.buy,
+                      order_type=OrderType.market, qty=1.0)
+
+        assert venue.place_order(order).ok is True
+        assert len(exchange.calls) == 1
