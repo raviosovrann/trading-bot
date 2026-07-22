@@ -10,7 +10,7 @@ from typing import Any
 
 from .models import Candle, OrderResult
 from .router import SignalRouter
-from .strategy import Strategy
+from .strategies.base import Strategy
 from .stream import StreamingFeed, run_with_reconnect
 
 _log = logging.getLogger(__name__)
@@ -32,6 +32,20 @@ class CandleProcessor:
         on_event: Callable[[str], None] | None = None,
         event_symbol: str | None = None,
     ) -> None:
+        """Configure the decision core.
+
+        Args:
+            strategy: Evaluated against the whole buffer on each new bar.
+            router: Turns a signal into an order against the venue.
+            max_buffer: Candles retained. Caps memory on a long-running bot,
+                so it must exceed the longest lookback the strategy needs --
+                a buffer trimmed below that silently stops producing signals.
+            on_event: Receives JSON-encoded decision and order events. Its
+                failures are logged and swallowed: an observer must never
+                prevent an order from being processed.
+            event_symbol: Symbol stamped on emitted events, for the supervisor
+                to attribute them when several bots share an event stream.
+        """
         self._strategy = strategy
         self._router = router
         self._max_buffer = max_buffer
@@ -49,6 +63,11 @@ class CandleProcessor:
 
     @property
     def candles(self) -> tuple[Candle, ...]:
+        """The current buffer, oldest-first.
+
+        A tuple copy rather than the live list: callers inspecting state must
+        not be able to mutate what the strategy will next be evaluated on.
+        """
         return tuple(self._candles)
 
     def _trim(self) -> None:
@@ -56,6 +75,16 @@ class CandleProcessor:
             self._candles = self._candles[-self._max_buffer:]
 
     def seed(self, candles: Iterable[Candle]) -> None:
+        """Bulk-load warmup history into the buffer.
+
+        Unlike ``add_candle`` this does not dedup or check ordering: it is the
+        initial REST fill into an empty buffer, before any streaming bar has
+        arrived. Gap-fill after an outage goes through ``process_candle``
+        instead, precisely because that overlap does need deduping.
+
+        Args:
+            candles: Closed candles, oldest-first.
+        """
         self._candles.extend(candles)
         self._trim()
 
@@ -114,6 +143,19 @@ class CandleProcessor:
         return result
 
     def process_candle(self, candle: Candle) -> OrderResult | None:
+        """Buffer a candle and evaluate the strategy if it was genuinely new.
+
+        The dedup guard is what makes gap-fill safe to overlap with the live
+        stream: a bar already seen is dropped without re-running the strategy,
+        so a reconnect that refetches recent history cannot re-trade it.
+
+        Args:
+            candle: A closed candle from the feed or a gap-fill.
+
+        Returns:
+            The routed order's result, or None if the candle was a duplicate
+            or the strategy produced no signal.
+        """
         # Streaming path: only evaluate on a genuinely new bar.
         if not self.add_candle(candle):
             return None
@@ -145,6 +187,33 @@ class StreamRuntime:
         on_event: Callable[[str], None] | None = None,
         run_blocking: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
+        """Wire the feed to a decision core and warm the buffer.
+
+        Warmup happens here rather than in ``start`` so that construction
+        either yields a runnable bot or fails outright -- a runtime that
+        reported ``running`` on an empty buffer would look healthy while being
+        unable to produce a signal.
+
+        Args:
+            feed: Push feed supplying live bars and REST history.
+            strategy: Evaluated on each new bar.
+            router: Routes signals to the venue.
+            symbol: Symbol this runtime trades.
+            timeframe: Candle interval.
+            warmup_bars: History fetched before streaming. Must cover the
+                strategy's lookback or it cannot signal until enough live bars
+                accumulate. Non-positive skips warmup entirely.
+            max_buffer: Candles retained by the processor.
+            base_backoff: Initial reconnect delay, in seconds.
+            max_backoff: Ceiling on the reconnect delay, in seconds.
+            gapfill_bars: Bars refetched after an outage. Should exceed the
+                bars a plausible outage spans, since anything older than this
+                window is simply lost.
+            on_event: Receives JSON-encoded decision and order events.
+            run_blocking: Runs sync venue calls off the event loop. The service
+                passes its per-bot worker lane so that work serializes with
+                incoming bars (#111); standalone use gets a plain thread.
+        """
         # Strategy evaluation and gap-fill both reach synchronous venue calls.
         # The service hands in its per-bot worker lane so that work is
         # serialized with incoming bars and kept off the event loop (#111);
@@ -173,6 +242,7 @@ class StreamRuntime:
 
     @property
     def candles(self) -> tuple[Candle, ...]:
+        """The processor's current buffer, oldest-first."""
         return self._proc.candles
 
     def _on_candle(self, candle: Candle) -> None:
@@ -181,6 +251,17 @@ class StreamRuntime:
         self._proc.process_candle(candle)
 
     def start(self, *, install_signals: bool = True, sleep: Callable[[float], None] = time.sleep) -> None:
+        """Evaluate the warmed buffer, then stream until stopped.
+
+        Blocks for the life of the bot. Use ``start_async`` under the service,
+        which supervises many bots on one event loop.
+
+        Args:
+            install_signals: Install SIGINT/SIGTERM handlers. Only safe on the
+                main thread of a process this runtime owns -- the service runs
+                bots on worker threads and manages its own shutdown.
+            sleep: Injected for tests, to avoid real reconnect delays.
+        """
         if install_signals:
             self._install_signal_handlers()
         # Evaluate the warmed buffer immediately so we act on an already-valid
@@ -241,6 +322,15 @@ class StreamRuntime:
             self._proc.process_candle(candle)
 
     def stop(self) -> None:
+        """Stop streaming and close the feed. Idempotent.
+
+        The guard matters: ``stop`` arrives from a signal handler, the
+        supervisor, or both at once during shutdown, and the feed underneath
+        is not guaranteed to tolerate a second close.
+
+        In-flight work is not interrupted -- the loop exits after the message
+        it is handling, so an order already being routed still completes.
+        """
         if self._stopped:
             return
         self._stopped = True

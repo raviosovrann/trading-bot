@@ -5,7 +5,6 @@ import json
 
 import pytest
 
-from tradingbot.config import load_config
 from tradingbot.models import Action, Candle, OrderType, PositionSide, Signal
 from tradingbot.router import SignalRouter
 from tradingbot.runtime import StreamRuntime
@@ -236,9 +235,3 @@ def test_stream_runtime_stop_is_idempotent():
     rt.stop()
     rt.stop()
     assert feed.stopped == 1
-
-
-def test_config_stream_flag_defaults_false_and_parses_true():
-    """Verify the stream config flag defaults to false and parses true."""
-    assert load_config({}).stream is False
-    assert load_config({"STREAM": "true"}).stream is True

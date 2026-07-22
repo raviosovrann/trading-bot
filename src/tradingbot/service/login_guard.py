@@ -29,6 +29,14 @@ class LoginLocked(Exception):
     """
 
     def __init__(self, retry_after: float) -> None:
+        """Build the error, rounding the wait up to at least one second.
+
+        A sub-second remainder would truncate to ``0``, which reads to a client
+        as "retry immediately" and would defeat the lockout on its last tick.
+
+        Args:
+            retry_after: Seconds until the lock expires.
+        """
         self.retry_after = max(1, int(retry_after))
         super().__init__(f"locked out for {self.retry_after}s")
 

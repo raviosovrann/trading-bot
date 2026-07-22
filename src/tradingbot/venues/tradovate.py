@@ -38,6 +38,17 @@ _CONTRACT_MULTIPLIERS: dict[str, float] = {
 
 
 class TradovateVenue:
+    """Execution venue for Tradovate CME futures, long and short.
+
+    Tradovate is natively position-based and symmetric: a short is a genuine
+    negative ``netPos`` rather than a margin loan, so ``close_position``
+    reverses the sign without the spot-only special cases ``CcxtVenue`` needs.
+
+    Orders confirm acceptance, not execution -- ``place_order`` returns
+    ``submitted`` with ``filled_qty=0`` because Tradovate reports fills
+    asynchronously. Callers wanting fills must reconcile from the ledger.
+    """
+
     def __init__(
         self,
         client: Any | None = None,
@@ -46,6 +57,21 @@ class TradovateVenue:
         account_spec: str | None = None,
         live: bool = False,
     ) -> None:
+        """Wrap an injected HTTP client.
+
+        Args:
+            client: Client exposing ``place_order``/``list_positions``/
+                ``account``. Required -- injecting it is what keeps the venue
+                testable without network.
+            account_id: Numeric Tradovate account id. Both this and
+                ``account_spec`` are needed to place a live order.
+            account_spec: Account name Tradovate expects alongside the id.
+            live: When False, orders short-circuit to ``dry_run`` and the
+                broker is never contacted.
+
+        Raises:
+            ValueError: If ``client`` is None.
+        """
         if client is None:
             raise ValueError("TradovateVenue requires a client or use from_credentials(...)")
         self._client = client
@@ -66,6 +92,33 @@ class TradovateVenue:
         live: bool = False,
         device_id: str = "",
     ) -> "TradovateVenue":
+        """Authenticate and resolve the trading account in one step.
+
+        The account lookup is not optional bookkeeping: Tradovate requires both
+        the numeric id and the account name on every order, and discovering
+        them here means a misconfigured account fails at construction rather
+        than on the first live trade.
+
+        ``live`` selects the API host, so a demo venue physically cannot reach
+        the live broker even if the dry-run guard were bypassed.
+
+        Args:
+            name: Tradovate username.
+            password: Tradovate password.
+            app_id: Registered application id.
+            app_version: Application version string.
+            cid: API client id.
+            sec: API client secret.
+            live: Selects the live host over demo, and arms real orders.
+            device_id: Device identifier Tradovate associates with the session.
+
+        Returns:
+            A venue bound to the resolved account.
+
+        Raises:
+            RuntimeError: If httpx is missing, auth fails, or the account
+                response carries no usable id and name.
+        """
         if httpx is None:
             raise RuntimeError("httpx is not installed")
         base = _LIVE_BASE if live else _DEMO_BASE
@@ -83,6 +136,26 @@ class TradovateVenue:
         return cls(client, account_id=account_id, account_spec=account_spec, live=live)
 
     def place_order(self, order: Order) -> OrderResult:
+        """Submit an order, or simulate it when not live.
+
+        Never raises: every failure -- transport, rejection, misconfiguration
+        -- comes back as an ``OrderResult`` with ``ok=False``. A trading loop
+        that dies on one bad order stops managing the positions it already
+        holds, which is worse than the rejected order itself.
+
+        A successful result means *accepted*, not filled: ``status`` is
+        ``submitted`` and ``filled_qty`` is 0, because Tradovate delivers fills
+        asynchronously.
+
+        Args:
+            order: Order to place. ``reduce_only`` is passed through so the
+                broker enforces that a close cannot flip into a new position.
+
+        Returns:
+            ``dry_run`` when not live; ``submitted`` on acceptance;
+            ``rejected`` when the broker refuses; ``error`` on transport
+            failure or a missing account.
+        """
         # LIVE guard: when not live, never touch the broker.
         if not self._live:
             return OrderResult(
@@ -149,6 +222,23 @@ class TradovateVenue:
             )
 
     def get_position(self, symbol: str) -> Position | None:
+        """Return the open position in ``symbol``, or None if flat.
+
+        A netted position below ``_FLAT_TOL`` reads as flat rather than as a
+        dust-sized holding, so float noise in ``netPos`` cannot provoke a close
+        order for effectively nothing.
+
+        Note a transport failure is also reported as None -- indistinguishable
+        from genuinely flat. That is the conservative direction for the one
+        caller that matters, ``close_position``, which then does nothing rather
+        than sizing a close off an unknown position.
+
+        Args:
+            symbol: Tradovate contract symbol to look up.
+
+        Returns:
+            The position, or None when flat or unreadable.
+        """
         try:
             positions = self._client.list_positions(self._account_id)
         except Exception:
@@ -166,6 +256,19 @@ class TradovateVenue:
         return None
 
     def close_position(self, symbol: str) -> OrderResult:
+        """Flatten ``symbol`` with a reduce-only market order.
+
+        Symmetric across directions because Tradovate holds real shorts: the
+        close is simply the opposite side, sized to the position. Sent
+        reduce-only so a position that shrank between the read and the order
+        cannot be flipped into a new one in the other direction (#121).
+
+        Args:
+            symbol: Tradovate contract symbol to flatten.
+
+        Returns:
+            The closing order's result, or ``no position`` when already flat.
+        """
         pos = self.get_position(symbol)
         if pos is None or pos.side is PositionSide.flat or pos.size < _FLAT_TOL:
             return OrderResult(
@@ -183,6 +286,15 @@ class TradovateVenue:
         )
 
     def health_check(self) -> bool:
+        """Report whether the venue is reachable and the session still valid.
+
+        Uses the account endpoint because it exercises the parts that actually
+        break in practice -- network reachability and an unexpired access token
+        -- rather than merely that the host answers.
+
+        Returns:
+            True if the account call succeeded.
+        """
         try:
             self._client.account()
             return True
@@ -231,8 +343,27 @@ class TradovateVenue:
 
 
 class _TradovateAuth:
+    """Access-token exchange, split out so it can be faked in tests."""
+
     @staticmethod
     def access_token(base_url: str, creds: dict) -> str:
+        """Exchange credentials for a bearer token.
+
+        Tradovate signals auth failure in a 200 response body rather than an
+        HTTP status, so a missing ``accessToken`` is checked explicitly --
+        ``raise_for_status`` alone would let a failed login through.
+
+        Args:
+            base_url: Demo or live API base, with its trailing slash.
+            creds: Credential payload for ``auth/accesstokenrequest``.
+
+        Returns:
+            The bearer token.
+
+        Raises:
+            RuntimeError: If the response carries no token.
+            httpx.HTTPError: On transport failure or a non-2xx status.
+        """
         # base_url ends with "/"; use a relative path so "/v1" is preserved.
         resp = httpx.post(f"{base_url}auth/accesstokenrequest", json=creds, timeout=15.0)  # type: ignore[union-attr]
         resp.raise_for_status()
@@ -253,6 +384,13 @@ class _TradovateClient:
     """
 
     def __init__(self, base_url: str, access_token: str) -> None:
+        """Open a persistent HTTP session carrying the bearer token.
+
+        Args:
+            base_url: Demo or live API base, with its trailing slash so httpx
+                preserves the ``/v1`` segment when joining request paths.
+            access_token: Bearer token from :class:`_TradovateAuth`.
+        """
         self._base = base_url
         self._http = httpx.Client(  # type: ignore[union-attr]
             base_url=base_url,
@@ -272,6 +410,28 @@ class _TradovateClient:
 
     def place_order(self, account_id, account_spec, action, symbol, qty,
                     order_type, price=None, reduce_only=False) -> dict:
+        """POST an order to ``order/placeorder``.
+
+        Marked ``isAutomated`` because Tradovate requires algorithmic orders to
+        declare themselves; omitting it risks the order being refused.
+
+        Args:
+            account_id: Numeric account id.
+            account_spec: Account name matching ``account_id``.
+            action: ``Buy`` or ``Sell``.
+            symbol: Contract symbol.
+            qty: Order quantity in contracts.
+            order_type: ``Market`` or ``Limit``.
+            price: Limit price; omitted for market orders.
+            reduce_only: Ask the broker to refuse anything that would open or
+                extend a position.
+
+        Returns:
+            The decoded order response, including any ``failureReason``.
+
+        Raises:
+            httpx.HTTPError: On transport failure or a non-2xx status.
+        """
         payload: dict[str, Any] = {
             "accountId": account_id,
             "accountSpec": account_spec,
@@ -288,6 +448,22 @@ class _TradovateClient:
         return self._post("order/placeorder", payload)
 
     def list_positions(self, account_id) -> list[dict]:
+        """List open positions, resolving contract ids to symbols.
+
+        ``position/list`` identifies contracts by id rather than name, so rows
+        without a symbol cost an extra ``contract/item`` lookup each. Rows are
+        filtered to ``account_id`` when it is known; rows carrying no account
+        are kept, since the endpoint omits it for single-account sessions.
+
+        Args:
+            account_id: Account to filter to, or None to keep every row.
+
+        Returns:
+            Dicts of ``symbol``, ``netPos`` and ``netPrice``.
+
+        Raises:
+            httpx.HTTPError: On transport failure or a non-2xx status.
+        """
         rows = self._get("position/list")
         out: list[dict] = []
         for r in rows:
@@ -303,6 +479,19 @@ class _TradovateClient:
         return out
 
     def account(self) -> dict:
+        """Return the session's first trading account.
+
+        Takes the first entry rather than choosing: this client assumes a
+        single-account login, which is what the bot is configured for. A
+        multi-account session would need the account selected explicitly.
+
+        Returns:
+            The account record, including ``id`` and ``name``.
+
+        Raises:
+            RuntimeError: If the session has no accounts.
+            httpx.HTTPError: On transport failure or a non-2xx status.
+        """
         rows = self._get("account/list")
         if not rows:
             raise RuntimeError("no Tradovate account")
