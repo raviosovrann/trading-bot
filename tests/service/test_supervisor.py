@@ -169,6 +169,24 @@ class _RecordingStore:
         self.trades.append((bot_id, order_event))
 
 
+async def _wait_for_trades(
+    store: _RecordingStore, count: int, *, timeout: float = 2.0
+) -> None:
+    """Wait until ``store`` holds at least ``count`` records.
+
+    Order persistence runs on the bot's worker lane rather than the event
+    loop, so no event on the bus proves the write has landed. Polling the
+    store itself is the only honest signal.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while len(store.trades) < count:
+        assert loop.time() < deadline, (
+            f"expected {count} persisted records, got {len(store.trades)}"
+        )
+        await asyncio.sleep(0.01)
+
+
 @pytest.mark.asyncio
 async def test_supervisor_persists_order_events(monkeypatch) -> None:
     """Order events are appended to the store, not only published to the bus."""
@@ -186,7 +204,12 @@ async def test_supervisor_persists_order_events(monkeypatch) -> None:
     queue = bus.subscribe()
 
     await supervisor.start("one")
-    await asyncio.wait_for(queue.get(), timeout=1.0)  # wait until the order fired
+    # Persistence happens on the bot's worker lane (#111), not the event loop,
+    # so a bus event is not evidence the store has been written. Waiting on
+    # the first bus frame -- which is a state snapshot, not the order -- made
+    # this flaky: it failed on CI's 3.11 runner while 3.11 passed locally.
+    # Wait for the actual condition instead.
+    await _wait_for_trades(store, 2)
     await supervisor.stop("one")
 
     assert store.trades, "expected the order event to be persisted"
