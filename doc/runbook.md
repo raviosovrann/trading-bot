@@ -570,9 +570,11 @@ secrets).
 | `TRADINGBOT_LOGIN_MAX_FAILURES` | `5` | Failures (per username and per IP) before lockout. |
 | `TRADINGBOT_LOGIN_LOCKOUT_SECONDS` | `300` | Lockout window (s). |
 
-**Single-bot CLI** (`python -m tradingbot`) uses the separate `EXCHANGE`,
-`API_KEY`, `API_SECRET`, `API_PASSWORD`, `SYMBOL`, `TIMEFRAME`, `ORDER_QTY`,
-`STRATEGY`, `STREAM`, `LIVE` variables documented in the root README.
+The single-bot CLI (`python -m tradingbot`) and its `EXCHANGE` / `API_KEY` /
+`SYMBOL` / `STRATEGY` / `LIVE` environment variables were **removed in #177**.
+The web service is the only supported way to run a bot; create and start one
+through the console, which stores credentials encrypted rather than reading
+them from the environment.
 
 ### Safe key and credential handling
 
