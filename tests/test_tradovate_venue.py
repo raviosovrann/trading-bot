@@ -162,14 +162,18 @@ def test_health_check_true_then_false():
     assert _venue(_FakeClient(account_raises=True)).health_check() is False
 
 
-def test_contract_multiplier_micro_and_standard():
-    """Verify contract multiplier values for micro and standard contracts."""
+def test_contract_sizes_for_micro_and_standard():
+    """Verify contract sizes for micro and standard contracts.
+
+    Was ``contract_multiplier``, which returned 1.0 for an unknown product and
+    called it a safe default. #124 replaced that: see ``TestContractSpec`` for
+    the refusal. The known-product coverage is kept here unchanged.
+    """
     v = _venue(_FakeClient())
-    assert v.contract_multiplier("MBTF6") == 0.1    # Micro Bitcoin = 0.1 BTC
-    assert v.contract_multiplier("METF6") == 0.1    # Micro Ether = 0.1 ETH
-    assert v.contract_multiplier("BTCF6") == 5.0    # Bitcoin (full) = 5 BTC
-    assert v.contract_multiplier("ETHF6") == 50.0   # Ether (full) = 50 ETH
-    assert v.contract_multiplier("UNKNOWN") == 1.0  # safe default
+    assert v.contract_spec("MBTF6").contract_size == 0.1    # Micro Bitcoin = 0.1 BTC
+    assert v.contract_spec("METF6").contract_size == 0.1    # Micro Ether = 0.1 ETH
+    assert v.contract_spec("BTCF6").contract_size == 5.0    # Bitcoin (full) = 5 BTC
+    assert v.contract_spec("ETHF6").contract_size == 50.0   # Ether (full) = 50 ETH
 
 
 # --- from_credentials offline guard --------------------------------------- #
@@ -183,3 +187,48 @@ def test_from_credentials_requires_httpx(monkeypatch):
         tv.TradovateVenue.from_credentials(
             name="u", password="p", app_id="a", app_version="1", cid="1", sec="s",
         )
+
+
+class TestContractSpec:
+    """Tradovate contract metadata (#124).
+
+    The venue shipped a four-entry hard-coded table and returned 1.0 for
+    anything else. The table is retained -- CME contract sizes are published
+    facts, not venue state -- but an unknown product now refuses instead of
+    inventing a multiplier.
+    """
+
+    def _venue(self):
+        return TradovateVenue(client=object(), account_id=1, account_spec="s")
+
+    def test_a_known_micro_contract_resolves_to_its_published_size(self):
+        spec = self._venue().contract_spec("MBTF6")
+
+        assert spec.contract_size == 0.1
+        assert spec.is_derivative is True
+        assert spec.linear is True
+
+    def test_a_known_full_size_contract_resolves(self):
+        assert self._venue().contract_spec("BTCF6").contract_size == 5.0
+
+    def test_the_longest_matching_prefix_wins(self):
+        # "MBT" must not be resolved as "BTC" or vice versa; they differ 50x.
+        micro = self._venue().contract_spec("MBTF6").contract_size
+        full = self._venue().contract_spec("BTCF6").contract_size
+
+        assert micro == 0.1 and full == 5.0
+
+    def test_an_unknown_product_is_refused_not_defaulted_to_one(self):
+        """The #124 acceptance criterion, on the venue that had the bug."""
+        from tradingbot.venues.contracts import ContractMetadataError
+
+        with pytest.raises(ContractMetadataError, match="ESZ5|unknown|not known"):
+            self._venue().contract_spec("ESZ5")
+
+    def test_the_refusal_names_the_symbol_for_the_operator(self):
+        from tradingbot.venues.contracts import ContractMetadataError
+
+        with pytest.raises(ContractMetadataError) as excinfo:
+            self._venue().contract_spec("NQZ5")
+
+        assert "NQZ5" in str(excinfo.value)

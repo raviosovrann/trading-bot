@@ -23,6 +23,7 @@ from fastapi.websockets import WebSocket, WebSocketDisconnect
 
 from ..models import Position
 from ..stream import StreamingNotSupported
+from ..venues.contracts import ContractMetadataError
 from .audit import AuditLog
 from .auth import hash_password, needs_rehash, verify_password
 from .dto import (
@@ -857,11 +858,11 @@ def create_app(
         bot.config.creds = _load_credentials(store, bot.config.venue, bot.config.market_type)
         try:
             await supervisor.start(bot_id)
-        except (ValueError, StreamingNotSupported) as exc:
-            # StreamingNotSupported is an operator-actionable configuration
-            # problem (this venue cannot stream this market), not a server
-            # fault — surfacing it as a 500 would hide the one detail that
-            # tells them what to change.
+        except (ValueError, StreamingNotSupported, ContractMetadataError) as exc:
+            # These are operator-actionable configuration problems — this venue
+            # cannot stream this market (#170), or it will not say what one
+            # contract is worth (#124) — not server faults. Surfacing them as a
+            # 500 would hide the one detail that tells them what to change.
             _audit(
                 http_request, principal, "bot.start", f"bot:{bot_id}", "failure",
                 after={"error": str(exc)},

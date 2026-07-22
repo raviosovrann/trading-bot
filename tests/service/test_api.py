@@ -1067,6 +1067,33 @@ class TestUnsupportedVenue:
         assert "watchOHLCV" in detail
         assert "coinbase" in detail
 
+    def test_unresolvable_contract_metadata_returns_a_readable_error(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#124 refuses the bot; the operator must be told why, not get a 500.
+
+        This is the change most likely to stop a bot someone was relying on,
+        so the message has to name the instrument and the missing fact.
+        """
+        from tradingbot.venues.contracts import ContractMetadataError
+
+        bot_id = TestBotLifecycle()._create(client)["id"]
+
+        def _boom(*_args, **_kwargs):
+            raise ContractMetadataError(
+                "MBTF6: exchange did not publish a contract size, so exposure "
+                "cannot be computed; refusing rather than assuming 1.0"
+            )
+
+        monkeypatch.setattr("tradingbot.service.supervisor.build_venue", _boom)
+        _login(client)
+        response = client.post(f"/api/bots/{bot_id}/start", headers=_csrf(client))
+
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "MBTF6" in detail
+        assert "contract size" in detail
+
 
 class TestTradePagination:
     def _bot_with_trades(self, client: TestClient, count: int) -> str:

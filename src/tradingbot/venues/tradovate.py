@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .contracts import ContractMetadataError, ContractSpec
 from ..models import Order, OrderResult, OrderType, Position, PositionSide, Side
 
 try:
@@ -188,15 +189,45 @@ class TradovateVenue:
         except Exception:
             return False
 
-    def contract_multiplier(self, symbol: str) -> float:
-        """Units of the underlying per contract (for the RiskGuard's notional =
-        contracts × multiplier × price). Longest known product prefix wins;
-        unknown symbols default to 1.0."""
+    def contract_spec(self, symbol: str) -> ContractSpec:
+        """Resolve ``symbol``'s contract metadata (#124).
+
+        Tradovate exposes no instrument-metadata endpoint through this client,
+        so the sizes come from the table above. That is acceptable because CME
+        contract sizes are published specifications rather than venue state --
+        but it means an unrecognised product is genuinely unknown, and
+        ``1.0`` for a futures contract is never a safe guess. It used to be
+        the fallback; now it refuses.
+
+        The longest matching prefix wins so ``MBT`` is not resolved as
+        ``BTC``: those two differ by a factor of fifty.
+
+        Args:
+            symbol: Tradovate contract symbol, e.g. ``MBTF6``.
+
+        Returns:
+            The contract's validated spec.
+
+        Raises:
+            ContractMetadataError: If the product is not in the table.
+        """
         upper = symbol.upper()
-        for product, mult in sorted(_CONTRACT_MULTIPLIERS.items(), key=lambda kv: -len(kv[0])):
+        for product, size in sorted(_CONTRACT_MULTIPLIERS.items(), key=lambda kv: -len(kv[0])):
             if upper.startswith(product):
-                return mult
-        return 1.0
+                return ContractSpec(
+                    symbol=symbol,
+                    contract_size=size,
+                    linear=True,
+                    quote_currency="USD",
+                    settle_currency="USD",
+                    tick_size=None,
+                    is_derivative=True,
+                )
+        raise ContractMetadataError(
+            f"{symbol}: contract size is not known for this product "
+            f"(known: {', '.join(sorted(_CONTRACT_MULTIPLIERS))}); refusing "
+            "rather than assuming 1.0, which would misprice exposure"
+        )
 
 
 class _TradovateAuth:

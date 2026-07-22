@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from ..models import Order, OrderResult, OrderType, Position, PositionSide, Side
+from .ccxt_contracts import ContractCache
+from .contracts import ContractSpec
 
 try:
     import ccxt  # type: ignore
@@ -23,6 +25,7 @@ class CcxtVenue:
         self._ex = exchange
         self._live = live
         self._market_type = market_type
+        self._contracts: ContractCache | None = None
 
     @classmethod
     def from_exchange(
@@ -86,6 +89,27 @@ class CcxtVenue:
             return OrderResult(
                 ok=False, order_id=None, status="error", filled_qty=0.0, raw={}, error=str(exc)
             )
+
+    def contract_spec(self, symbol: str) -> ContractSpec:
+        """Resolve ``symbol``'s contract metadata from the exchange (#124).
+
+        Cached per venue instance, since exposure is checked on every order
+        and metadata is a network round trip.
+
+        Args:
+            symbol: Instrument symbol as ccxt names it.
+
+        Returns:
+            The instrument's validated contract spec.
+
+        Raises:
+            ContractMetadataError: If the symbol is not listed, or is a
+                derivative whose size or linear/inverse convention the
+                exchange does not publish. Never falls back to a default.
+        """
+        if self._contracts is None:
+            self._contracts = ContractCache(self._ex)
+        return self._contracts.spec(symbol)
 
     def fetch_order(self, venue_order_id: str, symbol: str) -> OrderResult:
         """Re-read one order's current state from the exchange (#135).

@@ -11,6 +11,7 @@ from typing import Any, Callable, cast
 
 from ..models import Candle, OrderResult, Position, PositionSide
 from ..router import SignalRouter
+from ..venues.contracts import ContractMetadataError, ContractSpec, spot_spec
 from ..runtime import StreamRuntime
 from ..strategies import StrategyContext
 from ..stream import StreamingFeed
@@ -27,6 +28,25 @@ _WARMUP_BARS = 220
 
 _STATE_POLL_SECONDS = 5.0
 """Default cadence for re-marking a running bot's position and PnL."""
+
+_DERIVATIVE_MARKETS = frozenset({"futures", "swap", "perpetual", "perp", "option"})
+"""Market types whose contract size must come from the venue, never a default."""
+
+
+def _is_derivative_market(market_type: str) -> bool:
+    """Return whether ``market_type`` names a derivative market."""
+    return market_type.strip().lower() in _DERIVATIVE_MARKETS
+
+
+def _quote_currency(symbol: str) -> str:
+    """Best-effort quote currency from a ``BASE/QUOTE`` symbol.
+
+    Only used for spot, where the quote currency is informational -- notional
+    is ``qty x price`` regardless. A derivative never reaches this: its spec
+    comes from the venue or the bot does not start.
+    """
+    _, _, quote = symbol.partition("/")
+    return (quote.split(":")[0] or "USD").strip() or "USD"
 
 
 @dataclass
@@ -103,6 +123,14 @@ class BotInstance:
 
     multiplier: float = 1.0
     """Contract multiplier used when marking PnL (1.0 for spot)."""
+
+    contract: ContractSpec | None = None
+    """Resolved contract metadata, set at start (#124).
+
+    ``None`` until the bot starts. A running derivative always has one: a
+    derivative whose metadata cannot be resolved is refused rather than
+    started, so this being set is evidence the numbers came from the venue.
+    """
 
     degraded: bool = False
     """Whether the bot is alive but starved of market data.
@@ -366,14 +394,11 @@ class BotSupervisor:
                 creds=bot.config.creds,
                 live=bot.config.live,
             )
-            multiplier_factory = getattr(venue, "contract_multiplier", None)
-            multiplier = (
-                float(cast(Any, multiplier_factory(bot.config.symbol)))
-                if callable(multiplier_factory)
-                else 1.0
-            )
+            spec = self._resolve_contract(bot, venue)
+            multiplier = spec.contract_size
             bot.venue = venue
             bot.hub = hub
+            bot.contract = spec
             bot.multiplier = multiplier
             router = SignalRouter.with_risk_guard(
                 venue,
@@ -855,6 +880,43 @@ class BotSupervisor:
                 self._store.append_trade(bot.config.id, record)
             except Exception:  # pragma: no cover - defensive; the next poll re-derives it
                 _log.exception("failed to persist polled event for bot %s", bot.config.id)
+
+    def _resolve_contract(self, bot: BotInstance, venue: Any) -> ContractSpec:
+        """Resolve the bot's contract metadata, failing closed for derivatives.
+
+        Exposure and PnL are ``quantity x price x contract_size``, so a bot
+        whose contract size is unknown cannot be risk-managed at all. Before
+        #124 that case silently used ``1.0``, which is wrong by the contract
+        size -- 5x for a CME Bitcoin future, 0.1x for a micro -- and produces
+        numbers too ordinary-looking to catch by eye.
+
+        Spot needs no lookup: one unit is one unit of the base asset, the one
+        case where ``1.0`` is a fact. A venue that cannot describe its own
+        derivative stops the bot starting.
+
+        Args:
+            bot: Bot being started.
+            venue: Its freshly built execution venue.
+
+        Returns:
+            The validated contract spec.
+
+        Raises:
+            ContractMetadataError: If this is a derivative and its metadata
+                cannot be resolved.
+        """
+        symbol = bot.config.symbol
+        resolve = getattr(venue, "contract_spec", None)
+        if callable(resolve):
+            return cast(ContractSpec, resolve(symbol))
+
+        if _is_derivative_market(bot.config.market_type):
+            raise ContractMetadataError(
+                f"{symbol}: venue {bot.config.venue!r} cannot report contract "
+                f"metadata for {bot.config.market_type!r}, so exposure cannot "
+                "be computed safely"
+            )
+        return spot_spec(symbol, quote_currency=_quote_currency(symbol))
 
     def _rebuild_ledger(self, bot: BotInstance) -> None:
         """Rebuild ``bot``'s order ledger by replaying its persisted log.

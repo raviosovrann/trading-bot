@@ -657,3 +657,129 @@ async def test_config_change_takes_effect_after_a_restart(monkeypatch) -> None:
     bot = supervisor.get("one")
     assert bot is not None and bot.venue is not None and bot.venue.live is True
     await supervisor.stop("one")
+
+
+class _NoMetadataVenue(_FakeVenue):
+    """A derivative venue that cannot describe its own contract (#124)."""
+
+    def contract_spec(self, symbol: str):
+        from tradingbot.venues.contracts import ContractMetadataError
+        raise ContractMetadataError(f"{symbol}: contract size is not known")
+
+
+class _SpecVenue(_FakeVenue):
+    def __init__(self, size: float) -> None:
+        self._size = size
+
+    def contract_spec(self, symbol: str):
+        from tradingbot.venues.contracts import ContractSpec
+        return ContractSpec(
+            symbol=symbol, contract_size=self._size, linear=True,
+            quote_currency="USD", settle_currency="USD", tick_size=None,
+            is_derivative=True,
+        )
+
+
+class _SilentVenue(_FakeVenue):
+    """A venue with no contract_spec at all."""
+
+
+def _futures_config(bot_id: str) -> BotConfig:
+    cfg = _config(bot_id)
+    cfg.market_type = "futures"
+    cfg.symbol = "MBTF6"
+    return cfg
+
+
+@pytest.mark.asyncio
+async def test_a_derivative_without_metadata_refuses_to_start(monkeypatch) -> None:
+    """#124's headline: never trade a derivative on a guessed multiplier."""
+    from tradingbot.venues.contracts import ContractMetadataError
+
+    monkeypatch.setattr(
+        "tradingbot.service.supervisor.build_venue", lambda *a, **k: _NoMetadataVenue()
+    )
+    monkeypatch.setattr(
+        "tradingbot.service.supervisor.build_strategy", lambda *a, **k: _SignalStrategy()
+    )
+    supervisor = BotSupervisor(
+        hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(),
+        global_exposure=GlobalExposure(),
+    )
+    supervisor.create(_futures_config("one"))
+
+    with pytest.raises(ContractMetadataError):
+        await supervisor.start("one")
+
+    bot = supervisor.get("one")
+    assert bot is not None
+    assert bot.status != "running", "a bot with unknown exposure must not run"
+
+
+@pytest.mark.asyncio
+async def test_a_derivative_venue_that_cannot_describe_contracts_refuses(monkeypatch) -> None:
+    """A venue with no contract_spec at all is refused for derivatives."""
+    from tradingbot.venues.contracts import ContractMetadataError
+
+    monkeypatch.setattr(
+        "tradingbot.service.supervisor.build_venue", lambda *a, **k: _SilentVenue()
+    )
+    monkeypatch.setattr(
+        "tradingbot.service.supervisor.build_strategy", lambda *a, **k: _SignalStrategy()
+    )
+    supervisor = BotSupervisor(
+        hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(),
+        global_exposure=GlobalExposure(),
+    )
+    supervisor.create(_futures_config("one"))
+
+    with pytest.raises(ContractMetadataError):
+        await supervisor.start("one")
+
+
+@pytest.mark.asyncio
+async def test_spot_starts_without_a_venue_lookup(monkeypatch) -> None:
+    """Spot needs no metadata: one unit is one unit of the base asset."""
+    monkeypatch.setattr(
+        "tradingbot.service.supervisor.build_venue", lambda *a, **k: _SilentVenue()
+    )
+    monkeypatch.setattr(
+        "tradingbot.service.supervisor.build_strategy", lambda *a, **k: _SignalStrategy()
+    )
+    supervisor = BotSupervisor(
+        hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(),
+        global_exposure=GlobalExposure(),
+    )
+    supervisor.create(_config("one"))
+
+    await supervisor.start("one")
+    bot = supervisor.get("one")
+    assert bot is not None
+    assert bot.multiplier == 1.0
+    assert bot.contract is not None and bot.contract.is_derivative is False
+
+    await supervisor.stop("one")
+
+
+@pytest.mark.asyncio
+async def test_the_resolved_contract_size_becomes_the_multiplier(monkeypatch) -> None:
+    """The number the venue reported is the number risk uses."""
+    monkeypatch.setattr(
+        "tradingbot.service.supervisor.build_venue", lambda *a, **k: _SpecVenue(0.1)
+    )
+    monkeypatch.setattr(
+        "tradingbot.service.supervisor.build_strategy", lambda *a, **k: _SignalStrategy()
+    )
+    supervisor = BotSupervisor(
+        hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(),
+        global_exposure=GlobalExposure(),
+    )
+    supervisor.create(_futures_config("one"))
+
+    await supervisor.start("one")
+    bot = supervisor.get("one")
+    assert bot is not None
+    assert bot.multiplier == 0.1, "must not fall back to 1.0"
+    assert bot.contract is not None and bot.contract.contract_size == 0.1
+
+    await supervisor.stop("one")
