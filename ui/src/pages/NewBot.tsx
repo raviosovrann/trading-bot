@@ -61,6 +61,14 @@ export function NewBot() {
     [venues, venue],
   )
 
+  // What the chosen pairing can do (#125). Shown rather than silently
+  // enforced: the API refuses an unsupported strategy/venue pair, and an
+  // operator who cannot see why would just retry the same combination.
+  const selectedVenue = useMemo(
+    () => venues.find((v) => v.venue === venue && v.market_type === marketType),
+    [venues, venue, marketType],
+  )
+
   // Default the venue/market and strategy once their lists load.
   useEffect(() => {
     if (venue === '' && venues.length > 0) {
@@ -147,6 +155,13 @@ export function NewBot() {
                 </option>
               ))}
             </select>
+            {selectedVenue && (
+              <p className="muted" data-testid="venue-capabilities">
+                {selectedVenue.supports_short
+                  ? 'Supports long and short positions.'
+                  : 'Long only \u2014 this market cannot hold short positions.'}
+              </p>
+            )}
           </>
         )}
 

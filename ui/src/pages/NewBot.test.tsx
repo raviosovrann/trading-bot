@@ -8,10 +8,30 @@ import type { VenueOption } from '../types'
 import { AuthProvider } from '../hooks/useAuth'
 import { NewBot } from './NewBot'
 
+const ORDER_TYPES = ['limit', 'market']
+
 const VENUES: VenueOption[] = [
-  { venue: 'coinbase', market_type: 'spot' },
-  { venue: 'coinbase', market_type: 'futures' },
-  { venue: 'tradovate', market_type: 'futures' },
+  {
+    venue: 'coinbase',
+    market_type: 'spot',
+    supports_short: false,
+    supports_reduce_only: false,
+    order_types: ORDER_TYPES,
+  },
+  {
+    venue: 'coinbase',
+    market_type: 'futures',
+    supports_short: true,
+    supports_reduce_only: true,
+    order_types: ORDER_TYPES,
+  },
+  {
+    venue: 'tradovate',
+    market_type: 'futures',
+    supports_short: true,
+    supports_reduce_only: true,
+    order_types: ORDER_TYPES,
+  },
 ]
 
 function setup() {
@@ -91,5 +111,25 @@ describe('NewBot wizard', () => {
     await next()
     // On step 3 with empty symbol, the step's Next is disabled.
     expect(screen.getByRole('button', { name: /next/i })).toBeDisabled()
+  })
+})
+
+describe('venue capabilities (#125)', () => {
+  it('tells the operator that spot cannot hold shorts', async () => {
+    setup()
+
+    const note = await screen.findByTestId('venue-capabilities')
+
+    expect(note).toHaveTextContent(/long only/i)
+  })
+
+  it('reports short support on a derivative market', async () => {
+    const user = userEvent.setup()
+    setup()
+    await screen.findByTestId('venue-capabilities')
+
+    await user.selectOptions(screen.getByLabelText(/market type/i), 'futures')
+
+    expect(await screen.findByTestId('venue-capabilities')).toHaveTextContent(/long and short/i)
   })
 })

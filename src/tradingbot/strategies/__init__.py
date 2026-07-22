@@ -10,7 +10,12 @@ from importlib import import_module
 from pkgutil import iter_modules
 
 from .base import Strategy, StrategyContext
-from .registry import available_strategies, build_strategy, strategy
+from .registry import (
+    available_strategies,
+    build_strategy,
+    strategy,
+    strategy_requirements,
+)
 
 
 def _discover() -> None:
@@ -29,4 +34,5 @@ __all__ = [
     "available_strategies",
     "build_strategy",
     "strategy",
+    "strategy_requirements",
 ]

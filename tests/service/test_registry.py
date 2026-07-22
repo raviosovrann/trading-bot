@@ -127,11 +127,18 @@ def test_unknown_venue_mapping_raises(venue: str, market_type: str) -> None:
 
 
 def test_available_venues_lists_supported_mappings() -> None:
-    """Verify that available_venues lists the supported venue mappings."""
-    assert available_venues() == [
-        {"venue": "coinbase", "market_type": "futures"},
-        {"venue": "coinbase", "market_type": "spot"},
-        {"venue": "tradovate", "market_type": "futures"},
+    """Verify that available_venues lists the supported venue mappings.
+
+    Asserts the mappings rather than the whole dict: each entry also carries
+    capabilities for the UI to filter on (#125), and pinning those here would
+    duplicate TestVenueCapabilities without adding coverage.
+    """
+    assert [
+        (m["venue"], m["market_type"]) for m in available_venues()
+    ] == [
+        ("coinbase", "futures"),
+        ("coinbase", "spot"),
+        ("tradovate", "futures"),
     ]
 
 
@@ -146,9 +153,11 @@ def test_available_venues_is_sorted_independently_of_mapping_order(monkeypatch) 
         },
     )
 
-    assert available_venues() == [
-        {"venue": "coinbase", "market_type": "spot"},
-        {"venue": "tradovate", "market_type": "futures"},
+    assert [
+        (m["venue"], m["market_type"]) for m in available_venues()
+    ] == [
+        ("coinbase", "spot"),
+        ("tradovate", "futures"),
     ]
 
 
@@ -183,3 +192,48 @@ def test_available_venues_includes_coinbase_futures() -> None:
     assert ("coinbase", "spot") in pairs
     assert ("coinbase", "futures") in pairs
     assert ("tradovate", "futures") in pairs
+
+
+class TestVenueCapabilities:
+    """Every supported venue pair must declare what it can do (#125)."""
+
+    def test_every_supported_pair_has_capabilities(self):
+        from tradingbot.service.registry import available_venues, venue_capabilities
+
+        for mapping in available_venues():
+            caps = venue_capabilities(mapping["venue"], mapping["market_type"])
+            assert caps.venue == mapping["venue"]
+            assert caps.market_type == mapping["market_type"]
+
+    def test_spot_cannot_short(self):
+        from tradingbot.service.registry import venue_capabilities
+
+        assert venue_capabilities("coinbase", "spot").supports_short is False
+
+    def test_futures_can_short(self):
+        from tradingbot.service.registry import venue_capabilities
+
+        assert venue_capabilities("coinbase", "futures").supports_short is True
+        assert venue_capabilities("tradovate", "futures").supports_short is True
+
+    def test_spot_cannot_guarantee_reduce_only(self):
+        from tradingbot.service.registry import venue_capabilities
+
+        assert venue_capabilities("coinbase", "spot").supports_reduce_only is False
+
+    def test_an_unsupported_pair_is_refused(self):
+        from tradingbot.service.registry import venue_capabilities
+
+        with pytest.raises(ValueError, match="Unsupported venue mapping"):
+            venue_capabilities("nope", "spot")
+
+    def test_available_venues_advertises_capabilities_for_the_ui(self):
+        """The UI cannot filter what the API does not tell it (#125)."""
+        from tradingbot.service.registry import available_venues
+
+        spot = next(
+            m for m in available_venues()
+            if m["venue"] == "coinbase" and m["market_type"] == "spot"
+        )
+
+        assert spot["supports_short"] is False

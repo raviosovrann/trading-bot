@@ -216,3 +216,76 @@ def test_close_omits_the_owned_quantity_when_none_is_configured():
     router.route(signal)
 
     assert venue.close_kwargs == [{}]
+
+
+def _spot_caps():
+    from tradingbot.models import OrderType as _OT
+    from tradingbot.venues.capabilities import VenueCapabilities
+    return VenueCapabilities(
+        venue="coinbase", market_type="spot", supports_short=False,
+        supports_reduce_only=False,
+        order_types=frozenset({_OT.market, _OT.limit}),
+    )
+
+
+def _short_signal():
+    return Signal(
+        strategy="s", action=Action.sell, symbol="BTC/USD",
+        order_type=OrderType.market, quantity=1.0,
+        position_side=PositionSide.short,
+    )
+
+
+def test_a_spot_short_signal_never_reaches_the_venue():
+    """#125's headline: rejected before order submission, not after."""
+    venue = StubVenue()
+    router = SignalRouter(venue, capabilities=_spot_caps())
+
+    result = router.route(_short_signal())
+
+    assert venue.placed_orders == [], "no order may be sent"
+    assert result.ok is False
+    assert result.status == "incompatible"
+
+
+def test_the_rejection_explains_itself():
+    """The operator has to learn what to change."""
+    router = SignalRouter(StubVenue(), capabilities=_spot_caps())
+
+    result = router.route(_short_signal())
+
+    assert result.error is not None
+    assert "short" in result.error
+
+
+def test_an_incoherent_signal_is_rejected():
+    venue = StubVenue()
+    router = SignalRouter(venue, capabilities=_spot_caps())
+    signal = Signal(
+        strategy="s", action=Action.buy, symbol="BTC/USD",
+        order_type=OrderType.market, quantity=1.0,
+        position_side=PositionSide.short,
+    )
+
+    assert router.route(signal).ok is False
+    assert venue.placed_orders == []
+
+
+def test_a_compatible_signal_still_routes():
+    venue = StubVenue()
+    router = SignalRouter(venue, capabilities=_spot_caps())
+    signal = Signal(
+        strategy="s", action=Action.buy, symbol="BTC/USD",
+        order_type=OrderType.market, quantity=1.0,
+        position_side=PositionSide.long,
+    )
+
+    assert router.route(signal).ok is True
+    assert len(venue.placed_orders) == 1
+
+
+def test_a_router_without_capabilities_routes_everything():
+    """Capabilities are optional; absent means unchecked, as before."""
+    venue = StubVenue()
+
+    assert SignalRouter(venue).route(_short_signal()).ok is True

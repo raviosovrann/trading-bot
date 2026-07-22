@@ -815,3 +815,60 @@ async def test_the_resolved_contract_size_becomes_the_multiplier(monkeypatch) ->
     assert bot.contract is not None and bot.contract.contract_size == 0.1
 
     await supervisor.stop("one")
+
+
+@pytest.mark.asyncio
+async def test_a_strategy_that_outgrew_its_venue_refuses_to_start(monkeypatch) -> None:
+    """Validated at start too, not only at create (#125).
+
+    A bot is created when its strategy needs nothing, then the strategy is
+    redeployed declaring it must hold shorts. Create-time validation already
+    passed and cannot be re-run; only the start-time check stands between that
+    bot and a venue that cannot express its trades.
+    """
+    from tradingbot.venues.capabilities import CapabilityError, StrategyRequirements
+
+    monkeypatch.setattr(
+        "tradingbot.service.supervisor.build_venue", lambda *a, **k: _FakeVenue()
+    )
+    monkeypatch.setattr(
+        "tradingbot.service.supervisor.build_strategy", lambda *a, **k: _SignalStrategy()
+    )
+    supervisor = BotSupervisor(
+        hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(),
+        exposure=ExposureTracker(),
+    )
+    supervisor.create(_config("one"))  # spot, and valid at this moment
+
+    monkeypatch.setattr(
+        "tradingbot.service.supervisor.strategy_requirements",
+        lambda name: StrategyRequirements(requires_short=True),
+    )
+
+    with pytest.raises(CapabilityError, match="short"):
+        await supervisor.start("one")
+
+    bot = supervisor.get("one")
+    assert bot is not None
+    assert bot.status != "running"
+
+
+@pytest.mark.asyncio
+async def test_a_compatible_strategy_still_starts(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "tradingbot.service.supervisor.build_venue", lambda *a, **k: _FakeVenue()
+    )
+    monkeypatch.setattr(
+        "tradingbot.service.supervisor.build_strategy", lambda *a, **k: _SignalStrategy()
+    )
+    supervisor = BotSupervisor(
+        hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(),
+        exposure=ExposureTracker(),
+    )
+    supervisor.create(_config("one"))
+
+    await supervisor.start("one")
+    bot = supervisor.get("one")
+    assert bot is not None and bot.status == "running"
+
+    await supervisor.stop("one")

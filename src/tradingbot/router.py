@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from .models import Action, Order, OrderResult, Side, Signal
 from .venues.base import ExecutionVenue
+from .venues.capabilities import CapabilityError, VenueCapabilities, check_signal
 
 if TYPE_CHECKING:
     from .service.exposure import ExposureTracker
@@ -38,6 +39,7 @@ class SignalRouter:
         venue: ExecutionVenue,
         *,
         owned_qty_source: Callable[[], float] | None = None,
+        capabilities: "VenueCapabilities | None" = None,
     ) -> None:
         """Create a router backed by ``venue``.
 
@@ -48,9 +50,15 @@ class SignalRouter:
                 account's balance, so without this a close would sell coins
                 bought by hand or by another bot. ``None`` leaves the venue to
                 report its own position, which is right for derivatives.
+            capabilities: What the venue can do (#125). Signals it cannot
+                support -- a short on spot, or an action that contradicts its
+                own declared position side -- are refused here rather than
+                sent. ``None`` disables the check, which is the behaviour
+                every caller had before capabilities existed.
         """
         self._venue = venue
         self._owned_qty_source = owned_qty_source
+        self._capabilities = capabilities
 
     @classmethod
     def with_risk_guard(
@@ -64,6 +72,7 @@ class SignalRouter:
         price_source: Callable[[], float | None],
         contract: "ContractSpec | None" = None,
         owned_qty_source: Callable[[], float] | None = None,
+        capabilities: "VenueCapabilities | None" = None,
     ) -> "SignalRouter":
         """Build a router whose orders are gated by ``RiskGuard``.
 
@@ -97,6 +106,7 @@ class SignalRouter:
                 contract=contract,
             ),
             owned_qty_source=owned_qty_source,
+            capabilities=capabilities,
         )
 
     def _close(self, symbol: str) -> OrderResult:
@@ -152,6 +162,17 @@ class SignalRouter:
         Raises:
             ValueError: If the signal action is not supported.
         """
+        if self._capabilities is not None:
+            try:
+                check_signal(signal, self._capabilities)
+            except CapabilityError as exc:
+                # Refused before the venue is touched, so an unsupported
+                # pairing costs nothing and says what to change.
+                return RouteOutcome(None, OrderResult(
+                    ok=False, order_id=None, status="incompatible",
+                    filled_qty=0.0, raw={}, error=str(exc),
+                ))
+
         if signal.action is Action.close:
             return RouteOutcome(None, self._close(signal.symbol))
 
