@@ -189,9 +189,32 @@ class CcxtVenue:
         # Spot balances are long/flat.
         return Position(symbol=symbol, side=PositionSide.long, size=size, entry_price=0.0)
 
-    def close_position(self, symbol: str) -> OrderResult:
-        pos = self.get_position(symbol)
-        if pos is None or pos.side is PositionSide.flat or pos.size < 1e-9:
+    def close_position(self, symbol: str, *, owned_qty: float | None = None) -> OrderResult:
+        """Close ``symbol``, selling only the quantity the caller owns.
+
+        Args:
+            symbol: Trading symbol to flatten.
+            owned_qty: Quantity attributable to the calling bot (#128). For
+                spot this must be supplied: ``get_position()`` can only see
+                the whole account's balance, so closing on that figure would
+                sell coins bought by hand or by another bot on the same
+                account. ``None`` falls back to the reported position, which
+                is correct for derivatives -- there the venue reports a real
+                per-account position rather than a shared balance.
+
+        Returns:
+            Result of the closing order, or a no-op result when flat.
+        """
+        if owned_qty is not None:
+            size = owned_qty
+        else:
+            pos = self.get_position(symbol)
+            if pos is None or pos.side is PositionSide.flat:
+                size = 0.0
+            else:
+                size = pos.size
+
+        if size < 1e-9:
             return OrderResult(
                 ok=True, order_id=None, status="no position", filled_qty=0.0, raw={}, error=None
             )
@@ -201,7 +224,7 @@ class CcxtVenue:
                 symbol=symbol,
                 side=Side.sell,
                 order_type=OrderType.market,
-                qty=pos.size,
+                qty=size,
                 reduce_only=True,
             )
         )

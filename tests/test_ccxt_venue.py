@@ -395,3 +395,55 @@ def test_contract_spec_caches_across_calls():
     venue.contract_spec("BTC/USD")
 
     assert exchange.load_calls == 1
+
+
+class _BalanceExchange:
+    """Spot exchange holding an account-wide balance."""
+
+    def __init__(self, qty):
+        self._qty = qty
+        self.created = []
+
+    def fetch_balance(self):
+        return {"BTC": {"total": self._qty, "free": self._qty}}
+
+    def create_order(self, symbol, type, side, amount, price=None, params=None):
+        self.created.append({"symbol": symbol, "side": side, "amount": amount})
+        return {"id": "o1", "status": "closed", "filled": amount}
+
+
+def test_close_position_sells_only_the_quantity_it_is_told_to_own():
+    """#128: a bot must never liquidate inventory it does not own.
+
+    The account holds 10 BTC; this bot bought 2. Closing must sell 2.
+    """
+    exchange = _BalanceExchange(10.0)
+    venue = CcxtVenue(exchange, live=True)
+
+    venue.close_position("BTC/USD", owned_qty=2.0)
+
+    assert len(exchange.created) == 1
+    assert exchange.created[0]["amount"] == 2.0, "must not sell the account's 10"
+    assert exchange.created[0]["side"] == "sell"
+
+
+def test_close_position_sells_nothing_when_the_bot_owns_nothing():
+    """A balance the bot never bought is somebody else's."""
+    exchange = _BalanceExchange(10.0)
+    venue = CcxtVenue(exchange, live=True)
+
+    result = venue.close_position("BTC/USD", owned_qty=0.0)
+
+    assert exchange.created == [], "no order may be sent"
+    assert result.ok is True
+    assert result.status == "no position"
+
+
+def test_close_position_without_an_owned_quantity_still_uses_the_balance():
+    """Callers that pass nothing keep the old behaviour, for derivatives."""
+    exchange = _BalanceExchange(10.0)
+    venue = CcxtVenue(exchange, live=True)
+
+    venue.close_position("BTC/USD")
+
+    assert exchange.created[0]["amount"] == 10.0

@@ -18,6 +18,7 @@ from ..stream import StreamingFeed
 from .blocking import BlockingCalls, BlockingCallTimeout, WorkerPools
 from .events import BotStateEvent, DecisionEvent, EventBus, OrderEvent
 from .ledger import OrderLedger, events_from_payload, events_from_status
+from .positions import spot_position
 from .registry import build_strategy, build_venue
 from .exposure import ExposureTracker
 
@@ -113,7 +114,14 @@ class BotInstance:
     """Latest known position reported by the venue."""
 
     pnl: float = 0.0
-    """Running profit-and-loss estimate."""
+    """Unrealized profit-and-loss on the currently held position."""
+
+    realized_pnl: float = 0.0
+    """Profit already banked by completed sales, net of fees (#128).
+
+    Kept apart from ``pnl`` because they answer different questions: this is
+    money made, that is money currently at stake.
+    """
 
     venue: Any | None = None
     """Execution venue, retained after start for position polling."""
@@ -408,6 +416,14 @@ class BotSupervisor:
                 bot_id=bot.config.id,
                 price_source=lambda: hub.latest_price(bot.config.symbol, bot.config.timeframe),
                 contract=spec,
+                # Spot closes must sell only what this bot bought (#128); a
+                # derivative venue reports a real position, so leave it be.
+                owned_qty_source=(
+                    None if _is_derivative_market(bot.config.market_type)
+                    else lambda: spot_position(
+                        bot.ledger.orders(bot_id=bot.config.id)
+                    ).quantity
+                ),
             )
             strategy = build_strategy(
                 bot.config.strategy,
@@ -1094,12 +1110,31 @@ class BotSupervisor:
         Args:
             bot: Bot whose position to refresh.
         """
-        if bot.venue is None:
+        if _is_derivative_market(bot.config.market_type):
+            # Derivatives report a real per-account position with a real entry
+            # price, so the venue is the right source.
+            if bot.venue is None:
+                return
+            try:
+                bot.position = bot.venue.get_position(bot.config.symbol)
+            except Exception:  # pragma: no cover - defensive; venue errors shouldn't kill the bot
+                _log.exception("failed to read position for bot %s", bot.config.id)
             return
-        try:
-            bot.position = bot.venue.get_position(bot.config.symbol)
-        except Exception:  # pragma: no cover - defensive; venue errors shouldn't kill the bot
-            _log.exception("failed to read position for bot %s", bot.config.id)
+
+        # Spot: the venue can only report the whole account's balance, which
+        # says nothing about which bot -- or which human -- bought it (#128).
+        # Derive ownership from this bot's own fills instead.
+        holding = spot_position(bot.ledger.orders(bot_id=bot.config.id))
+        bot.realized_pnl = holding.realized_pnl
+        if holding.is_flat:
+            bot.position = None
+            return
+        bot.position = Position(
+            symbol=bot.config.symbol,
+            side=PositionSide.long,
+            size=holding.quantity,
+            entry_price=holding.average_cost,
+        )
 
     def _refresh_pnl(self, bot: BotInstance) -> None:
         """Mark ``bot.pnl`` to market from the hub's latest price.

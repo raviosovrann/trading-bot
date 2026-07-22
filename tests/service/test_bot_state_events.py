@@ -56,6 +56,14 @@ class _FakeVenue:
     def __init__(self) -> None:
         self.position: Position | None = None
 
+    def contract_spec(self, symbol: str):
+        """Derivative metadata (#124), so a futures bot can start."""
+        from tradingbot.venues.contracts import ContractSpec
+        return ContractSpec(
+            symbol=symbol, contract_size=1.0, linear=True, quote_currency="USD",
+            settle_currency="USD", tick_size=None, is_derivative=True,
+        )
+
     def place_order(self, order: Order) -> OrderResult:
         return OrderResult(ok=True, order_id="order-1", status="filled", filled_qty=order.qty, raw={})
 
@@ -90,11 +98,11 @@ class _IdleStrategy:
         return None
 
 
-def _config(bot_id: str = "bot-1") -> BotConfig:
+def _config(bot_id: str = "bot-1", *, market_type: str = "spot") -> BotConfig:
     return BotConfig(
         id=bot_id,
         venue="coinbase",
-        market_type="spot",
+        market_type=market_type,
         strategy="example",
         symbol="BTC/USD",
         timeframe="1m",
@@ -241,11 +249,15 @@ async def test_state_events_carry_a_monotonic_sequence(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_poll_publishes_pnl_change_without_an_order(monkeypatch) -> None:
-    """Verify the bounded-cadence poll broadcasts PnL moves with no fill."""
+    """Verify the bounded-cadence poll broadcasts PnL moves with no fill.
+
+    A derivative bot: since #128 only derivatives read their position from the
+    venue, because a spot venue can only report the whole account's balance.
+    """
     hub, venue = _FakeHub(), _FakeVenue()
     venue.position = Position(symbol="BTC/USD", side=PositionSide.long, size=2.0, entry_price=100.0)
     supervisor = _supervisor(monkeypatch, hub=hub, venue=venue, poll_seconds=0.01)
-    supervisor.create(_config())
+    supervisor.create(_config(market_type="futures"))
     await supervisor.start("bot-1")
     queue = supervisor.event_bus.subscribe()
 

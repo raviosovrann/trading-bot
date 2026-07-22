@@ -257,11 +257,17 @@ def _order_json() -> str:
 
 
 def test_order_event_refreshes_position_and_marks_long_pnl() -> None:
-    """On an order event the supervisor reads the venue position and marks PnL."""
+    """On an order event the supervisor reads the venue position and marks PnL.
+
+    A derivative bot, because since #128 only derivatives take their position
+    from the venue: a spot venue can only report the whole account's balance,
+    so spot ownership is derived from the bot's own fills instead. See
+    tests/service/test_positions.py for that path.
+    """
     supervisor = BotSupervisor(
         hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(), exposure=ExposureTracker()
     )
-    bot = supervisor.create(_config("one"))
+    bot = supervisor.create(_futures_config("one"))
     bot.venue = _PosVenue(Position(symbol="BTC/USD", side=PositionSide.long, size=2.0, entry_price=100.0))
     bot.hub = _PriceHub(110.0)
     bot.multiplier = 1.0
@@ -273,11 +279,14 @@ def test_order_event_refreshes_position_and_marks_long_pnl() -> None:
 
 
 def test_short_position_marks_inverse_pnl() -> None:
-    """A short position profits when price falls below entry."""
+    """A short position profits when price falls below entry.
+
+    Necessarily a derivative: spot cannot be short.
+    """
     supervisor = BotSupervisor(
         hub_factory=lambda cfg: _FakeHub(), event_bus=EventBus(), exposure=ExposureTracker()
     )
-    bot = supervisor.create(_config("one"))
+    bot = supervisor.create(_futures_config("one"))
     bot.venue = _PosVenue(Position(symbol="BTC/USD", side=PositionSide.short, size=2.0, entry_price=100.0))
     bot.hub = _PriceHub(90.0)
     bot.multiplier = 1.0

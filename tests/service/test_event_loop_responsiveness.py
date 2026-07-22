@@ -138,6 +138,14 @@ class _BlockingVenue:
         time.sleep(self.seconds)
         return OrderResult(ok=True, order_id=None, status="no position", filled_qty=0.0, raw={})
 
+    def contract_spec(self, symbol: str):
+        """Derivative metadata (#124), so a futures bot can start."""
+        from tradingbot.venues.contracts import ContractSpec
+        return ContractSpec(
+            symbol=symbol, contract_size=1.0, linear=True, quote_currency="USD",
+            settle_currency="USD", tick_size=None, is_derivative=True,
+        )
+
     def get_position(self, symbol: str) -> Position | None:
         del symbol
         self.entered_at = time.monotonic()
@@ -320,14 +328,22 @@ async def test_a_slow_bot_does_not_delay_another_bots_start(
 async def test_position_polling_does_not_block_the_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verify the periodic position/PnL refresh runs off the event loop."""
+    """Verify the periodic position/PnL refresh runs off the event loop.
+
+    A derivative bot, because since #128 only derivatives poll the venue for
+    their position: a spot venue reports the whole account's balance, so spot
+    ownership comes from the bot's own fills and touches no exchange call at
+    all. The off-loop guarantee still matters wherever the venue IS called.
+    """
     _venue = _BlockingVenue(BLOCK_SECONDS)
     app, _supervisor, _feed = _build(
         tmp_path, monkeypatch, feed=_BlockingCandleFeed(seconds=0.0), venue=_venue
     )
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
-        bot_id = (await ac.post("/api/bots", json=_BOT_PAYLOAD, headers=_auth())).json()["id"]
+        bot_id = (await ac.post(
+            "/api/bots", json={**_BOT_PAYLOAD, "market_type": "futures"}, headers=_auth()
+        )).json()["id"]
         await ac.post(f"/api/bots/{bot_id}/start", headers=_auth())
         venue = _venue
         await _await_entry(venue)  # the 50ms poll fires into the blocking venue
