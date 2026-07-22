@@ -28,6 +28,22 @@ class CcxtVenue:
         market_type: str = "spot",
         capabilities: ContractCapabilities | None = None,
     ):
+        """Wrap an existing ccxt client.
+
+        Args:
+            exchange: ccxt client. Required -- building one needs credentials
+                this class deliberately does not hold.
+            live: When False, orders short-circuit to ``dry_run`` and the
+                exchange is never contacted for execution.
+            market_type: ``spot`` or ``futures``. Selects how positions are
+                read: a balance lookup versus signed ``fetch_positions``.
+            capabilities: Declared venue limits (#125). Without them a
+                reduce-only order cannot be shown to have been enforced, so
+                the venue refuses it rather than sending it unprotected.
+
+        Raises:
+            ValueError: If ``exchange`` is None.
+        """
         if exchange is None:
             raise ValueError("CcxtVenue requires an exchange or use from_exchange(...)")
         self._ex = exchange
@@ -49,6 +65,25 @@ class CcxtVenue:
         market_type: str = "spot",
         capabilities: ContractCapabilities | None = None,
     ) -> "CcxtVenue":
+        """Build a venue from credentials.
+
+        Args:
+            exchange_id: ccxt exchange id, e.g. ``binance``.
+            api_key: API key.
+            api_secret: API secret.
+            password: Passphrase, for venues that require one.
+            live: Arms real orders.
+            market_type: ``spot`` or ``futures``; the latter points ccxt at
+                the venue's derivatives markets.
+            capabilities: Declared venue limits (#125).
+
+        Returns:
+            A configured venue.
+
+        Raises:
+            RuntimeError: If ccxt is not installed.
+            AttributeError: If ``exchange_id`` is not a known ccxt exchange.
+        """
         if ccxt is None:
             raise RuntimeError("ccxt is not installed")
         klass = getattr(ccxt, exchange_id)
@@ -64,6 +99,21 @@ class CcxtVenue:
         )
 
     def place_order(self, order: Order) -> OrderResult:
+        """Submit an order, or simulate it when not live.
+
+        Never raises: transport failures and exchange rejections alike come
+        back as ``ok=False``. A trading loop that died on one bad order would
+        stop managing the positions it already holds.
+
+        Unlike Tradovate, ccxt returns fill information on the response, so
+        ``filled_qty`` is populated from it rather than left at zero.
+
+        Args:
+            order: Order to place.
+
+        Returns:
+            ``dry_run`` when not live, otherwise the exchange's outcome.
+        """
         # LIVE GUARD: when not live, never touch the exchange.
         if not self._live:
             return OrderResult(
@@ -199,6 +249,24 @@ class CcxtVenue:
         )
 
     def get_position(self, symbol: str) -> Position | None:
+        """Return the open position in ``symbol``, or None if flat.
+
+        Two genuinely different readings, not one with a flag. Futures report a
+        signed position that can be short. Spot has no such concept: the
+        position is inferred from the base-asset balance, so it is long or
+        flat and never short -- which is why a spot close is a sell of what is
+        held rather than a reversal.
+
+        A transport failure also reads as None, indistinguishable from flat.
+        That is the safe direction for callers sizing a close, who then do
+        nothing rather than trade against an unknown position.
+
+        Args:
+            symbol: Market symbol, e.g. ``BTC/USD``.
+
+        Returns:
+            The position, or None when flat or unreadable.
+        """
         if self._market_type == "futures":
             # Derivatives: read the signed position via fetch_positions (long/short).
             try:
@@ -306,6 +374,15 @@ class CcxtVenue:
         return result.model_copy(update={"raw": raw})
 
     def health_check(self) -> bool:
+        """Report whether the exchange is reachable with valid credentials.
+
+        Uses an authenticated call rather than a public endpoint: a venue that
+        answers public requests but rejects signed ones is not usable for
+        trading, and that is exactly the failure worth catching early.
+
+        Returns:
+            True if the balance call succeeded.
+        """
         try:
             self._ex.fetch_balance()
             return True

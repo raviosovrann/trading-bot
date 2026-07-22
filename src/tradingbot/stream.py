@@ -16,11 +16,63 @@ except Exception:  # pragma: no cover - optional third-party install
 
 
 class StreamingFeed(Protocol):
-    def warmup_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]: ...
-    def on_bar(self, handler: Callable[[Candle], None]) -> None: ...
-    async def run_async(self, *symbols: str) -> None: ...
-    def run(self, *symbols: str) -> None: ...
-    def stop(self) -> None: ...
+    """The contract every market-data feed implements, native or ccxt-backed.
+
+    Two responsibilities that are easy to conflate: ``warmup_candles`` is a
+    *pull* over REST for history, while ``on_bar`` + ``run_async`` are the
+    *push* path for live bars. A feed needs both because a strategy cannot
+    evaluate until its buffer is warm, and warmth cannot come from a stream
+    that only carries bars from the moment you subscribe.
+
+    Implementations must emit each closed candle exactly once. Venues
+    universally include the still-forming bar in their updates, so every
+    implementation drops it and dedups on timestamp -- see ``_on_candles``.
+    ``MarketDataHub`` and the per-symbol lifecycle in #112 depend on this, so
+    a feed that double-emits will double-trade.
+    """
+
+    def warmup_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
+        """Fetch closed historical candles to seed a strategy's buffer.
+
+        Args:
+            symbol: Venue symbol to fetch.
+            timeframe: Candle interval, e.g. ``1m``.
+            limit: Number of closed candles wanted, newest last.
+
+        Returns:
+            Closed candles oldest-first, excluding the forming bar.
+        """
+        ...
+
+    def on_bar(self, handler: Callable[[Candle], None]) -> None:
+        """Register the callback invoked as each candle closes.
+
+        Args:
+            handler: Called with one closed candle per bar. Runs on the
+                stream's own thread or event loop, so it must not block.
+        """
+        ...
+
+    async def run_async(self, *symbols: str) -> None:
+        """Stream ``symbols`` until stopped, awaiting the venue's socket.
+
+        Args:
+            *symbols: Symbols to subscribe. Implementations may accept only
+                the first; the hub drives one symbol per feed instance.
+        """
+        ...
+
+    def run(self, *symbols: str) -> None:
+        """Blocking equivalent of :meth:`run_async`, for non-async callers.
+
+        Args:
+            *symbols: Symbols to subscribe.
+        """
+        ...
+
+    def stop(self) -> None:
+        """Ask the stream to exit. Idempotent, and safe from another thread."""
+        ...
 
 
 class StreamingNotSupported(RuntimeError):
@@ -89,6 +141,23 @@ class CcxtStreamFeed:
         *,
         exchange_factory: Callable[[], Any] | None = None,
     ) -> None:
+        """Wrap an existing ccxt.pro client.
+
+        Args:
+            exchange: ccxt.pro client. Required -- there is no default, because
+                constructing one needs credentials this class should not hold.
+            warmup_feed: Sync REST feed for history. Optional only so tests can
+                exercise the streaming path alone; ``warmup_candles`` raises
+                without it.
+            timeframe: Candle interval passed to ``watch_ohlcv``.
+            exchange_factory: Rebuilds the client after a full ``stop()``. A
+                closed ccxt client cannot be reused, so without this the feed
+                is single-use and a restarted bot gets a dead socket.
+
+        Raises:
+            ValueError: If ``exchange`` is None.
+            StreamingNotSupported: If the client cannot stream candles.
+        """
         if exchange is None:
             raise ValueError("CcxtStreamFeed requires an exchange or use from_exchange(...)")
         _require_ohlcv_streaming(exchange)
@@ -120,6 +189,28 @@ class CcxtStreamFeed:
         *,
         market_type: str = "spot",
     ) -> "CcxtStreamFeed":
+        """Build a feed and its REST warmup companion from credentials.
+
+        Both halves are constructed here so they cannot disagree about which
+        market they address: a spot warmup paired with a swap stream would
+        silently seed the buffer from the wrong book.
+
+        Args:
+            exchange_id: ccxt exchange id, e.g. ``binance``.
+            api_key: API key.
+            api_secret: API secret.
+            password: Passphrase, for venues that require one.
+            timeframe: Candle interval to stream.
+            market_type: ``spot`` or ``futures``; the latter selects the
+                venue's derivatives markets.
+
+        Returns:
+            A feed with its warmup feed already wired.
+
+        Raises:
+            RuntimeError: If ccxt.pro is not installed.
+            StreamingNotSupported: If the venue has no ``watch_ohlcv``.
+        """
         if ccxtpro is None:
             raise RuntimeError("ccxt.pro is not installed")
         klass = getattr(ccxtpro, exchange_id)
@@ -135,14 +226,44 @@ class CcxtStreamFeed:
         return cls(exchange=klass(config), warmup_feed=warmup_feed, timeframe=timeframe)
 
     def warmup_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
+        """Fetch history over REST, delegating to the injected warmup feed.
+
+        ccxt.pro's WebSocket carries no history, so this is a separate REST
+        round trip rather than a replay of the stream.
+
+        Args:
+            symbol: Venue symbol to fetch.
+            timeframe: Candle interval.
+            limit: Number of closed candles wanted.
+
+        Returns:
+            Closed candles, oldest-first.
+
+        Raises:
+            RuntimeError: If no warmup feed was configured.
+        """
         if self._warmup_feed is None:
             raise RuntimeError("CcxtStreamFeed has no warmup feed configured")
         return self._warmup_feed.warmup_candles(symbol, timeframe, limit)
 
     def on_bar(self, handler: Callable[[Candle], None]) -> None:
+        """Register the fallback handler used for symbols without their own.
+
+        Args:
+            handler: Called with each closed candle.
+        """
         self._handler = handler
 
     def on_bar_for(self, symbol: str, handler: Callable[[Candle], None]) -> None:
+        """Register a handler for one symbol, overriding the fallback.
+
+        One client is shared by every watch loop, so a hub serving several
+        bots needs each symbol's bars to reach only that symbol's runtime.
+
+        Args:
+            symbol: Symbol this handler is responsible for.
+            handler: Called with each closed candle for ``symbol``.
+        """
         self._symbol_handlers[symbol] = handler
 
     def _on_candles(self, candles: list, symbol: str | None = None) -> None:
@@ -198,6 +319,19 @@ class CcxtStreamFeed:
                 await self._ex.close()
 
     async def run_async(self, *symbols: str) -> None:
+        """Watch one symbol until it is stopped.
+
+        Only the first symbol is used: the hub runs one loop per symbol so
+        they can be stopped independently, and a single loop watching several
+        would make ``stop_symbol`` impossible.
+
+        Args:
+            *symbols: Symbols to watch; only ``symbols[0]`` is subscribed.
+
+        Raises:
+            ValueError: If no symbol is given.
+            RuntimeError: If the feed was closed and cannot be rebuilt.
+        """
         if not symbols:
             raise ValueError("CcxtStreamFeed.run_async requires a symbol")
         symbol = symbols[0]
@@ -210,6 +344,17 @@ class CcxtStreamFeed:
         await self._watch_loop(symbol)
 
     def run(self, *symbols: str) -> None:
+        """Blocking wrapper around :meth:`run_async` via ``asyncio.run``.
+
+        For callers outside an event loop -- notably ``StreamRuntime.start``
+        under ``run_with_reconnect``. Do not call from a running loop.
+
+        Args:
+            *symbols: Symbols to watch; only the first is subscribed.
+
+        Raises:
+            ValueError: If no symbol is given.
+        """
         if not symbols:
             raise ValueError("CcxtStreamFeed.run requires a symbol")
         asyncio.run(self.run_async(*symbols))

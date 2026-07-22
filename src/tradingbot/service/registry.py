@@ -30,6 +30,21 @@ def _ccxt_builder(market_type: str) -> _VenueBuilder:
     """
 
     def build(creds: _Credentials, live: bool) -> ExecutionVenue:
+        """Construct the venue, refusing incomplete credentials.
+
+        Args:
+            creds: Venue credentials. ``api_key`` and ``api_secret`` are
+                required; ``api_password`` and ``exchange`` are optional.
+            live: Arms real orders.
+
+        Returns:
+            The configured venue.
+
+        Raises:
+            ValueError: If a required credential is missing. Checked here so
+                the failure names the field, rather than surfacing later as an
+                opaque authentication error from the exchange.
+        """
         missing = [key for key in ("api_key", "api_secret") if not creds.get(key)]
         if missing:
             raise ValueError(f"Missing ccxt credential(s): {', '.join(missing)}")

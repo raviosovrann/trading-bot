@@ -108,6 +108,21 @@ class HubFactory:
         mtf_cache_seconds: float = 60.0,
         workers: WorkerPools | None = None,
     ) -> None:
+        """Configure the shared-hub cache.
+
+        Args:
+            store: Secret store, read on each build so rotated credentials are
+                noticed without restarting the service.
+            rate_per_sec: Sustained request rate per venue account.
+            burst: Requests allowed above the sustained rate.
+            feed_builder: Builds ``(stream_feed, candle_feed)`` for a venue.
+                Injectable so tests can avoid real sockets.
+            mtf_cache_seconds: How long a higher-timeframe candle is reused
+                before refetching.
+            workers: Thread pools, one per venue account, so a slow exchange
+                queues behind its own workers rather than stalling another
+                venue or the event loop (#111).
+        """
         self._store = store
         # One pool per venue account, shared by every hub on it, so a slow
         # exchange's REST calls queue behind its own workers rather than
@@ -125,6 +140,26 @@ class HubFactory:
         self._streams: dict[tuple[str, str, str], Any] = {}
 
     def __call__(self, cfg: BotConfig) -> MarketDataHub:
+        """Return the hub for ``cfg``, building or rebuilding it as needed.
+
+        Hubs are cached on ``(venue, market_type, timeframe)`` so bots trading
+        the same stream share one socket and one rate limiter instead of each
+        opening their own.
+
+        A cached hub is only reused while its credential fingerprint still
+        matches the store. On rotation the whole account's hubs are invalidated
+        and rebuilt -- otherwise rotation would appear to succeed while the old
+        sockets kept reconnecting on the superseded key (#137).
+
+        Args:
+            cfg: Bot configuration supplying venue, market type and timeframe.
+
+        Returns:
+            A hub serving that venue, market type and timeframe.
+
+        Raises:
+            ValueError: If the venue's credentials are missing or unusable.
+        """
         venue = cfg.venue.strip().lower()
         market_type = cfg.market_type.strip().lower()
         timeframe = cfg.timeframe

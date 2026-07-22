@@ -281,6 +281,13 @@ class OrderLedger:
     """
 
     def __init__(self) -> None:
+        """Build an empty projection.
+
+        ``_seen_fills`` carries the ``(order_id, fill_id)`` pairs already
+        folded in. It is what makes ``apply`` idempotent, so replaying the
+        persisted log after a restart rebuilds the same state rather than
+        double-counting every fill.
+        """
         self._orders: dict[str, _MutableOrder] = {}
         self._fills: list[_Fill] = []
         self._seen_fills: set[tuple[str, str]] = set()
