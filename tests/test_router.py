@@ -201,7 +201,9 @@ def test_close_passes_the_owned_quantity_when_one_is_known():
 
     router.route(signal)
 
-    assert venue.close_kwargs == [{"owned_qty": 2.0}]
+    # Asserts owned_qty specifically; a client_order_id also travels now (#121)
+    # and is covered by the close-identity tests below.
+    assert venue.close_kwargs[0]["owned_qty"] == 2.0
 
 
 def test_close_omits_the_owned_quantity_when_none_is_configured():
@@ -215,7 +217,7 @@ def test_close_omits_the_owned_quantity_when_none_is_configured():
 
     router.route(signal)
 
-    assert venue.close_kwargs == [{}]
+    assert "owned_qty" not in venue.close_kwargs[0]
 
 
 def _spot_caps():
@@ -289,3 +291,71 @@ def test_a_router_without_capabilities_routes_everything():
     venue = StubVenue()
 
     assert SignalRouter(venue).route(_short_signal()).ok is True
+
+
+class _ClosingVenue(StubVenue):
+    """Reports the order it built for the close, as CcxtVenue now does."""
+
+    def close_position(self, symbol: str, **kwargs):
+        self.closed_symbols.append(symbol)
+        return OrderResult(
+            ok=True, order_id="v-close", status="closed", filled_qty=2.0,
+            raw={
+                "closing_order": {
+                    "symbol": symbol, "side": "sell", "order_type": "market",
+                    "qty": 2.0, "price": None, "reduce_only": True,
+                    "client_order_id": kwargs.get("client_order_id"),
+                }
+            },
+        )
+
+
+def _close_signal():
+    return Signal(
+        strategy="s", action=Action.close, symbol="BTC/USD",
+        order_type=OrderType.market, quantity=1.0, position_side=PositionSide.flat,
+    )
+
+
+def test_a_close_carries_an_idempotency_key():
+    """#135 left closes with no ledger identity; #121 gives them one."""
+    venue = _ClosingVenue()
+    router = SignalRouter(venue)
+
+    outcome = router.route_detailed(_close_signal())
+
+    assert outcome.order is not None, "a close must be recordable"
+    assert outcome.order.client_order_id
+
+
+def test_a_closes_order_reflects_what_the_venue_actually_sent():
+    venue = _ClosingVenue()
+    router = SignalRouter(venue)
+
+    outcome = router.route_detailed(_close_signal())
+
+    assert outcome.order is not None
+    assert outcome.order.qty == 2.0
+    assert outcome.order.reduce_only is True
+
+
+def test_close_ids_are_unique():
+    venue = _ClosingVenue()
+    router = SignalRouter(venue)
+
+    first = router.route_detailed(_close_signal()).order
+    second = router.route_detailed(_close_signal()).order
+
+    assert first is not None and second is not None
+    assert first.client_order_id != second.client_order_id
+
+
+def test_a_venue_that_reports_no_closing_order_still_works():
+    """Older venues report nothing; the close must not break."""
+    venue = StubVenue()
+    router = SignalRouter(venue)
+
+    outcome = router.route_detailed(_close_signal())
+
+    assert outcome.result.ok is True
+    assert outcome.order is None

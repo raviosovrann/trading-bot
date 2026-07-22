@@ -6,7 +6,7 @@ import inspect
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from .models import Action, Order, OrderResult, Side, Signal
 from .venues.base import ExecutionVenue
@@ -15,6 +15,21 @@ from .venues.capabilities import CapabilityError, VenueCapabilities, check_signa
 if TYPE_CHECKING:
     from .service.exposure import ExposureTracker
     from .venues.contracts import ContractSpec
+
+
+def _accepts(func: object, name: str) -> bool:
+    """Return whether ``func`` can be called with keyword ``name``.
+
+    Optional venue capabilities are detected rather than mandated, so a venue
+    that predates a keyword stays a valid ``ExecutionVenue``.
+    """
+    try:
+        params = inspect.signature(func).parameters  # type: ignore[arg-type]
+    except (TypeError, ValueError):  # pragma: no cover - exotic callables
+        return False
+    return name in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
 
 
 @dataclass(frozen=True)
@@ -109,7 +124,30 @@ class SignalRouter:
             capabilities=capabilities,
         )
 
-    def _close(self, symbol: str) -> OrderResult:
+    def _close_outcome(self, symbol: str) -> RouteOutcome:
+        """Close ``symbol`` and report the order the venue built for it.
+
+        A close constructs its order inside the venue, so until #121 there was
+        nothing to record it against and closes never reached the ledger.
+        The key is stamped here, and the venue echoes back the order it
+        actually sent so the caller records what happened rather than a guess.
+
+        A venue that reports no closing order yields ``None``, exactly as
+        before -- older venues must not break.
+        """
+        client_order_id = uuid.uuid4().hex
+        result = self._close(symbol, client_order_id=client_order_id)
+        raw = result.raw if isinstance(result.raw, dict) else {}
+        reported = raw.get("closing_order")
+        if not isinstance(reported, dict):
+            return RouteOutcome(None, result)
+        try:
+            order = Order.model_validate({**reported, "client_order_id": client_order_id})
+        except Exception:  # pragma: no cover - defensive; a malformed echo
+            return RouteOutcome(None, result)
+        return RouteOutcome(order, result)
+
+    def _close(self, symbol: str, *, client_order_id: str | None = None) -> OrderResult:
         """Close ``symbol``, telling the venue what this bot owns if it can use it.
 
         ``owned_qty`` is an optional venue capability rather than part of the
@@ -117,20 +155,13 @@ class SignalRouter:
         force every venue and every test double to accept an argument most of
         them cannot use.
         """
-        close = self._venue.close_position
-        if self._owned_qty_source is None:
-            return close(symbol)
-        try:
-            params = inspect.signature(close).parameters
-            accepts = "owned_qty" in params or any(
-                # A venue taking **kwargs can receive it too.
-                p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
-            )
-        except (TypeError, ValueError):  # pragma: no cover - exotic callables
-            accepts = False
-        if not accepts:
-            return close(symbol)
-        return close(symbol, owned_qty=self._owned_qty_source())  # type: ignore[call-arg]
+        close = cast(Any, self._venue.close_position)
+        extras: dict[str, object] = {}
+        if client_order_id is not None and _accepts(close, "client_order_id"):
+            extras["client_order_id"] = client_order_id
+        if self._owned_qty_source is not None and _accepts(close, "owned_qty"):
+            extras["owned_qty"] = self._owned_qty_source()
+        return close(symbol, **extras)
 
     def route(self, signal: Signal) -> OrderResult:
         """Translate ``signal`` into an order and send it to the venue.
@@ -174,7 +205,7 @@ class SignalRouter:
                 ))
 
         if signal.action is Action.close:
-            return RouteOutcome(None, self._close(signal.symbol))
+            return self._close_outcome(signal.symbol)
 
         if signal.action is Action.buy:
             side = Side.buy

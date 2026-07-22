@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ..models import Order, OrderResult, OrderType, Position, PositionSide, Side
 from .ccxt_contracts import ContractCache
+from .capabilities import VenueCapabilities as ContractCapabilities
 from .contracts import ContractSpec
 
 try:
@@ -19,13 +20,22 @@ class CcxtVenue:
     ``fetch_positions()`` keyed on ``self._market_type``.
     """
 
-    def __init__(self, exchange=None, *, live: bool = False, market_type: str = "spot"):
+    def __init__(
+        self,
+        exchange=None,
+        *,
+        live: bool = False,
+        market_type: str = "spot",
+        capabilities: ContractCapabilities | None = None,
+    ):
         if exchange is None:
             raise ValueError("CcxtVenue requires an exchange or use from_exchange(...)")
         self._ex = exchange
         self._live = live
         self._market_type = market_type
         self._contracts: ContractCache | None = None
+        self._capabilities = capabilities
+        """Declared venue capabilities (#125), used to fail reduce-only closed."""
 
     @classmethod
     def from_exchange(
@@ -37,6 +47,7 @@ class CcxtVenue:
         *,
         live: bool = False,
         market_type: str = "spot",
+        capabilities: ContractCapabilities | None = None,
     ) -> "CcxtVenue":
         if ccxt is None:
             raise RuntimeError("ccxt is not installed")
@@ -47,7 +58,10 @@ class CcxtVenue:
         if market_type == "futures":
             # Select the exchange's derivatives markets (perps/futures).
             config["options"] = {"defaultType": "swap"}
-        return cls(klass(config), live=live, market_type=market_type)
+        return cls(
+            klass(config), live=live, market_type=market_type,
+            capabilities=capabilities,
+        )
 
     def place_order(self, order: Order) -> OrderResult:
         # LIVE GUARD: when not live, never touch the exchange.
@@ -68,10 +82,18 @@ class CcxtVenue:
                 error=None,
             )
 
+        params = self._order_params(order)
+        if isinstance(params, str):
+            return OrderResult(
+                ok=False, order_id=None, status="rejected", filled_qty=0.0,
+                raw={}, error=params,
+            )
+
         try:
             price = order.price if order.order_type is OrderType.limit else None
             resp = self._ex.create_order(
-                order.symbol, order.order_type.value, order.side.value, order.qty, price
+                order.symbol, order.order_type.value, order.side.value, order.qty,
+                price, params,
             )
             status = str(resp.get("status", "submitted")).lower()
             order_id = resp.get("id")
@@ -89,6 +111,36 @@ class CcxtVenue:
             return OrderResult(
                 ok=False, order_id=None, status="error", filled_qty=0.0, raw={}, error=str(exc)
             )
+
+    def _order_params(self, order: Order) -> dict | str:
+        """Build the exchange params for ``order``, or return a refusal reason.
+
+        ``Order.reduce_only`` used to be set and then silently dropped: the
+        old call passed no params at all, so a "reduce-only" close was sent as
+        an ordinary order and could flip an account through zero during a race
+        or a stale position read (#121).
+
+        Spot never receives derivative parameters. Exchanges reject unknown
+        keys, and spot has no position to reduce -- a sell there disposes of
+        inventory (#125).
+
+        Returns:
+            The params mapping, or a string explaining why the order must not
+            be sent. A reduce-only order on a venue that cannot guarantee the
+            semantics fails closed rather than going out unprotected, because
+            an unenforced reduce-only is exactly the flip this issue is about.
+        """
+        if not order.reduce_only:
+            return {}
+        if self._market_type == "spot":
+            return {}
+        if self._capabilities is not None and not self._capabilities.supports_reduce_only:
+            return (
+                f"{self._market_type} market cannot guarantee reduce-only orders, "
+                "so this close was not sent; it could otherwise flip the position "
+                "through zero"
+            )
+        return {"reduceOnly": True}
 
     def contract_spec(self, symbol: str) -> ContractSpec:
         """Resolve ``symbol``'s contract metadata from the exchange (#124).
@@ -189,11 +241,25 @@ class CcxtVenue:
         # Spot balances are long/flat.
         return Position(symbol=symbol, side=PositionSide.long, size=size, entry_price=0.0)
 
-    def close_position(self, symbol: str, *, owned_qty: float | None = None) -> OrderResult:
-        """Close ``symbol``, selling only the quantity the caller owns.
+    def close_position(
+        self,
+        symbol: str,
+        *,
+        owned_qty: float | None = None,
+        client_order_id: str | None = None,
+    ) -> OrderResult:
+        """Close ``symbol`` in the direction that actually flattens it.
+
+        A long is closed with a sell and a short with a buy. This always sent
+        a sell, so closing a short *doubled* it rather than flattening it
+        (#121). Spot is long-only, so a sell remains correct there.
 
         Args:
             symbol: Trading symbol to flatten.
+            client_order_id: Idempotency key for the closing order (#121).
+                A close builds its own order, so without this it had no
+                identity and could not be recorded in the ledger -- which is
+                why exposure release on close is still all-or-nothing.
             owned_qty: Quantity attributable to the calling bot (#128). For
                 spot this must be supplied: ``get_position()`` can only see
                 the whole account's balance, so closing on that figure would
@@ -205,29 +271,39 @@ class CcxtVenue:
         Returns:
             Result of the closing order, or a no-op result when flat.
         """
+        pos = self.get_position(symbol)
         if owned_qty is not None:
             size = owned_qty
+        elif pos is None or pos.side is PositionSide.flat:
+            size = 0.0
         else:
-            pos = self.get_position(symbol)
-            if pos is None or pos.side is PositionSide.flat:
-                size = 0.0
-            else:
-                size = pos.size
+            size = pos.size
 
         if size < 1e-9:
             return OrderResult(
                 ok=True, order_id=None, status="no position", filled_qty=0.0, raw={}, error=None
             )
-        # place_order already honors the live/dry-run guard.
-        return self.place_order(
-            Order(
-                symbol=symbol,
-                side=Side.sell,
-                order_type=OrderType.market,
-                qty=size,
-                reduce_only=True,
-            )
+
+        # Sell to flatten a long, buy to flatten a short. A missing position
+        # can only be spot, which is long-only, so a sell is right there.
+        closing_side = (
+            Side.buy if pos is not None and pos.side is PositionSide.short else Side.sell
         )
+        closing_order = Order(
+            symbol=symbol,
+            side=closing_side,
+            order_type=OrderType.market,
+            qty=size,
+            reduce_only=True,
+            client_order_id=client_order_id,
+        )
+        # place_order already honors the live/dry-run guard.
+        result = self.place_order(closing_order)
+        # Report what was actually sent, so the caller can record the close
+        # against the same identity the venue saw.
+        raw = dict(result.raw) if isinstance(result.raw, dict) else {}
+        raw["closing_order"] = closing_order.model_dump(mode="json")
+        return result.model_copy(update={"raw": raw})
 
     def health_check(self) -> bool:
         try:
