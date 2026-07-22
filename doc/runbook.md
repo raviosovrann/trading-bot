@@ -345,6 +345,47 @@ whole rather than filtered parameter by parameter, because a signed URL is
 credential-bearing by construction and the parameter names vary per exchange.
 Messages are also length-capped so a large upstream body is not echoed back.
 
+### A spot bot's position is its own, not the account's
+
+Since #128 a spot bot's position and PnL come from **its own fills**, not from
+the exchange balance.
+
+Before, `get_position()` reported the whole account's base-asset balance as
+the calling bot's position, with an entry price of zero. Two consequences:
+
+- **A bot could sell coins it never bought.** Closing sold the reported size,
+  so a bot could liquidate a manual purchase, or another bot's position on the
+  same account.
+- **Reported "PnL" was the holding's market value.** With a zero entry price,
+  `(mark - entry) x size` is just `mark x size`.
+
+What this changes for you:
+
+- A bot that has not filled anything reports **flat**, even when the account
+  holds that asset. That is correct: it owns none of it.
+- Closing sells only the quantity the bot bought. The rest of the balance is
+  untouched.
+- PnL is now split. `pnl` is unrealized profit on what is still held, marked
+  against real cost basis; `realized_pnl` is profit already banked by sales,
+  net of fees.
+- **Several bots can now safely share one symbol and account.** Each sees only
+  its own inventory.
+
+Cost basis is **average-cost**, not FIFO: the position is recomputed from the
+order log on every read, and a moving average stays correct across restarts
+without persisting a lot queue. The two differ only in realized PnL across
+lots bought at different prices.
+
+**Deposits and manual trades are invisible to a bot**, by design. A bot's
+ledger only knows its own fills, so a manual sale of coins the bot believes it
+holds will leave the bot's figure too high until the venue reports the
+resulting order state. If a bot's view and the exchange disagree, the exchange
+balance is the truth about the *account*, and the bot's ledger is the truth
+about *that bot's share of it*.
+
+Derivatives are unaffected: there the venue reports a real per-account
+position with a real entry price, so it stays the source.
+
 ### A derivative bot will not start: "contract size is not known"
 
 **This is deliberate, and it is new.** Since #124 a futures bot refuses to

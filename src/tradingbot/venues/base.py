@@ -22,6 +22,13 @@ class ExecutionVenue(Protocol):
     def close_position(self, symbol: str) -> OrderResult:
         """Close any open position for ``symbol``.
 
+        Implementations may additionally accept an ``owned_qty`` keyword so a
+        spot bot closes only what it bought rather than the whole account
+        balance (#128). That is deliberately not required here: like
+        ``contract_spec`` and ``fetch_order``, it is an optional capability
+        the caller detects, so a venue that cannot support it stays a valid
+        ``ExecutionVenue``.
+
         Args:
             symbol: Trading symbol to flatten.
 

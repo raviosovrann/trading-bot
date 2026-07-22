@@ -240,3 +240,80 @@ class TestIsolation:
         mine = spot_position(ledger.orders(bot_id="bot-a"))
 
         assert mine.quantity == pytest.approx(2.0), "must not include bot-b"
+
+
+class _Venue:
+    """Spot venue reporting an account-wide balance, as ccxt does."""
+
+    def __init__(self, account_qty: float) -> None:
+        self.account_qty = account_qty
+        self.closed: list = []
+        self.orders: list = []
+
+    def place_order(self, order):
+        from tradingbot.models import OrderResult
+        self.orders.append(order)
+        return OrderResult(ok=True, order_id="v1", status="closed",
+                           filled_qty=order.qty, raw={"average": 100.0})
+
+    def close_position(self, symbol):
+        from tradingbot.models import OrderResult
+        self.closed.append(symbol)
+        return OrderResult(ok=True, order_id="c1", status="closed",
+                           filled_qty=self.account_qty, raw={})
+
+    def get_position(self, symbol):
+        from tradingbot.models import Position, PositionSide
+        if self.account_qty <= 0:
+            return None
+        return Position(symbol=symbol, side=PositionSide.long,
+                        size=self.account_qty, entry_price=0.0)
+
+    def health_check(self):
+        return True
+
+
+class TestSupervisorOwnership:
+    """The bot's reported position must be its own, not the account's."""
+
+    def _bot(self, account_qty: float, *event_groups):
+        from tradingbot.service.supervisor import BotConfig, BotInstance
+        cfg = BotConfig(
+            id="bot-a", venue="coinbase", market_type="spot", strategy="example",
+            symbol="BTC/USD", timeframe="1m", quantity=0.1, live=True,
+            per_bot_cap=1e9, global_cap=1e9, params={},
+        )
+        bot = BotInstance(config=cfg)
+        bot.venue = _Venue(account_qty)
+        for group in event_groups:
+            for event in group:
+                bot.ledger.apply(event)
+        return bot
+
+    def test_a_bot_that_bought_nothing_reports_flat_despite_a_balance(self):
+        """The account holds 10 BTC someone else bought. This bot owns none."""
+        from tradingbot.service.supervisor import BotSupervisor
+        bot = self._bot(10.0)
+
+        BotSupervisor._refresh_position(None, bot)  # type: ignore[arg-type]
+
+        assert bot.position is None or bot.position.size == 0.0
+
+    def test_a_bot_reports_only_what_it_bought(self):
+        from tradingbot.service.supervisor import BotSupervisor
+        bot = self._bot(10.0, _buy("c1", 2.0, 100.0))
+
+        BotSupervisor._refresh_position(None, bot)  # type: ignore[arg-type]
+
+        assert bot.position is not None
+        assert bot.position.size == pytest.approx(2.0), "not the account's 10"
+
+    def test_the_reported_entry_price_is_the_cost_basis(self):
+        """Was hardcoded to 0.0, which made PnL the whole market value."""
+        from tradingbot.service.supervisor import BotSupervisor
+        bot = self._bot(10.0, _buy("c1", 2.0, 100.0))
+
+        BotSupervisor._refresh_position(None, bot)  # type: ignore[arg-type]
+
+        assert bot.position is not None
+        assert bot.position.entry_price == pytest.approx(100.0)

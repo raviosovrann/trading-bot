@@ -176,3 +176,43 @@ def test_route_still_returns_the_bare_result():
     result = router.route(_buy_signal())
 
     assert isinstance(result, OrderResult)
+
+
+class _OwnedQtyVenue(StubVenue):
+    """Records how close_position was called."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_kwargs: list[dict] = []
+
+    def close_position(self, symbol: str, **kwargs):
+        self.close_kwargs.append(kwargs)
+        return super().close_position(symbol)
+
+
+def test_close_passes_the_owned_quantity_when_one_is_known():
+    """#128: the venue must be told what this bot owns, not guess."""
+    venue = _OwnedQtyVenue()
+    router = SignalRouter(venue, owned_qty_source=lambda: 2.0)
+    signal = Signal(
+        strategy="s", action=Action.close, symbol="BTC/USD",
+        order_type=OrderType.market, quantity=1.0, position_side=PositionSide.flat,
+    )
+
+    router.route(signal)
+
+    assert venue.close_kwargs == [{"owned_qty": 2.0}]
+
+
+def test_close_omits_the_owned_quantity_when_none_is_configured():
+    """Derivative venues report a real position; leave them to it."""
+    venue = _OwnedQtyVenue()
+    router = SignalRouter(venue)
+    signal = Signal(
+        strategy="s", action=Action.close, symbol="BTC/USD",
+        order_type=OrderType.market, quantity=1.0, position_side=PositionSide.flat,
+    )
+
+    router.route(signal)
+
+    assert venue.close_kwargs == [{}]

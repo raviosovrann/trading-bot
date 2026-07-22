@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,13 +33,24 @@ class RouteOutcome:
 class SignalRouter:
     """Convert ``Signal`` objects into venue orders."""
 
-    def __init__(self, venue: ExecutionVenue) -> None:
+    def __init__(
+        self,
+        venue: ExecutionVenue,
+        *,
+        owned_qty_source: Callable[[], float] | None = None,
+    ) -> None:
         """Create a router backed by ``venue``.
 
         Args:
             venue: Venue used to place orders and close positions.
+            owned_qty_source: Returns how much of the symbol this bot owns,
+                for closes (#128). Spot venues can only see the whole
+                account's balance, so without this a close would sell coins
+                bought by hand or by another bot. ``None`` leaves the venue to
+                report its own position, which is right for derivatives.
         """
         self._venue = venue
+        self._owned_qty_source = owned_qty_source
 
     @classmethod
     def with_risk_guard(
@@ -51,6 +63,7 @@ class SignalRouter:
         bot_id: str = "",
         price_source: Callable[[], float | None],
         contract: "ContractSpec | None" = None,
+        owned_qty_source: Callable[[], float] | None = None,
     ) -> "SignalRouter":
         """Build a router whose orders are gated by ``RiskGuard``.
 
@@ -82,8 +95,32 @@ class SignalRouter:
                 bot_id=bot_id,
                 price_source=price_source,
                 contract=contract,
-            )
+            ),
+            owned_qty_source=owned_qty_source,
         )
+
+    def _close(self, symbol: str) -> OrderResult:
+        """Close ``symbol``, telling the venue what this bot owns if it can use it.
+
+        ``owned_qty`` is an optional venue capability rather than part of the
+        ``ExecutionVenue`` protocol, so it is detected: requiring it would
+        force every venue and every test double to accept an argument most of
+        them cannot use.
+        """
+        close = self._venue.close_position
+        if self._owned_qty_source is None:
+            return close(symbol)
+        try:
+            params = inspect.signature(close).parameters
+            accepts = "owned_qty" in params or any(
+                # A venue taking **kwargs can receive it too.
+                p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+            )
+        except (TypeError, ValueError):  # pragma: no cover - exotic callables
+            accepts = False
+        if not accepts:
+            return close(symbol)
+        return close(symbol, owned_qty=self._owned_qty_source())  # type: ignore[call-arg]
 
     def route(self, signal: Signal) -> OrderResult:
         """Translate ``signal`` into an order and send it to the venue.
@@ -116,7 +153,7 @@ class SignalRouter:
             ValueError: If the signal action is not supported.
         """
         if signal.action is Action.close:
-            return RouteOutcome(None, self._venue.close_position(signal.symbol))
+            return RouteOutcome(None, self._close(signal.symbol))
 
         if signal.action is Action.buy:
             side = Side.buy
