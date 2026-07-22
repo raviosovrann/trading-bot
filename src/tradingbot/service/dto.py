@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 TRADES_MAX_PAGE = 500
@@ -29,6 +30,15 @@ class SessionInfo(BaseModel):
     roles: list[str] = Field(default_factory=list)
 
 
+_TIMEFRAME_PATTERN = re.compile(r"^([1-9][0-9]*)([mhdw])$")
+"""Supported timeframe syntax: a positive count and a unit.
+
+Validated here rather than only at start (#113), because a bot whose
+timeframe no feed can parse is unusable and used to be persisted anyway,
+failing only when someone tried to run it.
+"""
+
+
 class CreateBotRequest(BaseModel):
     """Payload to create a new bot. No secrets are accepted here."""
 
@@ -42,6 +52,45 @@ class CreateBotRequest(BaseModel):
     per_bot_cap: float = Field(ge=0.0)
     global_cap: float = Field(ge=0.0)
     params: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("venue", "market_type", "strategy")
+    @classmethod
+    def _non_empty(cls, value: str) -> str:
+        """Reject blank identifiers and normalise surrounding whitespace."""
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("must not be empty")
+        return cleaned
+
+    @field_validator("symbol")
+    @classmethod
+    def _normalize_symbol(cls, value: str) -> str:
+        """Reject an empty symbol and normalise case and whitespace.
+
+        Symbols are compared against venue market listings, where they are
+        upper case; accepting ``  btc/usd  `` and storing it verbatim would
+        produce a bot that never resolves its own instrument.
+        """
+        cleaned = value.strip().upper()
+        if not cleaned:
+            raise ValueError("symbol must not be empty")
+        return cleaned
+
+    @field_validator("timeframe")
+    @classmethod
+    def _valid_timeframe(cls, value: str) -> str:
+        """Reject a timeframe no feed could parse.
+
+        Syntax only: which timeframes a given venue actually offers is a
+        venue question, answered when the bot starts and its feed is built.
+        """
+        cleaned = value.strip().lower()
+        if not _TIMEFRAME_PATTERN.match(cleaned):
+            raise ValueError(
+                f"unsupported timeframe {value!r}; expected a count and a unit, "
+                "e.g. 1m, 15m, 4h, 1d"
+            )
+        return cleaned
 
 
 class PatchBotRequest(BaseModel):

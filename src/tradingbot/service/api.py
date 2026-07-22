@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import logging
 import os
+import contextlib
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -729,6 +730,11 @@ def create_app(
         # Validate the pairing BEFORE anything is created or persisted, so a
         # refusal leaves no orphan record behind (#125).
         try:
+            if request.strategy not in available_strategies():
+                raise ValueError(
+                    f"Unknown strategy: {request.strategy!r}; "
+                    f"available: {', '.join(available_strategies())}"
+                )
             capabilities = venue_capabilities(request.venue, request.market_type)
             check_strategy(
                 request.strategy,
@@ -754,8 +760,31 @@ def create_app(
             global_cap=request.global_cap,
             params=request.params,
         )
-        supervisor.create(cfg)
-        store.save_config(cfg)
+        # Persist first, then adopt. supervisor.create() used to run first, so
+        # a disk error left a bot the operator could see and start but that
+        # would vanish on restart -- the two stores disagreeing about what
+        # exists (#113).
+        try:
+            store.save_config(cfg)
+        except Exception as exc:
+            # A storage failure is ours, not the operator's, but it still has
+            # to say what happened rather than surfacing a bare traceback.
+            _audit(
+                http_request, principal, "bot.create", f"bot:{bot_id}", "failure",
+                after={"error": "could not persist bot configuration"},
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="could not persist bot configuration",
+            ) from exc
+        try:
+            supervisor.create(cfg)
+        except Exception:
+            # Roll the persisted config back so neither side keeps a bot the
+            # other does not have.
+            with contextlib.suppress(Exception):
+                store.delete_config(bot_id)
+            raise
         bot = supervisor.get(bot_id)
         if bot is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="bot not found")
