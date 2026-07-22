@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from ..models import Order, OrderResult, Position
 from ..venues.base import ExecutionVenue
+from ..venues.contracts import ContractMetadataError, ContractSpec, spot_spec
 
 
 @dataclass
@@ -29,7 +30,7 @@ class RiskGuard:
         global_cap: float,
         global_state: GlobalExposure,
         price_source: Callable[[], float | None],
-        multiplier: float = 1.0,
+        contract: ContractSpec | None = None,
     ) -> None:
         """Wrap ``venue`` with notional risk checks.
 
@@ -39,14 +40,19 @@ class RiskGuard:
             global_cap: Maximum notional exposure across all bots.
             global_state: Shared exposure tracker.
             price_source: Callable returning the current price for notional checks.
-            multiplier: Contract multiplier applied to notional calculations.
+            contract: Resolved contract metadata (#124). Notional comes from
+                the spec rather than a bare multiplier, because a multiplier
+                can only express the linear convention: an inverse contract is
+                a fixed amount of quote currency, and pricing one linearly
+                inflates its exposure by the price itself. Defaults to a spot
+                unit contract, where the two conventions agree.
         """
         self._venue = venue
         self._per_bot_cap = per_bot_cap
         self._global_cap = global_cap
         self._global_state = global_state
         self._price_source = price_source
-        self._multiplier = multiplier
+        self._contract = contract or spot_spec("", quote_currency="?")
 
     def place_order(self, order: Order) -> OrderResult:
         """Place ``order`` if it passes notional caps.
@@ -67,7 +73,9 @@ class RiskGuard:
         if price is None or not self._valid_order_size(order):
             return self._blocked(0.0, error="price or order size unavailable")
 
-        notional = order.qty * price * self._multiplier
+        notional = self._notional(order.qty, price)
+        if notional is None:
+            return self._blocked(0.0, error="exposure could not be computed")
         if (
             notional > self._per_bot_cap
             or self._global_state.used + notional > self._global_cap
@@ -136,26 +144,40 @@ class RiskGuard:
         price = self._get_price()
         if price is None or not self._valid_order_size(order, qty=filled_qty):
             return
-        notional = filled_qty * price * self._multiplier
+        notional = self._notional(filled_qty, price)
+        if notional is None:
+            return
         self._global_state.used = max(0.0, self._global_state.used - notional)
 
+    def _notional(self, quantity: float, price: float) -> float | None:
+        """Return the quote-currency exposure, or ``None`` if it is unknowable.
+
+        Delegates to the contract spec so linear and inverse conventions are
+        each priced their own way. Returns ``None`` rather than a guess when
+        the inputs are unusable -- the caller blocks the order, since an
+        exposure that cannot be computed cannot be checked against a cap.
+        """
+        try:
+            return self._contract.notional(quantity, price)
+        except ContractMetadataError:
+            return None
+
     def _valid_order_size(self, order: Order, *, qty: float | None = None) -> bool:
-        """Return ``True`` when the order size and multiplier are valid.
+        """Return ``True`` when the order size is usable.
+
+        The contract size no longer needs checking here: ContractSpec
+        validates it on construction (#124), so an unusable one cannot reach
+        this point.
 
         Args:
             order: Order to validate.
             qty: Optional quantity override; defaults to ``order.qty``.
 
         Returns:
-            ``True`` if the size is finite and positive and the multiplier is valid.
+            ``True`` if the size is finite and positive.
         """
         size = order.qty if qty is None else qty
-        return (
-            math.isfinite(size)
-            and size > 0
-            and math.isfinite(self._multiplier)
-            and self._multiplier > 0
-        )
+        return math.isfinite(size) and size > 0
 
     @staticmethod
     def _has_positive_fill(filled_qty: float) -> bool:

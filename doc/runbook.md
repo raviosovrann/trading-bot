@@ -345,6 +345,48 @@ whole rather than filtered parameter by parameter, because a signed URL is
 credential-bearing by construction and the parameter names vary per exchange.
 Messages are also length-capped so a large upstream body is not echoed back.
 
+### A derivative bot will not start: "contract size is not known"
+
+**This is deliberate, and it is new.** Since #124 a futures bot refuses to
+start unless the venue tells us what one contract is actually worth.
+
+Risk caps and PnL are `quantity × price × contract_size`. Before this, an
+unknown contract silently used `1.0`. That is the worst possible default
+because it is *plausible*: a CME Bitcoin future is 5 BTC per contract and a
+Micro Bitcoin is 0.1, so the same wrong default understates one position by 5×
+and overstates the other by 10×, and neither resulting number looks unusual
+enough to notice. A cap set at $10,000 could have been risking $50,000.
+
+The error names the instrument and the missing fact, and arrives as a `400`:
+
+```
+MBTF6: exchange did not publish a contract size, so exposure cannot be
+computed; refusing rather than assuming 1.0
+```
+
+**Spot bots are unaffected.** One unit of the base asset is one unit by
+definition — the single case where `1.0` is a fact rather than an assumption.
+
+What to do, in order:
+
+1. **Check the symbol is what the venue calls it.** ccxt derivative symbols
+   carry a settlement suffix (`BTC/USD:USD`), and the bare spot form will not
+   resolve as a derivative.
+2. **Check the contract is currently listed.** A dated future that has expired
+   is no longer in the venue's market list, and its replacement has a new
+   symbol.
+3. **For Tradovate**, the known products are `MBT`, `MET`, `BTC` and `ETH`.
+   Tradovate exposes no instrument-metadata endpoint through this client, so
+   these come from a table of published CME contract sizes. A product outside
+   that table cannot be traded until it is added — that is a code change, and
+   deliberately so, because guessing is the thing this prevents.
+4. **If the venue is simply unreachable**, the message says so instead. That is
+   transient; retry.
+
+Metadata is cached for an hour per venue, so a contract that was relisted
+during a session may still be serving the previous listing. Restart the
+service to force a reload.
+
 ### Rotating venue credentials
 
 `PUT /api/venues/{venue}/{market_type}/secrets` replaces the stored credentials

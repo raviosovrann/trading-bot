@@ -318,3 +318,80 @@ def test_fetch_order_tolerates_a_missing_filled_field():
     venue = CcxtVenue(_FetchExchange({"id": "v1", "status": "open"}), live=True)
 
     assert venue.fetch_order("v1", "BTC/USD").filled_qty == 0.0
+
+
+class _MarketExchange:
+    """Fake exposing ccxt market metadata for contract resolution (#124)."""
+
+    def __init__(self, markets):
+        self.markets = markets
+        self.load_calls = 0
+
+    def load_markets(self, reload=False):
+        del reload
+        self.load_calls += 1
+        return self.markets
+
+
+_SPOT_MARKET = {
+    "symbol": "BTC/USD", "base": "BTC", "quote": "USD", "settle": "USD",
+    "contract": False, "spot": True, "precision": {"price": 0.01},
+}
+_PERP_MARKET = {
+    "symbol": "BTC/USD:USD", "base": "BTC", "quote": "USD", "settle": "USD",
+    "contract": True, "swap": True, "linear": True, "inverse": False,
+    "contractSize": 0.001, "precision": {"price": 0.1},
+}
+
+
+def test_contract_spec_resolves_a_spot_market():
+    venue = CcxtVenue(_MarketExchange({"BTC/USD": _SPOT_MARKET}), live=True)
+
+    spec = venue.contract_spec("BTC/USD")
+
+    assert spec.contract_size == 1.0
+    assert spec.is_derivative is False
+
+
+def test_contract_spec_resolves_a_derivative_from_venue_metadata():
+    venue = CcxtVenue(
+        _MarketExchange({"BTC/USD:USD": _PERP_MARKET}), live=True, market_type="futures"
+    )
+
+    spec = venue.contract_spec("BTC/USD:USD")
+
+    assert spec.contract_size == 0.001
+    assert spec.is_derivative is True
+
+
+def test_contract_spec_refuses_a_derivative_with_no_published_size():
+    """#124's core: never silently 1.0 for a derivative."""
+    from tradingbot.venues.contracts import ContractMetadataError
+
+    market = {**_PERP_MARKET, "contractSize": None}
+    venue = CcxtVenue(
+        _MarketExchange({"BTC/USD:USD": market}), live=True, market_type="futures"
+    )
+
+    with pytest.raises(ContractMetadataError):
+        venue.contract_spec("BTC/USD:USD")
+
+
+def test_contract_spec_refuses_an_unlisted_symbol():
+    from tradingbot.venues.contracts import ContractMetadataError
+
+    venue = CcxtVenue(_MarketExchange({}), live=True, market_type="futures")
+
+    with pytest.raises(ContractMetadataError):
+        venue.contract_spec("NOPE/USD:USD")
+
+
+def test_contract_spec_caches_across_calls():
+    """Metadata must not become a per-order exchange round trip."""
+    exchange = _MarketExchange({"BTC/USD": _SPOT_MARKET})
+    venue = CcxtVenue(exchange, live=True)
+
+    venue.contract_spec("BTC/USD")
+    venue.contract_spec("BTC/USD")
+
+    assert exchange.load_calls == 1
