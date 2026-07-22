@@ -406,7 +406,7 @@ class BotSupervisor:
                 global_cap=bot.config.global_cap,
                 global_state=self._global_exposure,
                 price_source=lambda: hub.latest_price(bot.config.symbol, bot.config.timeframe),
-                multiplier=multiplier,
+                contract=spec,
             )
             strategy = build_strategy(
                 bot.config.strategy,

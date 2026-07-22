@@ -12,6 +12,7 @@ from .venues.base import ExecutionVenue
 
 if TYPE_CHECKING:
     from .service.risk import GlobalExposure
+    from .venues.contracts import ContractSpec
 
 
 @dataclass(frozen=True)
@@ -48,7 +49,7 @@ class SignalRouter:
         global_cap: float,
         global_state: "GlobalExposure",
         price_source: Callable[[], float | None],
-        multiplier: float = 1.0,
+        contract: "ContractSpec | None" = None,
     ) -> "SignalRouter":
         """Build a router whose orders are gated by ``RiskGuard``.
 
@@ -62,7 +63,8 @@ class SignalRouter:
             global_cap: Maximum notional exposure allowed across all bots.
             global_state: Shared exposure tracker.
             price_source: Callable returning the latest price for notional checks.
-            multiplier: Contract multiplier applied to notional calculations.
+            contract: Resolved contract metadata used to compute notional
+                (#124); linear and inverse contracts price differently.
 
         Returns:
             A router wrapped with per-bot and global risk limits.
@@ -76,7 +78,7 @@ class SignalRouter:
                 global_cap=global_cap,
                 global_state=global_state,
                 price_source=price_source,
-                multiplier=multiplier,
+                contract=contract,
             )
         )
 
