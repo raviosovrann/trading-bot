@@ -8,7 +8,6 @@ import time
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
-from .datafeed import CandleFeed
 from .models import Candle, OrderResult
 from .router import SignalRouter
 from .strategy import Strategy
@@ -119,52 +118,6 @@ class CandleProcessor:
         if not self.add_candle(candle):
             return None
         return self.evaluate()
-
-
-class BotRuntime:
-    def __init__(
-        self,
-        *,
-        feed: CandleFeed,
-        strategy: Strategy,
-        router: SignalRouter,
-        symbol: str,
-        timeframe: str,
-        warmup_bars: int = 0,
-        max_buffer: int = 500,
-    ) -> None:
-        self._feed = feed
-        self._symbol = symbol
-        self._timeframe = timeframe
-        self._proc = CandleProcessor(
-            strategy=strategy,
-            router=router,
-            max_buffer=max_buffer,
-            event_symbol=symbol,
-        )
-
-        if warmup_bars > 0:
-            self._proc.seed(feed.warmup_candles(symbol, timeframe, warmup_bars))
-
-    @property
-    def candles(self) -> tuple[Candle, ...]:
-        return self._proc.candles
-
-    def process_candle(self, candle: Candle) -> OrderResult | None:
-        return self._proc.process_candle(candle)
-
-    def run_once(self) -> OrderResult | None:
-        # Warmup already loaded history up to the latest closed candle, so the
-        # freshly-fetched latest is usually a duplicate. Add it only if newer,
-        # then evaluate the current buffer regardless — otherwise one-shot mode
-        # would dedup the candle away and never run the strategy.
-        candle = self._feed.latest_closed_candle(self._symbol, self._timeframe)
-        if candle is not None:
-            self._proc.add_candle(candle)
-        elif not self._proc.candles:
-            _log.info("%s: no candles available (empty warmup and no latest)", self._symbol)
-            return None
-        return self._proc.evaluate()
 
 
 class StreamRuntime:
@@ -294,7 +247,12 @@ class StreamRuntime:
         self._feed.stop()
 
     def _install_signal_handlers(self) -> None:
-        def _handler(signum: int, frame: object) -> None:
+        def _handler(_signum: int, _frame: object) -> None:
+            """Stop the runtime on SIGINT/SIGTERM.
+
+            The signal number and frame are part of the handler contract but
+            unused: any of the handled signals means the same thing here.
+            """
             self.stop()
 
         for sig in (signal.SIGINT, signal.SIGTERM):
