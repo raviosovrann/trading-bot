@@ -1601,3 +1601,87 @@ class TestCapabilityValidation:
         )
         assert spot["supports_short"] is False
         assert "market" in spot["order_types"]
+
+
+class TestCreateValidation:
+    """#113: an unusable bot must never be persisted."""
+
+    def _post(self, client: TestClient, **overrides):
+        return client.post(
+            "/api/bots", json={**_BOT_BODY, **overrides}, headers=_auth()
+        )
+
+    def _count(self, client: TestClient) -> int:
+        return len(client.get("/api/bots", headers=_auth()).json())
+
+    def test_an_unknown_venue_is_refused(self, client: TestClient) -> None:
+        response = self._post(client, venue="nosuchvenue")
+
+        assert response.status_code == 400
+        assert "nosuchvenue" in response.json()["detail"]
+
+    def test_an_invalid_venue_market_pair_is_refused(self, client: TestClient) -> None:
+        # tradovate exists, but only for futures.
+        response = self._post(client, venue="tradovate", market_type="spot")
+
+        assert response.status_code == 400
+
+    def test_an_unknown_strategy_is_refused(self, client: TestClient) -> None:
+        response = self._post(client, strategy="nosuchstrategy")
+
+        assert response.status_code == 400
+        assert "nosuchstrategy" in response.json()["detail"]
+
+    @pytest.mark.parametrize("symbol", ["", "   ", "\t"])
+    def test_an_empty_symbol_is_refused(self, client: TestClient, symbol: str) -> None:
+        response = self._post(client, symbol=symbol)
+
+        assert response.status_code == 422
+
+    def test_a_symbol_is_normalized(self, client: TestClient) -> None:
+        response = self._post(client, symbol="  btc/usd  ")
+
+        assert response.status_code == 201
+        assert response.json()["symbol"] == "BTC/USD"
+
+    @pytest.mark.parametrize("timeframe", ["", "1", "m1", "1x", "0m", "-5m", "abc"])
+    def test_an_invalid_timeframe_is_refused(
+        self, client: TestClient, timeframe: str
+    ) -> None:
+        response = self._post(client, timeframe=timeframe)
+
+        assert response.status_code == 422
+
+    @pytest.mark.parametrize("timeframe", ["1m", "5m", "15m", "1h", "4h", "1d"])
+    def test_supported_timeframes_are_accepted(
+        self, client: TestClient, timeframe: str
+    ) -> None:
+        assert self._post(client, timeframe=timeframe).status_code == 201
+
+    def test_no_bot_is_created_when_validation_fails(self, client: TestClient) -> None:
+        before = self._count(client)
+
+        self._post(client, strategy="nosuchstrategy")
+
+        assert self._count(client) == before
+
+    def test_a_persistence_failure_leaves_no_orphan_bot(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The supervisor and the store must agree, or neither keeps it.
+
+        supervisor.create() ran before store.save_config(), so a disk error
+        left a bot the operator could see and start but that would vanish on
+        restart.
+        """
+        store = cast(FastAPI, client.app).state.store
+        monkeypatch.setattr(
+            store, "save_config",
+            lambda cfg: (_ for _ in ()).throw(OSError("disk full")),
+        )
+        before = self._count(client)
+
+        response = self._post(client)
+
+        assert response.status_code >= 500
+        assert self._count(client) == before, "the bot must not survive in memory"
